@@ -10,6 +10,11 @@ from .embedding import (
 )
 from .indexing import CorpusEmbeddingWriter, FirestoreChunkRepository
 from .manifest import SourceManifest, create_source_manifest
+from .versions import (
+    CorpusCompletenessError,
+    CorpusVersionError,
+    InMemoryCorpusVersionStore,
+)
 
 __all__ = [
     "SourceManifest",
@@ -24,4 +29,7 @@ __all__ = [
     "create_vertex_document_embedder",
     "chunk_pages",
     "create_source_manifest",
+    "CorpusCompletenessError",
+    "CorpusVersionError",
+    "InMemoryCorpusVersionStore",
 ]

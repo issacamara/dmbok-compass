@@ -32,7 +32,7 @@ jobs:
           cache-dependency-path: backend/pyproject.toml
 
       - name: Install backend test dependencies
-        run: python -m pip install -e ".[test]" pip-audit
+        run: python -m pip install -e ".[test]" pip-audit "setuptools>=83.0.0"
 
       - name: Run backend tests
         run: pytest

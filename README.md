@@ -45,7 +45,7 @@ Run the same checks locally before opening a pull request:
 
 ```bash
 cd backend
-python -m pip install -e '.[test]' pip-audit
+python -m pip install -e '.[test]' pip-audit 'setuptools>=83.0.0'
 pytest
 python -m pip uninstall --yes dmbok-compass-backend
 pip-audit --strict

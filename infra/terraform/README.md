@@ -27,6 +27,12 @@ the approved secret-management workflow. This configuration creates only
 Secret Manager metadata, so secret values never enter Terraform configuration
 or state.
 
+The `answer-provider-api-key` secret supplies `OPENROUTER_API_KEY` to the
+backend runtime. Optional `OPENROUTER_PRIMARY_MODEL` and
+`OPENROUTER_FALLBACK_MODEL` settings override the defaults documented in
+`documents/decisions/provider.md`; do not put either the key or model settings
+in the browser bundle.
+
 The web app uses public Firebase client configuration from the Firebase
 console. Copy `web/.env.example` to `web/.env.local` and fill in the web app's
 API key, auth domain, project ID, and app ID. These client values identify the

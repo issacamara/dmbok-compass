@@ -43,7 +43,7 @@ The initial thresholds may be recalibrated after the first baseline run, but any
 | SM-05 | Correct refusal behavior | At least 95% | Questions designated unanswerable from the corpus trigger the required refusal. |
 | SM-06 | End-to-end response time | At least 95% within 15 seconds | Complete answer and citations under normal test conditions with up to three simultaneous users. |
 | SM-07 | Approved-user ceiling | 100% compliance | No more than 10 approved user accounts can access question answering. |
-| SM-08 | Infrastructure cost | No more than €5 per month for GCP infrastructure, plus an approved provider budget | Sponsor review of infrastructure and provider usage; production provider calls use the approved paid tier. |
+| SM-08 | Infrastructure cost | No more than €5 per month for GCP infrastructure, plus an approved provider budget | Sponsor review of infrastructure and provider usage; production provider calls use OpenRouter with the configured free fallback. |
 
 ## 3. Stakeholders and user groups
 
@@ -186,7 +186,7 @@ An approved user signs in, asks a question in English, and receives a complete a
 - Access is restricted to approved authenticated users; administrative functions are restricted to the administrator role.
 - Multifactor authentication is explicitly out of scope. The associated administrator account-takeover risk is accepted, subject to password, throttling, HTTPS, and recovery controls.
 - Users must be warned not to submit confidential or personal information because hosted providers may process or retain requests.
-- The approved provider decision requires paid-tier no-training treatment and minimal provider-log retention; the application must continue to warn users not to submit confidential or personal information.
+- The approved provider decision requires OpenRouter upstream privacy review and minimal-retention treatment; the application must continue to warn users not to submit confidential or personal information.
 - Secrets and provider credentials must not be exposed to browser clients or committed to source control.
 
 ### 9.5 Copyright and licensing
@@ -260,8 +260,8 @@ There is no separate pilot cohort. At launch, all accounts approved by the admin
 | ID | Open question | Owner | Why it matters |
 |---|---|---|---|
 | OQ-01 | What is the default global daily request cap? | Sponsor | It determines maximum load and protection against provider and budget exhaustion. |
-| OQ-02 | Does the selected Google Gemini API configuration pass live functional, capacity, cost, and data-handling validation? | Sponsor / solution design | Provider limits and terms affect availability, privacy, and feasibility. |
-| OQ-03 | Do the selected paid-tier provider terms remain no-training with minimal configured retention? | Sponsor | The application cannot promise non-retention if a provider retains request data. |
+| OQ-02 | Does the selected OpenRouter configuration pass live functional, capacity, cost, and data-handling validation? | Sponsor / solution design | Gateway and upstream limits and terms affect availability, privacy, and feasibility. |
+| OQ-03 | Do the selected OpenRouter route and upstream provider terms meet the approved no-training and minimal-retention requirements? | Sponsor | The application cannot promise non-retention if a provider retains request data. |
 | OQ-04 | What distribution of answerable, partially answerable, unanswerable, and use-case categories will the ~200-question set contain? | Sponsor / evaluator | Balanced coverage is necessary for meaningful quality and refusal metrics. |
 | OQ-05 | Will publisher permission or qualified legal advice be obtained before multi-user release? | Sponsor | Licensing remains a high-severity unresolved release risk even though the sponsor has accepted it. |
 

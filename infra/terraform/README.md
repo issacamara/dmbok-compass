@@ -7,7 +7,10 @@ bucket, Artifact Registry, Firebase Hosting metadata, Secret Manager metadata,
 and separate service identities for runtime, worker, scheduler, build, and
 hosting concerns.
 
-The default region is `europe-west1`. Runtime configuration is deliberately
+The default region is `europe-west1`. The corpus bucket is regional, private,
+uniformly access-controlled, versioned, and protected against public access.
+Replacing the source object preserves the previous generation for rollback;
+objects older than 30 days are lifecycle-managed. Runtime configuration is deliberately
 not deployed here yet: Cloud Run services and jobs will consume the identity
 outputs when their application modules are implemented. The scheduler identity
 also receives no project-wide `run.invoker` grant; that permission belongs on

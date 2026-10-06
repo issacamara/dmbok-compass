@@ -1,10 +1,11 @@
 # DMBOK Compass GCP foundation
 
 This directory is the infrastructure source of truth for the first-release
-GCP foundation. It provisions the regional managed services, Firestore Native,
-the corpus bucket, Artifact Registry, Firebase Hosting metadata, Secret
-Manager metadata, and separate service identities for runtime, worker,
-scheduler, build, and hosting concerns.
+GCP foundation. It provisions the regional managed services, Firebase project
+and email/password Authentication, deny-by-default Firestore rules, the corpus
+bucket, Artifact Registry, Firebase Hosting metadata, Secret Manager metadata,
+and separate service identities for runtime, worker, scheduler, build, and
+hosting concerns.
 
 The default region is `europe-west1`. Runtime configuration is deliberately
 not deployed here yet: Cloud Run services and jobs will consume the identity
@@ -22,6 +23,13 @@ Secret values must be created out of band with `gcloud secrets versions add` or
 the approved secret-management workflow. This configuration creates only
 Secret Manager metadata, so secret values never enter Terraform configuration
 or state.
+
+The web app uses public Firebase client configuration from the Firebase
+console. Copy `web/.env.example` to `web/.env.local` and fill in the web app's
+API key, auth domain, project ID, and app ID. These client values identify the
+Firebase project; they are not service account credentials. Local development
+can point Authentication at the emulator with
+`VITE_FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099`.
 
 ## Validate and plan
 

@@ -1,5 +1,6 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { AuthPanel } from "./AuthPanel";
 import "./styles.css";
 
 export function App() {
@@ -7,8 +8,8 @@ export function App() {
     <main>
       <p className="eyebrow">DMBOK COMPASS</p>
       <h1>Grounded data management guidance.</h1>
-      <p className="intro">The workspace is ready for the secure question-answering experience.</p>
-      <span className="status" role="status">API workspace ready</span>
+      <p className="intro">Sign in with your verified email to continue.</p>
+      <AuthPanel />
     </main>
   );
 }

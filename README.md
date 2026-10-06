@@ -30,6 +30,10 @@ npm run dev
 ```
 
 The Vite development server prints its local URL, normally `http://localhost:5173`.
+For Firebase email sign-in, copy `web/.env.example` to `web/.env.local` and fill
+in the Firebase web app configuration. Set
+`VITE_FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099` to use the local Authentication
+emulator during development.
 
 ## Pull-request quality checks
 

@@ -114,4 +114,83 @@ describe("Firebase email and password identity", () => {
     expect(await screen.findByRole("heading", { name: "Request received" })).toBeInTheDocument();
     expect(identityApi.getCurrentProfile).toHaveBeenCalledWith("firebase-token");
   });
+
+  it("refreshes a pending applicant into the approved journey without requiring a new sign-in", async () => {
+    const user = userEvent.setup();
+    const signedInUser = {
+      email: "reader@example.com",
+      emailVerified: true,
+      getIdToken: vi.fn().mockResolvedValue("firebase-token"),
+    };
+    authSdk.onAuthStateChanged.mockImplementation((_auth, callback) => {
+      void callback(signedInUser);
+      return vi.fn();
+    });
+    identityApi.getCurrentProfile
+      .mockResolvedValueOnce({
+        user_id: "uid-1", email: "reader@example.com", username: "Reader",
+        approval_state: "pending", role: "user", email_verified: true,
+      })
+      .mockResolvedValueOnce({
+        user_id: "uid-1", email: "reader@example.com", username: "Reader",
+        approval_state: "approved", role: "user", email_verified: true,
+      });
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Request received" })).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Refresh access status" }));
+    expect(await screen.findByRole("heading", { name: "Access approved" })).toBeInTheDocument();
+    expect(identityApi.getCurrentProfile).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ["rejected", "Request not approved"],
+    ["deactivated", "Account deactivated"],
+  ] as const)("explains a %s account state", async (approval_state, heading) => {
+    const signedInUser = {
+      email: "reader@example.com",
+      emailVerified: true,
+      getIdToken: vi.fn().mockResolvedValue("firebase-token"),
+    };
+    authSdk.onAuthStateChanged.mockImplementation((_auth, callback) => {
+      void callback(signedInUser);
+      return vi.fn();
+    });
+    identityApi.getCurrentProfile.mockResolvedValue({
+      user_id: "uid-1", email: "reader@example.com", username: "Reader",
+      approval_state, role: "user", email_verified: true,
+    });
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: heading })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sign out" })).toBeInTheDocument();
+  });
+
+  it("lets an authenticated Firebase user complete a missing registration profile", async () => {
+    const user = userEvent.setup();
+    const signedInUser = {
+      email: "reader@example.com",
+      emailVerified: true,
+      getIdToken: vi.fn().mockResolvedValue("firebase-token"),
+    };
+    authSdk.onAuthStateChanged.mockImplementation((_auth, callback) => {
+      void callback(signedInUser);
+      return vi.fn();
+    });
+    identityApi.getCurrentProfile.mockRejectedValueOnce(new identityApi.IdentityApiError(404, "missing"));
+    identityApi.registerProfile.mockResolvedValueOnce({
+      user_id: "uid-1", email: "reader@example.com", username: "Reader",
+      approval_state: "pending", role: "user", email_verified: true,
+    });
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Complete registration" })).toBeInTheDocument();
+    await user.type(screen.getByLabelText("Username"), "Reader");
+    await user.click(screen.getByRole("button", { name: "Complete registration" }));
+
+    expect(identityApi.registerProfile).toHaveBeenCalledWith("firebase-token", "Reader");
+    expect(await screen.findByRole("heading", { name: "Request received" })).toBeInTheDocument();
+  });
 });

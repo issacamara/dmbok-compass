@@ -1,0 +1,23 @@
+{
+  "outcomes": ["answer", "qualified", "refusal"],
+  "embeddingDimensions": 768,
+  "telemetryFields": [
+    "request_count",
+    "outcome",
+    "duration_ms",
+    "provider_model",
+    "token_estimate",
+    "quota_utilization",
+    "corpus_version",
+    "configuration_version",
+    "error_class"
+  ],
+  "ephemeralInteractionFields": [
+    "question",
+    "prompt",
+    "passages",
+    "answer",
+    "trace",
+    "excerpt"
+  ]
+}

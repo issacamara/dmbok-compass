@@ -34,3 +34,9 @@ release evaluation requires them.
 Telemetry is content-free and allowlisted to the fields in the fixture. Any
 question, prompt, passage, answer, trace, excerpt, password, token, secret, or
 credential field is rejected.
+
+The administrator metrics API (`/api/admin/metrics`) exposes persisted
+`AggregateMetric` records only. A record contains a metric name, numerator,
+denominator, and percentage, so request counts, quota consumption, provider
+failures, fallback rates, and cost indicators can be reported without storing
+question, answer, passage, or trace content.

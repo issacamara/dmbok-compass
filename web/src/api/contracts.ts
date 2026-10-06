@@ -1,4 +1,5 @@
 export const API_ROUTES = {
+  registration: "/api/registration",
   registrationStatus: "/api/registration/status",
   currentUser: "/api/me",
   answer: "/api/questions",
@@ -15,6 +16,15 @@ export const ADMIN_ROUTES = {
 
 export type Outcome = "answer" | "qualified" | "refusal";
 export type ApprovalState = "pending" | "approved" | "rejected" | "deactivated";
+
+export interface UserProfile {
+  user_id: string;
+  email: string;
+  username: string;
+  approval_state: ApprovalState;
+  role: "user" | "admin";
+  email_verified: boolean;
+}
 
 export interface ApiError {
   code: string;

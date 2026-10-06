@@ -4,6 +4,7 @@ __pycache__/
 .venv/
 *.py[cod]
 web/node_modules/
+web/.env*.local
 web/dist/
 web/*.tsbuildinfo
 web/vite.config.d.ts

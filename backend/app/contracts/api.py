@@ -145,6 +145,7 @@ class ReleaseDecision(ContractModel):
 
 
 API_ROUTES = {
+    "registration": "/api/registration",
     "registration_status": "/api/registration/status",
     "current_user": "/api/me",
     "answer": "/api/questions",

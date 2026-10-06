@@ -5,7 +5,10 @@ locals {
     "cloudbuild.googleapis.com",
     "cloudscheduler.googleapis.com",
     "firestore.googleapis.com",
+    "firebaserules.googleapis.com",
+    "firebase.googleapis.com",
     "firebasehosting.googleapis.com",
+    "identitytoolkit.googleapis.com",
     "iam.googleapis.com",
     "logging.googleapis.com",
     "run.googleapis.com",
@@ -37,6 +40,54 @@ resource "google_firestore_database" "default" {
   type        = "FIRESTORE_NATIVE"
 
   depends_on = [google_project_service.required]
+}
+
+resource "google_firebase_project" "default" {
+  provider = google-beta
+  project  = var.project_id
+
+  depends_on = [google_project_service.required]
+}
+
+resource "google_identity_platform_config" "default" {
+  project = var.project_id
+
+  sign_in {
+    email {
+      enabled           = true
+      password_required = true
+    }
+  }
+
+  depends_on = [google_firebase_project.default]
+}
+
+resource "google_firebaserules_ruleset" "firestore_default_deny" {
+  project = var.project_id
+
+  source {
+    files {
+      name    = "firestore.rules"
+      content = <<-RULES
+        rules_version = '2';
+        service cloud.firestore {
+          match /databases/{database}/documents {
+            match /{document=**} {
+              allow read, write: if false;
+            }
+          }
+        }
+      RULES
+    }
+  }
+
+  depends_on = [google_firestore_database.default]
+}
+
+resource "google_firebaserules_release" "firestore_default" {
+  project      = var.project_id
+  name         = "cloud.firestore"
+  ruleset_name = google_firebaserules_ruleset.firestore_default_deny.name
 }
 
 resource "google_storage_bucket" "corpus" {

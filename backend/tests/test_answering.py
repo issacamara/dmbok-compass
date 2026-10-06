@@ -148,6 +148,8 @@ def test_strong_answer_uses_stored_citation_provenance_and_labels_synthesis() ->
         (4, "Governance", "Stored excerpt chunk-1"),
         (4, "Governance", "Stored excerpt chunk-2"),
     ]
+    assert response.trace.timings_ms["generation_ms"] >= 0
+    assert response.trace.timings_ms["total_ms"] >= response.trace.timings_ms["generation_ms"]
 
 
 def test_partial_evidence_forces_qualified_outcome() -> None:
@@ -181,6 +183,27 @@ def test_unmapped_citation_is_rejected() -> None:
     assert response.outcome == "refusal"
     assert response.error is not None
     assert response.error.code == "grounding_policy_rejected"
+
+
+def test_retrieved_service_includes_retrieval_timing_in_ephemeral_trace() -> None:
+    response = asyncio.run(
+        RetrievedAnswerService(
+            FakeRetriever((passage("chunk-1", 0.9),)),
+            FakeCorpusStore(active_version()),
+            GroundedAnswerPolicy(
+                FakeAdapter(
+                    {
+                        "outcome": "answer",
+                        "answer_text": "Grounded.",
+                        "citations": [{"citation_id": "chunk-1"}],
+                    }
+                )
+            ),
+        ).answer("What is governance?", quota())
+    )
+
+    assert response.trace.timings_ms["retrieval_ms"] >= 0
+    assert response.trace.timings_ms["total_ms"] >= response.trace.timings_ms["retrieval_ms"]
 
 
 def test_provider_failure_is_safe_refusal() -> None:

@@ -17,6 +17,11 @@ export const ADMIN_ROUTES = {
 export type Outcome = "answer" | "qualified" | "refusal";
 export type ApprovalState = "pending" | "approved" | "rejected" | "deactivated";
 
+export interface QuotaPolicy {
+  per_user_daily_limit: number;
+  global_daily_limit: number;
+}
+
 export interface UserProfile {
   user_id: string;
   email: string;

@@ -17,3 +17,28 @@ h1 { max-width: 12ch; font-family: Georgia, serif; font-size: clamp(3rem, 8vw, 6
 .auth-links { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .5rem; margin-top: .5rem; }
 .error { color: #a32323; }
 button:focus-visible, input:focus-visible { outline: 3px solid #a34f2a; outline-offset: 2px; }
+.admin-panel { max-width: 64rem; margin-top: 2rem; }
+.admin-header { display: flex; align-items: start; justify-content: space-between; gap: 2rem; }
+.admin-header h2 { margin: .5rem 0; font-family: Georgia, serif; font-size: clamp(2rem, 5vw, 3.5rem); }
+.admin-grid { display: grid; grid-template-columns: 1.25fr .75fr; gap: 1rem; margin-top: 1.5rem; }
+.admin-card { padding: 1.25rem; border: 1px solid #ddd7cc; border-radius: 1rem; background: #fffefa; }
+.admin-card h3 { margin-top: 0; font-family: Georgia, serif; font-size: 1.4rem; }
+.section-heading { display: flex; align-items: start; justify-content: space-between; gap: 1rem; }
+.section-heading label, .quota-form { display: grid; gap: .45rem; }
+.section-heading label { font-size: .85rem; font-weight: 650; }
+select, .quota-form input { padding: .55rem; border: 1px solid #aaa397; border-radius: .45rem; font: inherit; }
+.user-list { display: grid; gap: .75rem; padding: 0; list-style: none; }
+.user-list li { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: .75rem; padding: .85rem 0; border-top: 1px solid #ebe6dd; }
+.user-list li div:first-child { display: grid; gap: .2rem; }
+.user-list li span { color: #665f55; font-size: .85rem; }
+.state { padding: .25rem .5rem; border-radius: 999px; background: #eee9df; text-transform: capitalize; }
+.state-pending { color: #8a5a00 !important; background: #fff0c2; }
+.state-approved { color: #195c45 !important; background: #d9eee3; }
+.user-actions { display: flex; gap: .4rem; }
+.user-actions button, .quota-form button { min-height: 2.35rem; padding: .5rem .7rem; border: 0; border-radius: .4rem; color: white; background: #195c45; font: inherit; font-weight: 650; cursor: pointer; }
+.user-actions .danger { background: #8d3028; }
+.user-actions button:disabled, .quota-form button:disabled { opacity: .6; cursor: wait; }
+.quota-form { margin-top: 1.25rem; }
+.quota-form label { margin-top: .35rem; font-weight: 650; }
+.secondary { min-height: 2.75rem; padding: .65rem .85rem; border: 1px solid #195c45; border-radius: .45rem; color: #195c45; background: transparent; font: inherit; font-weight: 650; cursor: pointer; }
+@media (max-width: 760px) { .admin-header, .section-heading { flex-direction: column; } .admin-grid { grid-template-columns: 1fr; } .user-list li { grid-template-columns: 1fr; } }

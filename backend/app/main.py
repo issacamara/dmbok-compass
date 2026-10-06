@@ -1,7 +1,10 @@
+from datetime import datetime, timezone
+from functools import lru_cache
+
 from fastapi import Depends, FastAPI, Query, status
 from fastapi.responses import JSONResponse
 
-from app.contracts.api import UserProfile
+from app.contracts.api import QuotaPolicy, QuotaStatus, UserProfile
 from app.identity import (
     ApprovalUpdate,
     FirestoreUserRepository,
@@ -10,10 +13,12 @@ from app.identity import (
     RegistrationRequest,
     RegistrationStatus,
     get_admin_user,
+    get_approved_user,
     get_current_profile,
     get_user_repository,
     verify_firebase_token,
 )
+from app.quota import FirestoreQuotaRepository, QuotaExceededError, QuotaRepository
 
 app = FastAPI(title="DMBOK Compass API", version="0.1.0")
 
@@ -21,6 +26,37 @@ app = FastAPI(title="DMBOK Compass API", version="0.1.0")
 @app.exception_handler(IdentityError)
 async def identity_error_handler(_, exc: IdentityError) -> JSONResponse:
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
+
+
+@app.exception_handler(QuotaExceededError)
+async def quota_error_handler(_, exc: QuotaExceededError) -> JSONResponse:
+    status_value = exc.status
+    limit = status_value.user_limit if exc.scope == "user" else status_value.global_limit
+    return JSONResponse(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        content={
+            "detail": {
+                "code": f"{exc.scope}_daily_quota_exceeded",
+                "message": str(exc),
+                "limit": limit,
+                "resets_at": status_value.resets_at.isoformat(),
+            }
+        },
+        headers={
+            "Retry-After": str(
+                max(1, int((status_value.resets_at - datetime.now(timezone.utc)).total_seconds()))
+            )
+        },
+    )
+
+
+@lru_cache(maxsize=1)
+def get_quota_repository() -> FirestoreQuotaRepository:
+    return FirestoreQuotaRepository()
+
+
+def quota_repository() -> QuotaRepository:
+    return get_quota_repository()
 
 
 @app.get("/health", tags=["system"])
@@ -61,6 +97,23 @@ def current_user(
     return profile
 
 
+@app.get("/api/quota", response_model=QuotaStatus)
+def current_quota(
+    profile: UserProfile = Depends(get_approved_user),
+    repository: QuotaRepository = Depends(quota_repository),
+) -> QuotaStatus:
+    """Return only the authenticated user's current UTC-day quota status."""
+    return repository.status(profile.user_id)
+
+
+def reserve_request_quota(
+    profile: UserProfile = Depends(get_approved_user),
+    repository: QuotaRepository = Depends(quota_repository),
+) -> QuotaStatus:
+    """Reserve one request before any billable answering work starts."""
+    return repository.reserve(profile.user_id)
+
+
 @app.get("/api/admin/users", response_model=list[UserProfile])
 def list_users(
     approval_state: str | None = Query(default=None, pattern="^(pending|approved|rejected|deactivated)$"),
@@ -79,3 +132,20 @@ def update_user_approval(
     repository: FirestoreUserRepository = Depends(get_user_repository),
 ) -> UserProfile:
     return repository.set_approval(user_id, request.approval_state)
+
+
+@app.get("/api/admin/configuration", response_model=QuotaPolicy)
+def get_configuration(
+    _: UserProfile = Depends(get_admin_user),
+    repository: QuotaRepository = Depends(quota_repository),
+) -> QuotaPolicy:
+    return repository.get_policy()
+
+
+@app.patch("/api/admin/configuration", response_model=QuotaPolicy)
+def update_configuration(
+    policy: QuotaPolicy,
+    _: UserProfile = Depends(get_admin_user),
+    repository: QuotaRepository = Depends(quota_repository),
+) -> QuotaPolicy:
+    return repository.update_policy(policy)

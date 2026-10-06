@@ -40,6 +40,8 @@ uses read-only repository access and checks the two workspaces independently:
   `pip-audit`.
 - Web: run `npm ci`, `npm test -- --run`, `npm run build`, and
   `npm audit --audit-level=high`.
+- Terraform: run formatting and configuration validation for
+  `infra/terraform/`.
 
 Run the same checks locally before opening a pull request:
 
@@ -55,6 +57,11 @@ npm ci
 npm test -- --run
 npm run build
 npm audit --audit-level=high
+
+cd ../infra/terraform
+terraform fmt -check -recursive .
+terraform init -backend=false -input=false
+terraform validate
 ```
 
 ## Workspace boundaries

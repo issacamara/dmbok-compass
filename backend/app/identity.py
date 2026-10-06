@@ -14,6 +14,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from app.contracts.api import UserProfile
 
 APPROVED_USER_LIMIT = 10
+APPROVAL_TRANSITIONS: dict[str, frozenset[str]] = {
+    "pending": frozenset({"pending", "approved", "rejected"}),
+    "approved": frozenset({"approved", "deactivated"}),
+    "rejected": frozenset({"rejected"}),
+    "deactivated": frozenset({"deactivated"}),
+}
 
 
 class IdentityPrincipal(BaseModel):
@@ -95,6 +101,15 @@ def _next_approved_count(current: int, was_approved: bool, will_be_approved: boo
     if was_approved and not will_be_approved:
         return max(0, current - 1)
     return current
+
+
+def _validate_approval_transition(current: str, target: str) -> None:
+    """Allow only the approval lifecycle transitions exposed by the API."""
+    if target not in APPROVAL_TRANSITIONS.get(current, frozenset()):
+        raise IdentityError(
+            f"A user cannot move from {current} to {target}.",
+            status.HTTP_409_CONFLICT,
+        )
 
 
 class FirestoreUserRepository:
@@ -179,6 +194,7 @@ class FirestoreUserRepository:
             if not profile_snapshot.exists:
                 raise IdentityError("User profile was not found.", status.HTTP_404_NOT_FOUND)
             profile = UserProfile.model_validate(profile_snapshot.to_dict())
+            _validate_approval_transition(profile.approval_state, approval_state)
             if approval_state == "approved" and not profile.email_verified:
                 raise IdentityError("The user must verify their email before approval.")
 

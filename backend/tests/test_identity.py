@@ -1,4 +1,6 @@
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -14,6 +16,7 @@ from app.identity import (
     get_approved_user,
     get_current_profile,
     require_approved_user,
+    _validate_approval_transition,
     verify_firebase_token,
 )
 from app.main import app
@@ -23,6 +26,7 @@ class MemoryUserRepository:
     def __init__(self) -> None:
         self.profiles: dict[str, UserProfile] = {}
         self.approved_count = 0
+        self._approval_lock = Lock()
 
     def get(self, user_id: str) -> UserProfile | None:
         return self.profiles.get(user_id)
@@ -59,19 +63,21 @@ class MemoryUserRepository:
         return users[:limit]
 
     def set_approval(self, user_id: str, approval_state: str) -> UserProfile:
-        profile = self.profiles.get(user_id)
-        if profile is None:
-            raise IdentityError("User profile was not found.", 404)
-        if approval_state == "approved" and not profile.email_verified:
-            raise IdentityError("The user must verify their email before approval.")
-        self.approved_count = _next_approved_count(
-            self.approved_count,
-            profile.approval_state == "approved",
-            approval_state == "approved",
-        )
-        updated = profile.model_copy(update={"approval_state": approval_state})
-        self.profiles[user_id] = updated
-        return updated
+        with self._approval_lock:
+            profile = self.profiles.get(user_id)
+            if profile is None:
+                raise IdentityError("User profile was not found.", 404)
+            _validate_approval_transition(profile.approval_state, approval_state)
+            if approval_state == "approved" and not profile.email_verified:
+                raise IdentityError("The user must verify their email before approval.")
+            self.approved_count = _next_approved_count(
+                self.approved_count,
+                profile.approval_state == "approved",
+                approval_state == "approved",
+            )
+            updated = profile.model_copy(update={"approval_state": approval_state})
+            self.profiles[user_id] = updated
+            return updated
 
 
 @pytest.fixture
@@ -208,6 +214,88 @@ def test_admin_cannot_approve_unverified_user_or_exceed_the_limit(identity_clien
     full = client.patch("/api/admin/users/firebase-user-1", json={"approval_state": "approved"})
     assert full.status_code == 409
     assert "limit" in full.json()["detail"]
+
+
+def test_concurrent_approvals_never_exceed_the_user_limit(identity_client) -> None:
+    _, repository = identity_client
+    for index in range(APPROVED_USER_LIMIT + 1):
+        repository.profiles[f"reader-{index}"] = UserProfile(
+            user_id=f"reader-{index}",
+            email=f"reader-{index}@example.com",
+            username=f"Reader {index}",
+            approval_state="pending",
+            email_verified=True,
+        )
+
+    def approve(user_id: str) -> int:
+        try:
+            repository.set_approval(user_id, "approved")
+        except IdentityError as error:
+            return error.status_code
+        return 200
+
+    with ThreadPoolExecutor(max_workers=APPROVED_USER_LIMIT + 1) as executor:
+        statuses = list(executor.map(approve, [f"reader-{index}" for index in range(APPROVED_USER_LIMIT + 1)]))
+
+    assert statuses.count(200) == APPROVED_USER_LIMIT
+    assert statuses.count(409) == 1
+    assert repository.approved_count == APPROVED_USER_LIMIT
+
+
+def test_deactivation_revokes_access_immediately(identity_client) -> None:
+    client, repository = identity_client
+    repository.profiles["admin"] = UserProfile(
+        user_id="admin",
+        email="admin@example.com",
+        username="Admin",
+        approval_state="approved",
+        role="admin",
+        email_verified=True,
+    )
+    repository.profiles["reader"] = UserProfile(
+        user_id="reader",
+        email="reader@example.com",
+        username="Reader",
+        approval_state="approved",
+        email_verified=True,
+    )
+    repository.approved_count = 1
+    app.dependency_overrides[verify_firebase_token] = lambda: IdentityPrincipal(
+        user_id="admin", email="admin@example.com", email_verified=True
+    )
+
+    response = client.patch("/api/admin/users/reader", json={"approval_state": "deactivated"})
+    assert response.status_code == 200
+    assert repository.approved_count == 0
+
+    with pytest.raises(IdentityError) as error:
+        require_approved_user(repository.profiles["reader"])
+    assert error.value.status_code == 403
+
+
+def test_terminal_approval_states_cannot_be_reopened(identity_client) -> None:
+    client, repository = identity_client
+    repository.profiles["admin"] = UserProfile(
+        user_id="admin",
+        email="admin@example.com",
+        username="Admin",
+        approval_state="approved",
+        role="admin",
+        email_verified=True,
+    )
+    repository.profiles["reader"] = UserProfile(
+        user_id="reader",
+        email="reader@example.com",
+        username="Reader",
+        approval_state="rejected",
+        email_verified=True,
+    )
+    app.dependency_overrides[verify_firebase_token] = lambda: IdentityPrincipal(
+        user_id="admin", email="admin@example.com", email_verified=True
+    )
+
+    response = client.patch("/api/admin/users/reader", json={"approval_state": "approved"})
+    assert response.status_code == 409
 
 
 def test_approved_access_gate_rejects_pending_and_unverified_profiles() -> None:

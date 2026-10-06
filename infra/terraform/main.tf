@@ -1,0 +1,86 @@
+locals {
+  required_services = toset([
+    "aiplatform.googleapis.com",
+    "artifactregistry.googleapis.com",
+    "cloudbuild.googleapis.com",
+    "cloudscheduler.googleapis.com",
+    "firestore.googleapis.com",
+    "firebasehosting.googleapis.com",
+    "iam.googleapis.com",
+    "logging.googleapis.com",
+    "run.googleapis.com",
+    "secretmanager.googleapis.com",
+    "storage.googleapis.com",
+  ])
+
+  service_accounts = {
+    runtime   = "${var.name_prefix}-runtime"
+    worker    = "${var.name_prefix}-worker"
+    scheduler = "${var.name_prefix}-scheduler"
+    build     = "${var.name_prefix}-build"
+    hosting   = "${var.name_prefix}-hosting"
+  }
+}
+
+resource "google_project_service" "required" {
+  for_each = local.required_services
+
+  project            = var.project_id
+  service            = each.value
+  disable_on_destroy = false
+}
+
+resource "google_firestore_database" "default" {
+  project     = var.project_id
+  name        = "(default)"
+  location_id = var.region
+  type        = "FIRESTORE_NATIVE"
+
+  depends_on = [google_project_service.required]
+}
+
+resource "google_storage_bucket" "corpus" {
+  project                     = var.project_id
+  name                        = var.corpus_bucket_name
+  location                    = var.region
+  uniform_bucket_level_access = true
+  public_access_prevention    = "enforced"
+
+  versioning {
+    enabled = true
+  }
+
+  lifecycle_rule {
+    condition {
+      age = 30
+    }
+    action {
+      type = "Delete"
+    }
+  }
+
+  depends_on = [google_project_service.required]
+}
+
+resource "google_artifact_registry_repository" "containers" {
+  project       = var.project_id
+  location      = var.region
+  repository_id = var.artifact_repository_id
+  description   = "Immutable DMBOK Compass container images"
+  format        = "DOCKER"
+
+  depends_on = [google_project_service.required]
+}
+
+resource "google_secret_manager_secret" "managed" {
+  for_each = var.secret_names
+
+  project   = var.project_id
+  secret_id = each.value
+
+  replication {
+    auto {}
+  }
+
+  depends_on = [google_project_service.required]
+}

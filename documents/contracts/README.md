@@ -12,6 +12,14 @@ evaluation datasets/items/annotations/runs, release decisions, and content-free
 aggregate metrics. Firebase Authentication owns credentials and reset tokens;
 Cloud Storage owns the source PDF and ingestion artifacts.
 
+Registration creates a pending `UserProfile` from the verified Firebase
+identity. The approval lifecycle is transactional: `pending` may become
+`approved` or `rejected`, an `approved` profile may become `deactivated`, and
+`rejected`/`deactivated` profiles cannot be reopened through the approval API.
+Approval and the serialized approved-user counter are committed together, so
+concurrent approvals cannot exceed the ten-user limit. Every protected request
+reloads the profile, making deactivation effective immediately.
+
 `DocumentChunk` IDs are deterministic from corpus version and source position.
 Embeddings are exactly 768 dimensions. Corpus versions are immutable after
 creation, move through staged/validated/active/retired states, and activate via

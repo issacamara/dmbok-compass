@@ -1,10 +1,18 @@
 from datetime import datetime, timezone
 from functools import lru_cache
 
-from fastapi import Depends, FastAPI, Query, status
+from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 
-from app.contracts.api import AggregateMetric, QuotaPolicy, QuotaStatus, UserProfile
+from app.answering import QuestionAnswerer
+from app.contracts.api import (
+    AggregateMetric,
+    AnswerResponse,
+    QuotaPolicy,
+    QuotaStatus,
+    QuestionRequest,
+    UserProfile,
+)
 from app.identity import (
     ApprovalUpdate,
     FirestoreUserRepository,
@@ -122,6 +130,31 @@ def reserve_request_quota(
 ) -> QuotaStatus:
     """Reserve one request before any billable answering work starts."""
     return repository.reserve(profile.user_id)
+
+
+def question_answerer() -> QuestionAnswerer:
+    """Resolve the configured answerer; production wiring is runtime-specific."""
+    configured = getattr(app.state, "question_answerer", None)
+    if configured is not None:
+        return configured
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail={
+            "code": "answer_service_unavailable",
+            "message": "The grounded answer service is not configured.",
+            "retryable": True,
+        },
+    )
+
+
+@app.post("/api/questions", response_model=AnswerResponse)
+async def answer_question(
+    request: QuestionRequest,
+    quota: QuotaStatus = Depends(reserve_request_quota),
+    answerer: QuestionAnswerer = Depends(question_answerer),
+) -> AnswerResponse:
+    """Reserve quota before invoking the request-scoped grounded answerer."""
+    return await answerer.answer(request.question, quota)
 
 
 @app.get("/api/admin/users", response_model=list[UserProfile])

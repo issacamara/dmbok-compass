@@ -47,7 +47,7 @@ Run the same checks locally before opening a pull request:
 cd backend
 python -m pip install -e '.[test]' pip-audit
 pytest
-pip-audit --strict
+pip-audit --strict --skip-editable
 
 cd ../web
 npm ci

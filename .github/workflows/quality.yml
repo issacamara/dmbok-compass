@@ -38,7 +38,7 @@ jobs:
         run: pytest
 
       - name: Audit Python dependencies
-        run: pip-audit --strict
+        run: pip-audit --strict --skip-editable
 
   frontend:
     name: Frontend tests, build, and audit

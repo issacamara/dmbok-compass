@@ -37,8 +37,11 @@ jobs:
       - name: Run backend tests
         run: pytest
 
+      - name: Remove local package before dependency audit
+        run: python -m pip uninstall --yes dmbok-compass-backend
+
       - name: Audit Python dependencies
-        run: pip-audit --strict --skip-editable
+        run: pip-audit --strict
 
   frontend:
     name: Frontend tests, build, and audit

@@ -47,7 +47,8 @@ Run the same checks locally before opening a pull request:
 cd backend
 python -m pip install -e '.[test]' pip-audit
 pytest
-pip-audit --strict --skip-editable
+python -m pip uninstall --yes dmbok-compass-backend
+pip-audit --strict
 
 cd ../web
 npm ci

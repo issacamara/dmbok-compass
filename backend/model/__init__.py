@@ -1,5 +1,10 @@
-"""Provider-neutral model generation contracts and local test adapters."""
+"""Provider-neutral generation contracts and model adapters."""
 
+from .openrouter import (
+    OPENROUTER_FALLBACK_MODEL,
+    OPENROUTER_PRIMARY_MODEL,
+    OpenRouterAdapter,
+)
 from .protocol import (
     GenerationCandidate,
     GenerationError,
@@ -20,6 +25,9 @@ __all__ = [
     "GenerationRequest",
     "GenerationResult",
     "ModelAdapter",
+    "OpenRouterAdapter",
+    "OPENROUTER_FALLBACK_MODEL",
+    "OPENROUTER_PRIMARY_MODEL",
     "Passage",
     "TimeoutBudget",
     "UsageMetadata",

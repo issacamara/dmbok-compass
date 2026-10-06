@@ -8,7 +8,7 @@
 
 ## 1. Executive Summary
 
-DMBOK Compass will be a small, access-controlled retrieval-augmented generation application hosted primarily on Google Cloud. A React and TypeScript browser application will call a Python FastAPI modular monolith on Cloud Run, with Firebase Authentication enforcing verified identity and administrator approval. Firestore Native mode will hold application records, versioned evaluation data, corpus chunks, and a 768-dimensional native vector index; production interaction content will remain ephemeral. Vertex AI will generate corpus and query embeddings, while primary and fallback answer models will use the approved Google Gemini API through a provider-neutral adapter. Offline Cloud Run Jobs will ingest the searchable DMBOK PDF and preserve page and chapter or section provenance. The design favors managed, scale-to-zero services to support no more than 10 approved users, three concurrent users, a 100-request default daily cap, and a €5 monthly GCP infrastructure limit. Release remains blocked until provider availability, budget, quality, latency, and privacy gates and the sponsor’s accepted publisher-rights decision are evidenced.
+DMBOK Compass will be a small, access-controlled retrieval-augmented generation application hosted primarily on Google Cloud. A React and TypeScript browser application will call a Python FastAPI modular monolith on Cloud Run, with Firebase Authentication enforcing verified identity and administrator approval. Firestore Native mode will hold application records, versioned evaluation data, corpus chunks, and a 768-dimensional native vector index; production interaction content will remain ephemeral. Vertex AI will generate corpus and query embeddings, while primary and fallback answer models will use the approved OpenRouter gateway through a provider-neutral adapter. Offline Cloud Run Jobs will ingest the searchable DMBOK PDF and preserve page and chapter or section provenance. The design favors managed, scale-to-zero services to support no more than 10 approved users, three concurrent users, a 100-request default daily cap, and a €5 monthly GCP infrastructure limit. Release remains blocked until gateway availability, upstream privacy terms, budget, quality, latency, and privacy gates and the sponsor’s accepted publisher-rights decision are evidenced.
 
 ## 2. Business Context & Drivers
 
@@ -143,9 +143,9 @@ flowchart LR
 ### 5.4 External Model Adapter
 
 - **Purpose and responsibilities:** Stable internal generation contract; provider-specific authentication, payload mapping, timeouts, normalized errors, primary/fallback routing, token and cost metadata, and privacy-safe handling.
-- **Classification:** **New.** Provider coupling remains isolated in one adapter so the approved Google Gemini API can be replaced without changing application contracts.
+- **Classification:** **New.** Provider coupling remains isolated in one adapter so the approved OpenRouter gateway can be replaced without changing application contracts.
 - **Interfaces and data owned:** Accepts ephemeral prompt, retrieved passages, output schema, and timeout; returns answer candidates and non-content operational metadata. Owns no persistent data.
-- **Technology:** A small Python protocol and one Google Gemini API adapter. The fallback is `gemini-2.5-flash` behind primary `gemini-2.5-flash-lite` for the first release.
+- **Technology:** A small Python protocol and one OpenRouter adapter. The fallback is `nvidia/nemotron-3.5-lightning:free` behind primary `google/gemma-2-27b-it` for the first release.
 
 ### 5.5 Firebase Authentication
 
@@ -178,7 +178,7 @@ flowchart LR
 ### 5.9 External Hosted Answer Models
 
 - **Purpose and responsibilities:** Generate structured, corpus-grounded answer candidates from supplied ephemeral evidence; provide primary and fallback model capacity.
-- **Classification:** **Reused.** Hosted inference is required by the BRD and budget; self-hosting is disproportionate. Google Gemini API is selected, with paid-tier production use and release-gated model/budget validation.
+- **Classification:** **Reused.** Hosted inference is required by the BRD and budget; self-hosting is disproportionate. OpenRouter is selected, with upstream privacy, model, and budget validation required before production use.
 - **Interfaces and data owned:** HTTPS provider API accessed only through the adapter. Data treatment must meet sponsor-approved no-training/minimal-retention terms; the application does not authorize provider-side persistence.
 - **Technology:** One external provider with two configured models for the first release.
 
@@ -260,7 +260,7 @@ Cloud Scheduler invokes Cloud Run Jobs using a dedicated authenticated service a
 | Vertex AI Vector Search | Strong dedicated vector scaling | Extra service, cost, and operational complexity | Rejected | Corpus size and traffic do not require it |
 | React/Vite SPA on Firebase Hosting | Small static artifact, preview channels, low cost | No server-side rendering | Selected | Authenticated tool does not require SEO or SSR |
 | Next.js/SSR | Server rendering and integrated routes | Additional runtime and complexity | Rejected | No stated business requirement |
-| Google Gemini API for both answer models | One adapter and approved paid-tier no-training terms | Provider-wide outages and paid usage affect both models | Selected | Provider decision record; sponsor approval |
+| OpenRouter for both answer models | One gateway adapter, Gemma 2 primary, and free fallback | Gateway and upstream terms affect both models | Selected | Provider decision record; sponsor approval |
 | Vertex AI Gemini as fallback | GCP-aligned provider diversity | Contradicts approved all-external answer-model decision | Rejected | Sponsor selected external fallback |
 | Same provider for primary and fallback | One credential and adapter; model-level resilience | No provider-level resilience | Selected as assumption | Sponsor confirmed “same for now” |
 | Custom authentication | Full control | Password, email, throttling, and recovery risk | Rejected | Firebase provides safer managed capability |
@@ -276,8 +276,8 @@ Cloud Scheduler invokes Cloud Run Jobs using a dedicated authenticated service a
 
 1. **A-01 — Greenfield repository.** No reusable application code or infrastructure exists. **Owner:** solution design. **Validation:** repository inspection completed; revisit if external assets are supplied.
 2. **A-02 — GCP placement.** One production GCP project uses `europe-west1`; local emulators and preview revisions replace permanent staging. **Owner:** sponsor. **Validation:** confirm project and immutable Firestore location before provisioning.
-3. **A-03 — External answer provider.** Google Gemini API provides primary `gemini-2.5-flash-lite` and fallback `gemini-2.5-flash` through the provider-neutral adapter. **Owner:** sponsor. **Validation:** revalidate model availability and provider evaluation before production release.
-4. **A-04 — Provider privacy terms.** Production uses the paid Gemini API tier, with provider logs configured to the documented seven-day minimum and application interactions remaining ephemeral. **Owner:** sponsor. **Validation:** retain [provider decision evidence](decisions/provider.md) and verify terms before release.
+3. **A-03 — External answer provider.** OpenRouter provides primary `google/gemma-2-27b-it` and fallback `nvidia/nemotron-3.5-lightning:free` through the provider-neutral adapter. **Owner:** sponsor. **Validation:** revalidate model availability, upstream route, and provider evaluation before production release.
+4. **A-04 — Provider privacy terms.** Production sends only minimum ephemeral context through OpenRouter; upstream no-training and minimal-retention terms must be reviewed for the selected route. **Owner:** sponsor. **Validation:** retain [provider decision evidence](decisions/provider.md) and verify terms before release.
 5. **A-05 — Quota defaults.** Per-user and global limits both initially default to 100 accepted requests per UTC day and remain administrator-configurable. **Owner:** sponsor. **Validation:** confirm in acceptance testing and cost baseline.
 6. **A-06 — Cost boundary.** GCP infrastructure must remain at or below €5 monthly, and external answer models must remain within a separately sponsor-approved paid-provider budget. **Owner:** sponsor. **Validation:** pre-release forecast, configured hard cap, and monthly review.
 7. **A-07 — Corpus extractability.** The searchable PDF provides enough structure to recover accurate page and chapter or section provenance. **Owner:** corpus owner. **Validation:** ingestion spike and human-reviewed gold subset.
@@ -293,7 +293,7 @@ Cloud Scheduler invokes Cloud Run Jobs using a dedicated authenticated service a
 | Risk | Impact | Likelihood | Mitigation |
 |------|--------|------------|------------|
 | Publisher restrictions may prohibit ingestion, embeddings, provider transmission, or excerpts | High; may prevent lawful multi-user release | High | Seek written permission and qualified legal advice; keep corpus/access narrow; sponsor records final release decision. |
-| External answer provider or models change | High; integration, latency, quality, and cost can regress | Medium | Stable adapter; pin model IDs and repeat provider evaluation before release. |
+| OpenRouter gateway or upstream models change | High; integration, latency, quality, privacy, and cost can regress | Medium | Stable adapter; pin model IDs, review upstream terms, and repeat provider evaluation before release. |
 | Provider may retain or train on prompts and excerpts | High privacy and contractual exposure | Medium/High | Require reviewed no-training/minimal-retention terms, minimize context, warn users, and block release without approval. |
 | Both answer models share one provider | Provider-wide outage defeats fallback | Medium | Honest error response, bounded circuit breaker, best-effort SLA; revisit provider diversity after first release. |
 | Free tiers or service terms may change | Cost or availability can exceed constraints | High | Configurable quotas, spend monitoring, model configuration outside code, and release/operation exception process. |
@@ -315,7 +315,7 @@ Create atomic implementation issues in this dependency order:
 3. **Application data and quotas (M):** Firestore schema, indexes, security posture, per-user/global UTC counters, admin configuration, and aggregate metrics. Depends on 1–2.
 4. **Corpus storage and ingestion spike (L):** Cloud Storage, PDF extraction, provenance validation, chunk strategy, deterministic IDs, Vertex embeddings, staged corpus versions, and rebuild runbook. Depends on 1 and infrastructure foundation.
 5. **Retrieval service (M):** query embeddings, active-version filtering, Firestore vector search, candidate selection, evidence thresholds, and top-five benchmark harness. Depends on 3–4.
-6. **External model adapter (M):** provider-neutral protocol, Google Gemini primary/fallback routing, structured output, timeouts, circuit breaker, safe usage metadata, and provider contract tests. Can begin with a fake adapter after 1; live credentials and traffic remain release-gated.
+6. **External model adapter (M):** provider-neutral protocol, OpenRouter primary/fallback routing, structured output, timeouts, circuit breaker, safe usage metadata, and provider contract tests. Can begin with a fake adapter after 1; live credentials and traffic remain release-gated.
 7. **Grounded answering pipeline (L):** quota reservation, retrieval, prompt policy, answer/qualified/refusal outcomes, synthesis labels, citation validation, ephemeral trace, and privacy tests. Depends on 3, 5, and 6.
 8. **User web experience (M):** responsive auth and chat workflows, answer/citation/trace rendering, quotas, errors, privacy warning, and WCAG checks. Depends on frozen contracts from 1 and backend capabilities from 2 and 7.
 9. **Administration (M):** pending/approved users, limits, anonymous aggregates, corpus/evaluation status, and release decision UI. Depends on 2–4.
@@ -366,5 +366,5 @@ reused_components:
   - Google Cloud Operations and Delivery Platform
 blocking_risks:
   - Publisher-rights clearance remains unresolved for multi-user release
-  - Paid-tier provider budget, live model availability, and runtime provider evaluation remain release gates
+  - OpenRouter API key, upstream privacy review, live model availability, and runtime provider evaluation remain release gates
 ```

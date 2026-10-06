@@ -17,6 +17,9 @@ type Mode = "sign-in" | "sign-up" | "reset-password" | "complete-profile";
 const errors: Record<string, string> = {
   "auth/email-already-in-use": "An account already exists for this email. Try signing in.",
   "auth/invalid-credential": "Email or password is incorrect.",
+  "auth/user-not-found": "Email or password is incorrect.",
+  "auth/wrong-password": "Email or password is incorrect.",
+  "auth/user-disabled": "This Firebase account has been disabled. Contact the administrator.",
   "auth/invalid-email": "Enter a valid email address.",
   "auth/weak-password": "Choose a stronger password with at least 6 characters.",
   "auth/too-many-requests": "Too many attempts. Wait a little and try again.",
@@ -40,6 +43,24 @@ export function AuthPanel() {
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
   const activeMode = user?.emailVerified && profileMissing ? "complete-profile" : mode;
+
+  async function refreshProfile(currentUser: User): Promise<void> {
+    setLoading(true);
+    setError("");
+    try {
+      setProfile(await getCurrentProfile(await currentUser.getIdToken()));
+      setProfileMissing(false);
+    } catch (cause) {
+      if (cause instanceof IdentityApiError && cause.status === 404) {
+        setProfile(null);
+        setProfileMissing(true);
+      } else {
+        setError("Could not load your account access status. Try again shortly.");
+      }
+    } finally {
+      setLoading(false);
+    }
+  }
 
   useEffect(() => {
     let active = true;
@@ -160,7 +181,10 @@ export function AuthPanel() {
         <p className="intro">{description}</p>
         <p>Signed in as {profile.email}.</p>
         {error && <p className="error" role="alert">{error}</p>}
-        <button className="secondary" onClick={logout}>Sign out</button>
+        <button disabled={loading} onClick={() => refreshProfile(user)}>
+          {loading ? "Checking…" : "Refresh access status"}
+        </button>
+        <button className="secondary" onClick={logout} type="button">Sign out</button>
       </section>
     );
   }
@@ -171,19 +195,10 @@ export function AuthPanel() {
         <h2 id="access-check-title">Checking account access</h2>
         <p className="intro">Your sign-in succeeded, but the registration service did not return your account status.</p>
         {error && <p className="error" role="alert">{error}</p>}
-        <button onClick={async () => {
-          setLoading(true);
-          setError("");
-          try {
-            setProfile(await getCurrentProfile(await user.getIdToken()));
-          } catch (cause) {
-            if (cause instanceof IdentityApiError && cause.status === 404) setProfileMissing(true);
-            else setError("Could not load your account access status. Try again shortly.");
-          } finally {
-            setLoading(false);
-          }
-        }}>Retry account check</button>
-        <button className="secondary" onClick={logout}>Sign out</button>
+        <button onClick={() => refreshProfile(user)} disabled={loading}>
+          {loading ? "Checking…" : "Retry account check"}
+        </button>
+        <button className="secondary" onClick={logout} type="button">Sign out</button>
       </section>
     );
   }
@@ -195,8 +210,8 @@ export function AuthPanel() {
         <p className="intro">Use the link sent to {user.email} to verify your address before continuing.</p>
         {message && <p role="status">{message}</p>}
         {error && <p className="error" role="alert">{error}</p>}
-        <button disabled={busy} onClick={resendVerification}>{busy ? "Sending…" : "Resend verification link"}</button>
-        <button className="secondary" onClick={logout}>Sign out</button>
+        <button disabled={busy} onClick={resendVerification} type="button">{busy ? "Sending…" : "Resend verification link"}</button>
+        <button className="secondary" onClick={logout} type="button">Sign out</button>
       </section>
     );
   }
@@ -230,10 +245,10 @@ export function AuthPanel() {
       {message && <p role="status">{message}</p>}
       {!user && <div className="auth-links">
         {activeMode === "sign-in" && <>
-          <button className="link" onClick={() => { setMode("reset-password"); setError(""); setMessage(""); }}>Forgot password?</button>
-          <button className="link" onClick={() => { setMode("sign-up"); setError(""); setMessage(""); }}>Request access</button>
+          <button className="link" onClick={() => { setMode("reset-password"); setError(""); setMessage(""); }} type="button">Forgot password?</button>
+          <button className="link" onClick={() => { setMode("sign-up"); setError(""); setMessage(""); }} type="button">Request access</button>
         </>}
-        {activeMode !== "sign-in" && <button className="link" onClick={() => { setMode("sign-in"); setError(""); setMessage(""); }}>Back to sign in</button>}
+        {activeMode !== "sign-in" && <button className="link" onClick={() => { setMode("sign-in"); setError(""); setMessage(""); }} type="button">Back to sign in</button>}
       </div>}
     </section>
   );

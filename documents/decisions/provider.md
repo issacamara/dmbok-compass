@@ -68,6 +68,31 @@ Reviewed 2026-10-06:
   current token pricing and free-tier limits; pricing is not frozen by this
   record.
 
+## Production validation evidence
+
+Environment validated 2026-10-06:
+
+- Project: `prod-dmbok-compass` (`290754673794`), active and linked to the
+  EUR billing account `main-billing-account`.
+- Budget: recurring monthly budget of `5 EUR`, scoped to the production project
+  only, with current-spend thresholds at 50%, 90%, and 100%, plus a 90%
+  forecast threshold. Budget resource:
+  `billingAccounts/014869-D92661-32A1E6/budgets/eab851fe-bfb4-4bd5-95f9-5140e990b638`.
+- APIs: Cloud Billing Budget API and Vertex AI API are enabled in the
+  production project.
+- Model metadata: both selected model IDs resolved successfully through the
+  Google Gen AI SDK using production-project ADC.
+- Structured smoke generation: both models returned `{"ok":true}` with
+  `STOP` completion using a synthetic 10-token prompt. Observed latency was
+  approximately 1.42 seconds for `gemini-2.5-flash-lite` and 0.96 seconds for
+  `gemini-2.5-flash`.
+
+These checks validate credentials, model availability, and a minimal runtime
+path only. They do not replace the full corpus-grounding, citation, fallback,
+load, or end-to-end evaluation gates. Google Cloud budgets are alerting
+controls, not automatic spending cutoffs; the application’s daily quota and
+the configured provider budget must both remain enforced operationally.
+
 ## Contract impact
 
 This decision consumes the provider-neutral `ModelAdapter` protocol and keeps

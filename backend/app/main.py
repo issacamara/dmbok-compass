@@ -4,7 +4,7 @@ from functools import lru_cache
 from fastapi import Depends, FastAPI, Query, status
 from fastapi.responses import JSONResponse
 
-from app.contracts.api import QuotaPolicy, QuotaStatus, UserProfile
+from app.contracts.api import AggregateMetric, QuotaPolicy, QuotaStatus, UserProfile
 from app.identity import (
     ApprovalUpdate,
     FirestoreUserRepository,
@@ -18,6 +18,7 @@ from app.identity import (
     get_user_repository,
     verify_firebase_token,
 )
+from app.metrics import AggregateMetricRepository, FirestoreAggregateMetricRepository
 from app.quota import FirestoreQuotaRepository, QuotaExceededError, QuotaRepository
 
 app = FastAPI(title="DMBOK Compass API", version="0.1.0")
@@ -57,6 +58,15 @@ def get_quota_repository() -> FirestoreQuotaRepository:
 
 def quota_repository() -> QuotaRepository:
     return get_quota_repository()
+
+
+@lru_cache(maxsize=1)
+def get_aggregate_metric_repository() -> FirestoreAggregateMetricRepository:
+    return FirestoreAggregateMetricRepository()
+
+
+def aggregate_metric_repository() -> AggregateMetricRepository:
+    return get_aggregate_metric_repository()
 
 
 @app.get("/health", tags=["system"])
@@ -149,3 +159,12 @@ def update_configuration(
     repository: QuotaRepository = Depends(quota_repository),
 ) -> QuotaPolicy:
     return repository.update_policy(policy)
+
+
+@app.get("/api/admin/metrics", response_model=list[AggregateMetric], tags=["admin"])
+def list_aggregate_metrics(
+    _: UserProfile = Depends(get_admin_user),
+    repository: AggregateMetricRepository = Depends(aggregate_metric_repository),
+) -> list[AggregateMetric]:
+    """Return allowlisted aggregate metrics without interaction content."""
+    return repository.list_metrics()

@@ -11,24 +11,25 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import isfinite
+from time import perf_counter
 from typing import Any, Iterable, Literal, Protocol
 
 from app.contracts import (
     AnswerResponse,
     ApiError,
-    Citation,
     QuotaStatus,
     RetrievedPassage,
     RetrievalTrace,
 )
 from model.protocol import (
-    GenerationCandidate,
     GenerationError,
     GenerationRequest,
     ModelAdapter,
     Passage,
     TimeoutBudget,
 )
+
+from .citations import validated_citations
 
 EvidenceOutcome = Literal["strong", "partial", "absent"]
 STRONG_EVIDENCE_THRESHOLD = 0.75
@@ -124,24 +125,32 @@ class GroundedAnswerPolicy:
         question: str,
         passages: Iterable[RetrievedPassage],
         quota: QuotaStatus,
+        *,
+        retrieval_ms: float | None = None,
     ) -> AnswerResponse:
         """Return a cited answer, qualified answer, or evidence-based refusal."""
 
         if not question or not question.strip():
             raise ValueError("question must be non-empty")
 
+        started = perf_counter()
         retrieved = tuple(passages)[:MAX_EVIDENCE_PASSAGES]
         evidence = classify_evidence(retrieved)
+        timings = {"retrieval_ms": retrieval_ms} if retrieval_ms is not None else {}
         trace = RetrievalTrace(
             retrieved_passages=list(retrieved),
             selected_model=self._model_name,
+            timings_ms=timings,
         )
         if evidence.outcome == "absent":
-            return AnswerResponse(
-                outcome="refusal",
-                answer_text=REFUSAL_TEXT,
-                trace=trace,
-                quota=quota,
+            return self._finalize(
+                AnswerResponse(
+                    outcome="refusal",
+                    answer_text=REFUSAL_TEXT,
+                    trace=trace,
+                    quota=quota,
+                ),
+                started,
             )
 
         request = GenerationRequest(
@@ -158,39 +167,75 @@ class GroundedAnswerPolicy:
                 for passage in evidence.passages
             ],
         )
+        generation_started = perf_counter()
         try:
             result = await self._adapter.generate(
                 request.model_copy(update={"timeout": TimeoutBudget(total_ms=self._timeout_ms)})
             )
         except GenerationError as exc:
-            return self._operational_refusal(trace, quota, exc)
-
-        trace = trace.model_copy(update={"selected_model": result.usage.model})
-        candidate = result.candidate
-        if candidate.outcome == "refusal":
-            return AnswerResponse(
-                outcome="refusal",
-                answer_text=candidate.answer_text or REFUSAL_TEXT,
-                trace=trace,
-                quota=quota,
+            return self._finalize(
+                self._operational_refusal(trace, quota, exc),
+                started,
+                generation_started,
             )
 
-        citations = _validated_citations(candidate, evidence.passages)
+        trace = trace.model_copy(
+            update={
+                "selected_model": result.usage.model,
+                "timings_ms": {
+                    **trace.timings_ms,
+                    "generation_ms": _elapsed_ms(generation_started),
+                },
+            }
+        )
+        candidate = result.candidate
+        if candidate.outcome == "refusal":
+            return self._finalize(
+                AnswerResponse(
+                    outcome="refusal",
+                    answer_text=candidate.answer_text or REFUSAL_TEXT,
+                    trace=trace,
+                    quota=quota,
+                ),
+                started,
+            )
+
+        citations = validated_citations(candidate, evidence.passages)
         if not citations:
-            return self._policy_refusal(
-                trace,
-                quota,
-                "The model response did not contain a citation to supplied evidence.",
+            return self._finalize(
+                self._policy_refusal(
+                    trace,
+                    quota,
+                    "The model response did not contain a citation to supplied evidence.",
+                ),
+                started,
             )
 
         outcome = "qualified" if evidence.outcome == "partial" else candidate.outcome
-        return AnswerResponse(
-            outcome=outcome,
-            answer_text=candidate.answer_text,
-            synthesis=candidate.synthesis or len(citations) > 1,
-            citations=citations,
-            trace=trace,
-            quota=quota,
+        return self._finalize(
+            AnswerResponse(
+                outcome=outcome,
+                answer_text=candidate.answer_text,
+                synthesis=candidate.synthesis or len(citations) > 1,
+                citations=citations,
+                trace=trace,
+                quota=quota,
+            ),
+            started,
+        )
+
+    @staticmethod
+    def _finalize(
+        response: AnswerResponse,
+        started: float,
+        generation_started: float | None = None,
+    ) -> AnswerResponse:
+        timings = dict(response.trace.timings_ms)
+        if generation_started is not None and "generation_ms" not in timings:
+            timings["generation_ms"] = _elapsed_ms(generation_started)
+        timings["total_ms"] = _elapsed_ms(started)
+        return response.model_copy(
+            update={"trace": response.trace.model_copy(update={"timings_ms": timings})}
         )
 
     def service_refusal(
@@ -234,29 +279,8 @@ class GroundedAnswerPolicy:
         )
 
 
-def _validated_citations(
-    candidate: GenerationCandidate,
-    passages: tuple[RetrievedPassage, ...],
-) -> list[Citation]:
-    """Accept only model citation IDs that map to stored passage provenance."""
-
-    by_id = {passage.chunk_id: passage for passage in passages}
-    citations: list[Citation] = []
-    seen: set[str] = set()
-    for citation in candidate.citations:
-        passage = by_id.get(citation.citation_id)
-        if passage is None or citation.citation_id in seen:
-            continue
-        seen.add(citation.citation_id)
-        citations.append(
-            Citation(
-                citation_id=passage.chunk_id,
-                page=passage.page,
-                section=passage.section,
-                excerpt=passage.excerpt,
-            )
-        )
-    return citations
+def _elapsed_ms(started: float) -> float:
+    return round(max(0.0, (perf_counter() - started) * 1000), 3)
 
 
 class QuestionAnswerer(Protocol):
@@ -297,9 +321,15 @@ class RetrievedAnswerService:
                 code="active_corpus_unavailable",
                 message="No active DMBOK corpus is available.",
             )
+        retrieval_started = perf_counter()
         passages = self._retriever.retrieve(
             question,
             active_corpus_version_id=active.version_id,
             limit=MAX_EVIDENCE_PASSAGES,
         )
-        return await self._policy.answer(question, passages, quota)
+        return await self._policy.answer(
+            question,
+            passages,
+            quota,
+            retrieval_ms=_elapsed_ms(retrieval_started),
+        )

@@ -34,6 +34,11 @@ Firebase project; they are not service account credentials. Local development
 can point Authentication at the emulator with
 `VITE_FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099`.
 
+Firestore's `document_chunks` collection stores immutable chunk provenance,
+the 768-dimensional `gemini-embedding-001` document vector, and its
+`corpus_version_id`. The native vector index combines the corpus-version
+filter with the embedding field so retrieval can never cross corpus versions.
+
 ## Validate and plan
 
 From this directory:

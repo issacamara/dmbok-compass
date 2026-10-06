@@ -25,6 +25,12 @@ Embeddings are exactly 768 dimensions. Corpus versions are immutable after
 creation, move through staged/validated/active/retired states, and activate via
 one pointer so the previous valid version can be restored.
 
+Live retrieval embeds the question with the `RETRIEVAL_QUERY` task type and the
+same 768-dimensional embedding model used for document chunks. Firestore
+nearest-neighbor search must filter on the active corpus-version ID before
+returning at most five ranked passages. Each passage preserves its chunk ID,
+page, section, excerpt, and available relevance score for the answer trace.
+
 Production questions, prompts, retrieved passages, generated answers, and
 request traces are ephemeral. They must not be persisted to Firestore, Storage,
 logs, analytics, traces, backups, or build artifacts. Evaluation-authored

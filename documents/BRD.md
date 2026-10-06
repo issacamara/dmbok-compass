@@ -43,7 +43,7 @@ The initial thresholds may be recalibrated after the first baseline run, but any
 | SM-05 | Correct refusal behavior | At least 95% | Questions designated unanswerable from the corpus trigger the required refusal. |
 | SM-06 | End-to-end response time | At least 95% within 15 seconds | Complete answer and citations under normal test conditions with up to three simultaneous users. |
 | SM-07 | Approved-user ceiling | 100% compliance | No more than 10 approved user accounts can access question answering. |
-| SM-08 | Infrastructure cost | No more than €5 per month | Sponsor review of infrastructure usage and charges; hosted LLMs are expected to use free tiers. |
+| SM-08 | Infrastructure cost | No more than €5 per month for GCP infrastructure, plus an approved provider budget | Sponsor review of infrastructure and provider usage; production provider calls use the approved paid tier. |
 
 ## 3. Stakeholders and user groups
 
@@ -142,7 +142,7 @@ An approved user signs in, asks a question in English, and receives a complete a
 |---|---|---|---|---|
 | NFR-001 | At least 95% of normal tested requests shall return the complete answer and citations within 15 seconds. | Sponsor | Must | A representative performance test records at least 95% completion within 15 seconds, measured end to end. |
 | NFR-002 | The service shall support up to three simultaneous users under normal use. | Sponsor | Must | A three-user concurrency test completes without data leakage or functional failure and meets NFR-001's threshold. |
-| NFR-003 | Infrastructure cost shall not exceed €5 per month under the planned usage profile; hosted LLM usage shall use free tiers unless the sponsor changes this constraint. | Sponsor | Must | Monthly cost review shows no more than €5 in infrastructure charges, or release/continued operation requires an approved exception. |
+| NFR-003 | GCP infrastructure shall not exceed €5 per month under the planned usage profile; hosted LLM usage shall remain within the sponsor-approved provider budget. | Sponsor | Must | Monthly review shows GCP charges at or below €5 and provider charges within the configured hard cap, or release/continued operation stops. |
 | NFR-004 | All application traffic carrying credentials or protected content shall use HTTPS. | Confirmed checkpoint assumption | Must | Security verification finds no supported plaintext HTTP path for registration, authentication, administration, or question answering. |
 | NFR-005 | Passwords shall be stored using an industry-standard salted password-hashing method and shall never be logged or stored in plaintext. | Confirmed checkpoint assumption | Must | Storage and log inspection reveal no plaintext passwords; security tests verify the configured password hashing. |
 | NFR-006 | Authentication endpoints shall be protected by login throttling and secure reset tokens. | Confirmed checkpoint assumption | Must | Repeated failed authentication is throttled, and reset tokens are single-use, expire, and do not reveal whether unrelated accounts exist. |
@@ -152,7 +152,7 @@ An approved user signs in, asks a question in English, and receives a complete a
 | NFR-010 | Persistent application data shall be restorable within 24 hours; the corpus index may be rebuilt from the source PDF. | Sponsor | Must | A restore exercise recovers accounts, configuration, aggregate usage, and evaluation records within 24 hours, and the index rebuild procedure succeeds. |
 | NFR-011 | Interaction content shall be ephemeral within the application and excluded from persistent logs, analytics, and backups. | Sponsor | Must | Privacy verification confirms that completed request content is absent from persistent application storage, analytics, logs, and backups. |
 | NFR-012 | Evaluation results shall be reproducible and traceable to dataset, corpus, retrieval, prompt, model, and scoring configuration versions where those identifiers are available. | Product objective | Must | An evaluation report lists the available version identifiers needed to distinguish the tested release candidate. |
-| NFR-013 | Availability shall be best-effort within free-provider and €5-per-month constraints; operational failures shall be reported clearly. | Sponsor | Must | Provider or infrastructure failure produces a clear, non-misleading service message and does not produce an ungrounded answer. |
+| NFR-013 | Availability shall be best-effort within the approved provider budget and €5-per-month GCP constraint; operational failures shall be reported clearly. | Sponsor | Must | Provider or infrastructure failure produces a clear, non-misleading service message and does not produce an ungrounded answer. |
 | NFR-014 | The system shall prevent one authenticated user from accessing another user's account data or administrative functions. | Product objective | Must | Authorization tests demonstrate user isolation and reject non-admin access to administration endpoints. |
 
 ## 9. Data, reporting, integration, security, privacy, and compliance
@@ -186,7 +186,7 @@ An approved user signs in, asks a question in English, and receives a complete a
 - Access is restricted to approved authenticated users; administrative functions are restricted to the administrator role.
 - Multifactor authentication is explicitly out of scope. The associated administrator account-takeover risk is accepted, subject to password, throttling, HTTPS, and recovery controls.
 - Users must be warned not to submit confidential or personal information because hosted providers may process or retain requests.
-- Provider terms should prefer no-training and minimal-retention treatment. The minimum acceptable provider terms remain to be confirmed.
+- The approved provider decision requires paid-tier no-training treatment and minimal provider-log retention; the application must continue to warn users not to submit confidential or personal information.
 - Secrets and provider credentials must not be exposed to browser clients or committed to source control.
 
 ### 9.5 Copyright and licensing
@@ -200,7 +200,7 @@ The sponsor has explicitly decided to proceed without publisher permission and a
 ### 10.1 Assumptions and constraints
 
 - The €5 infrastructure limit is monthly.
-- Hosted LLMs will be used through free tiers.
+- Production hosted LLMs will use the approved paid tier; free-tier use is limited to isolated, non-sensitive development experiments.
 - The source PDF is searchable and contains sufficient structural information to recover pages and chapter/section labels.
 - The sponsor will provide approximately 200 representative evaluation questions.
 - The sponsor can review and approve generated annotations for 30–50 representative questions.
@@ -260,8 +260,8 @@ There is no separate pilot cohort. At launch, all accounts approved by the admin
 | ID | Open question | Owner | Why it matters |
 |---|---|---|---|
 | OQ-01 | What is the default global daily request cap? | Sponsor | It determines maximum load and protection against provider and budget exhaustion. |
-| OQ-02 | Which primary and fallback providers meet the functional, capacity, cost, and data-handling requirements? | Sponsor / solution design | Provider limits and terms affect availability, privacy, and feasibility. |
-| OQ-03 | What provider retention and training terms are minimally acceptable? | Sponsor | The application cannot promise non-retention if a provider retains request data. |
+| OQ-02 | Does the selected Google Gemini API configuration pass live functional, capacity, cost, and data-handling validation? | Sponsor / solution design | Provider limits and terms affect availability, privacy, and feasibility. |
+| OQ-03 | Do the selected paid-tier provider terms remain no-training with minimal configured retention? | Sponsor | The application cannot promise non-retention if a provider retains request data. |
 | OQ-04 | What distribution of answerable, partially answerable, unanswerable, and use-case categories will the ~200-question set contain? | Sponsor / evaluator | Balanced coverage is necessary for meaningful quality and refusal metrics. |
 | OQ-05 | Will publisher permission or qualified legal advice be obtained before multi-user release? | Sponsor | Licensing remains a high-severity unresolved release risk even though the sponsor has accepted it. |
 

@@ -12,6 +12,7 @@ from .protocol import (
     UsageMetadata,
     parse_candidate,
 )
+from .gemini import FALLBACK_MODEL, PRIMARY_MODEL, GeminiAdapter, create_gemini_adapter
 
 __all__ = [
     "GenerationCandidate",
@@ -24,4 +25,8 @@ __all__ = [
     "TimeoutBudget",
     "UsageMetadata",
     "parse_candidate",
+    "FALLBACK_MODEL",
+    "PRIMARY_MODEL",
+    "GeminiAdapter",
+    "create_gemini_adapter",
 ]

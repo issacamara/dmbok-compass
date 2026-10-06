@@ -35,6 +35,15 @@ in the Firebase web app configuration. Set
 `VITE_FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099` to use the local Authentication
 emulator during development.
 
+The backend uses Application Default Credentials to verify Firebase ID tokens
+and access Firestore. Local development needs Google Application Default
+Credentials and the Firebase project ID used by the web app. Registration
+creates a pending `users/{Firebase UID}` profile; only an approved, email
+verified profile can pass the backend access gate. The initial administrator
+must be provisioned out of band in Firestore with `role: "admin"`,
+`approval_state: "approved"`, and `email_verified: true` after verifying the
+Firebase UID and email.
+
 ## Pull-request quality checks
 
 Pull requests and pushes to `main` run `.github/workflows/quality.yml`. The workflow

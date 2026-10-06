@@ -1,9 +1,15 @@
 pyproject.toml
 app/__init__.py
+app/identity.py
 app/main.py
+app/contracts/__init__.py
+app/contracts/api.py
+app/contracts/telemetry.py
 dmbok_compass_backend.egg-info/PKG-INFO
 dmbok_compass_backend.egg-info/SOURCES.txt
 dmbok_compass_backend.egg-info/dependency_links.txt
 dmbok_compass_backend.egg-info/requires.txt
 dmbok_compass_backend.egg-info/top_level.txt
+tests/test_contracts.py
 tests/test_health.py
+tests/test_identity.py

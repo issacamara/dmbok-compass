@@ -11,6 +11,7 @@ describe("frozen API contracts", () => {
 
   it("keeps logical route names stable", () => {
     expect(API_ROUTES.answer).toBe("/api/questions");
+    expect(API_ROUTES.registration).toBe("/api/registration");
     expect(API_ROUTES.currentUser).toBe("/api/me");
   });
 

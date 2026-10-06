@@ -11,9 +11,17 @@ const authSdk = vi.hoisted(() => ({
   signInWithEmailAndPassword: vi.fn(),
   signOut: vi.fn(),
 }));
+const identityApi = vi.hoisted(() => ({
+  getCurrentProfile: vi.fn(),
+  registerProfile: vi.fn(),
+  IdentityApiError: class IdentityApiError extends Error {
+    constructor(readonly status: number, message: string) { super(message); }
+  },
+}));
 
 vi.mock("firebase/auth", () => authSdk);
 vi.mock("./firebase", () => ({ auth: {}, firebaseConfigured: true }));
+vi.mock("./api/identity", () => identityApi);
 
 describe("Firebase email and password identity", () => {
   beforeEach(() => {
@@ -22,11 +30,21 @@ describe("Firebase email and password identity", () => {
       callback(null);
       return vi.fn();
     });
-    authSdk.createUserWithEmailAndPassword.mockResolvedValue({ user: { email: "reader@example.com" } });
+    authSdk.createUserWithEmailAndPassword.mockResolvedValue({
+      user: { email: "reader@example.com", getIdToken: vi.fn().mockResolvedValue("firebase-token") },
+    });
     authSdk.signInWithEmailAndPassword.mockResolvedValue({ user: { email: "reader@example.com", emailVerified: true } });
     authSdk.sendEmailVerification.mockResolvedValue(undefined);
     authSdk.sendPasswordResetEmail.mockResolvedValue(undefined);
     authSdk.signOut.mockResolvedValue(undefined);
+    identityApi.registerProfile.mockResolvedValue({
+      user_id: "uid-1", email: "reader@example.com", username: "Reader",
+      approval_state: "pending", role: "user", email_verified: false,
+    });
+    identityApi.getCurrentProfile.mockResolvedValue({
+      user_id: "uid-1", email: "reader@example.com", username: "Reader",
+      approval_state: "pending", role: "user", email_verified: true,
+    });
   });
 
   it("renders the workspace and email sign-in form", async () => {
@@ -41,12 +59,15 @@ describe("Firebase email and password identity", () => {
     const user = userEvent.setup();
     render(<App />);
     await user.click(await screen.findByRole("button", { name: "Request access" }));
+    await user.type(screen.getByLabelText("Username"), "Reader");
     await user.type(screen.getByLabelText("Email"), "reader@example.com");
     await user.type(screen.getByLabelText("Password"), "secure-pass");
     await user.click(screen.getByRole("button", { name: "Request access" }));
 
     await waitFor(() => expect(authSdk.createUserWithEmailAndPassword).toHaveBeenCalledWith({}, "reader@example.com", "secure-pass"));
-    expect(authSdk.sendEmailVerification).toHaveBeenCalledWith({ email: "reader@example.com" });
+    expect(identityApi.registerProfile).toHaveBeenCalledWith("firebase-token", "Reader");
+    expect(authSdk.sendEmailVerification).toHaveBeenCalledTimes(1);
+    expect(authSdk.sendEmailVerification.mock.calls[0][0].email).toBe("reader@example.com");
     expect(authSdk.signOut).toHaveBeenCalled();
     expect(await screen.findByRole("status")).toHaveTextContent(/verification link/i);
   });
@@ -72,5 +93,25 @@ describe("Firebase email and password identity", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/verify your email/i);
     expect(authSdk.signOut).toHaveBeenCalled();
+  });
+
+  it("shows pending approval status from the backend for a verified Firebase user", async () => {
+    const signedInUser = {
+      email: "reader@example.com",
+      emailVerified: true,
+      getIdToken: vi.fn().mockResolvedValue("firebase-token"),
+    };
+    authSdk.onAuthStateChanged.mockImplementation((_auth, callback) => {
+      void callback(signedInUser);
+      return vi.fn();
+    });
+    identityApi.getCurrentProfile.mockResolvedValue({
+      user_id: "uid-1", email: "reader@example.com", username: "Reader",
+      approval_state: "pending", role: "user", email_verified: true,
+    });
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "Request received" })).toBeInTheDocument();
+    expect(identityApi.getCurrentProfile).toHaveBeenCalledWith("firebase-token");
   });
 });

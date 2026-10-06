@@ -8,9 +8,11 @@ import {
   signOut,
   type User,
 } from "firebase/auth";
+import { getCurrentProfile, IdentityApiError, registerProfile } from "./api/identity";
+import type { UserProfile } from "./api/contracts";
 import { auth, firebaseConfigured } from "./firebase";
 
-type Mode = "sign-in" | "sign-up" | "reset-password";
+type Mode = "sign-in" | "sign-up" | "reset-password" | "complete-profile";
 
 const errors: Record<string, string> = {
   "auth/email-already-in-use": "An account already exists for this email. Try signing in.",
@@ -31,18 +33,45 @@ function authError(error: unknown): string {
 export function AuthPanel() {
   const [mode, setMode] = useState<Mode>("sign-in");
   const [user, setUser] = useState<User | null>(null);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [profileMissing, setProfileMissing] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [error, setError] = useState("");
+  const activeMode = user?.emailVerified && profileMissing ? "complete-profile" : mode;
 
-  useEffect(() => onAuthStateChanged(auth, (currentUser) => {
-    setUser(currentUser);
-    setLoading(false);
-  }, () => {
-    setError("Could not connect to the identity service. Refresh to try again.");
-    setLoading(false);
-  }), []);
+  useEffect(() => {
+    let active = true;
+    const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
+      if (currentUser?.emailVerified) setLoading(true);
+      setUser(currentUser);
+      setProfile(null);
+      setProfileMissing(false);
+      if (currentUser?.emailVerified) {
+        try {
+          const currentProfile = await getCurrentProfile(await currentUser.getIdToken());
+          if (active) setProfile(currentProfile);
+        } catch (cause) {
+          if (active && cause instanceof IdentityApiError && cause.status === 404) {
+            setProfileMissing(true);
+          } else if (active) {
+            setError("Could not load your account access status. Try again shortly.");
+          }
+        }
+      }
+      if (active) setLoading(false);
+    }, () => {
+      if (active) {
+        setError("Could not connect to the identity service. Refresh to try again.");
+        setLoading(false);
+      }
+    });
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, []);
 
   if (!firebaseConfigured) {
     return <p role="alert">Firebase Authentication is not configured. Add the Firebase web app settings to `web/.env.local`.</p>;
@@ -56,13 +85,20 @@ export function AuthPanel() {
     const form = new FormData(event.currentTarget);
     const email = String(form.get("email") ?? "").trim();
     const password = String(form.get("password") ?? "");
+    const username = String(form.get("username") ?? "").trim();
     try {
-      if (mode === "sign-up") {
+      if (activeMode === "complete-profile") {
+        if (!user) throw new Error("Sign in to finish your registration.");
+        setProfile(await registerProfile(await user.getIdToken(), username));
+        setProfileMissing(false);
+        setMessage("Your registration request is complete.");
+      } else if (mode === "sign-up") {
         const credential = await createUserWithEmailAndPassword(auth, email, password);
+        await registerProfile(await credential.user.getIdToken(), username);
         await sendEmailVerification(credential.user);
         await signOut(auth);
         setMode("sign-in");
-        setMessage("Check your inbox for a verification link before signing in.");
+        setMessage("Check your inbox for a verification link. Your request will wait for administrator approval.");
       } else if (mode === "reset-password") {
         await sendPasswordResetEmail(auth, email);
         setMessage("If an account exists for that email, a password reset link is on its way.");
@@ -74,7 +110,9 @@ export function AuthPanel() {
         }
       }
     } catch (cause) {
-      setError(authError(cause));
+      setError(cause instanceof IdentityApiError
+        ? "Your Firebase account is ready, but the registration service could not save your request. Sign in again to retry."
+        : authError(cause));
     } finally {
       setBusy(false);
     }
@@ -95,20 +133,62 @@ export function AuthPanel() {
     }
   }
 
-  if (loading) return <p role="status">Checking your sign-in…</p>;
+  async function logout() {
+    setError("");
+    try {
+      await signOut(auth);
+      setProfile(null);
+      setMessage("");
+    } catch (cause) {
+      setError(authError(cause));
+    }
+  }
 
-  if (user?.emailVerified) {
+  if (loading) return <p role="status">Checking your account and access…</p>;
+
+  if (user?.emailVerified && profile) {
+    const stateContent = {
+      pending: ["Request received", "Your email is verified. An administrator must approve your account before you can use DMBOK Compass."],
+      approved: ["Access approved", "Your account is verified and approved."],
+      rejected: ["Request not approved", "An administrator did not approve this account. Contact the DMBOK Compass administrator if you need help."],
+      deactivated: ["Account deactivated", "This account no longer has access. Contact the DMBOK Compass administrator if you need help."],
+    } as const;
+    const [title, description] = stateContent[profile.approval_state];
     return (
-      <section className="auth-card" aria-labelledby="signed-in-title">
-        <h2 id="signed-in-title">You’re signed in</h2>
-        <p className="intro">Signed in as {user.email}.</p>
-        <p role="status">Your account is email verified.</p>
-        <button className="secondary" onClick={() => signOut(auth)}>Sign out</button>
+      <section className="auth-card" aria-labelledby="account-title">
+        <h2 id="account-title">{title}</h2>
+        <p className="intro">{description}</p>
+        <p>Signed in as {profile.email}.</p>
+        {error && <p className="error" role="alert">{error}</p>}
+        <button className="secondary" onClick={logout}>Sign out</button>
       </section>
     );
   }
 
-  if (user) {
+  if (user?.emailVerified && !profile && !profileMissing) {
+    return (
+      <section className="auth-card" aria-labelledby="access-check-title">
+        <h2 id="access-check-title">Checking account access</h2>
+        <p className="intro">Your sign-in succeeded, but the registration service did not return your account status.</p>
+        {error && <p className="error" role="alert">{error}</p>}
+        <button onClick={async () => {
+          setLoading(true);
+          setError("");
+          try {
+            setProfile(await getCurrentProfile(await user.getIdToken()));
+          } catch (cause) {
+            if (cause instanceof IdentityApiError && cause.status === 404) setProfileMissing(true);
+            else setError("Could not load your account access status. Try again shortly.");
+          } finally {
+            setLoading(false);
+          }
+        }}>Retry account check</button>
+        <button className="secondary" onClick={logout}>Sign out</button>
+      </section>
+    );
+  }
+
+  if (user && !user.emailVerified) {
     return (
       <section className="auth-card" aria-labelledby="verify-title">
         <h2 id="verify-title">Verify your email</h2>
@@ -116,34 +196,45 @@ export function AuthPanel() {
         {message && <p role="status">{message}</p>}
         {error && <p className="error" role="alert">{error}</p>}
         <button disabled={busy} onClick={resendVerification}>{busy ? "Sending…" : "Resend verification link"}</button>
-        <button className="secondary" onClick={() => signOut(auth)}>Sign out</button>
+        <button className="secondary" onClick={logout}>Sign out</button>
       </section>
     );
   }
 
-  const heading = mode === "sign-up" ? "Request access" : mode === "reset-password" ? "Reset password" : "Sign in";
+  const heading = activeMode === "sign-up" ? "Request access"
+    : activeMode === "reset-password" ? "Reset password"
+      : activeMode === "complete-profile" ? "Complete registration" : "Sign in";
+
   return (
     <section className="auth-card" aria-labelledby="auth-title">
       <h2 id="auth-title">{heading}</h2>
-      <p className="intro">Use your email and password to access DMBOK Compass.</p>
+      <p className="intro">{activeMode === "complete-profile"
+        ? "Add a username to submit your registration request for administrator approval."
+        : "Use your email and password to access DMBOK Compass."}</p>
       <form onSubmit={submit}>
-        <label htmlFor="email">Email</label>
-        <input id="email" name="email" type="email" autoComplete="email" required />
-        {mode !== "reset-password" && <>
+        {(activeMode === "sign-up" || activeMode === "complete-profile") && <>
+          <label htmlFor="username">Username</label>
+          <input id="username" name="username" autoComplete="nickname" maxLength={80} required />
+        </>}
+        {activeMode !== "complete-profile" && <>
+          <label htmlFor="email">Email</label>
+          <input id="email" name="email" type="email" autoComplete="email" required />
+        </>}
+        {activeMode !== "reset-password" && activeMode !== "complete-profile" && <>
           <label htmlFor="password">Password</label>
-          <input id="password" name="password" type="password" autoComplete={mode === "sign-up" ? "new-password" : "current-password"} minLength={6} required />
+          <input id="password" name="password" type="password" autoComplete={activeMode === "sign-up" ? "new-password" : "current-password"} minLength={6} required />
         </>}
         <button disabled={busy} type="submit">{busy ? "Please wait…" : heading}</button>
       </form>
       {error && <p className="error" role="alert">{error}</p>}
       {message && <p role="status">{message}</p>}
-      <div className="auth-links">
-        {mode === "sign-in" && <>
+      {!user && <div className="auth-links">
+        {activeMode === "sign-in" && <>
           <button className="link" onClick={() => { setMode("reset-password"); setError(""); setMessage(""); }}>Forgot password?</button>
           <button className="link" onClick={() => { setMode("sign-up"); setError(""); setMessage(""); }}>Request access</button>
         </>}
-        {mode !== "sign-in" && <button className="link" onClick={() => { setMode("sign-in"); setError(""); setMessage(""); }}>Back to sign in</button>}
-      </div>
+        {activeMode !== "sign-in" && <button className="link" onClick={() => { setMode("sign-in"); setError(""); setMessage(""); }}>Back to sign in</button>}
+      </div>}
     </section>
   );
 }

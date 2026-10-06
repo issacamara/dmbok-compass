@@ -10,6 +10,9 @@ from app.identity import (
     IdentityPrincipal,
     _next_approved_count,
     get_user_repository,
+    get_admin_user,
+    get_approved_user,
+    get_current_profile,
     require_approved_user,
     verify_firebase_token,
 )
@@ -115,6 +118,22 @@ def test_identity_routes_require_a_bearer_token() -> None:
     assert response.status_code == 401
     assert response.headers["www-authenticate"] == "Bearer"
 
+    empty_token = TestClient(app).get("/api/me", headers={"Authorization": "Bearer "})
+    assert empty_token.status_code == 401
+    assert empty_token.headers["www-authenticate"] == "Bearer"
+
+
+def test_invalid_firebase_token_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    def reject_token(*_, **__):
+        raise ValueError("invalid token")
+
+    monkeypatch.setattr("app.identity.auth.verify_id_token", reject_token)
+
+    response = TestClient(app).get("/api/me", headers={"Authorization": "Bearer invalid"})
+
+    assert response.status_code == 401
+    assert response.headers["www-authenticate"] == "Bearer"
+
 
 def test_registration_status_and_profile_refresh_verification(identity_client) -> None:
     client, _ = identity_client
@@ -207,6 +226,32 @@ def test_approved_access_gate_rejects_pending_and_unverified_profiles() -> None:
     with pytest.raises(IdentityError) as error:
         require_approved_user(unverified)
     assert error.value.status_code == 403
+
+    deactivated = pending.model_copy(update={"approval_state": "deactivated", "email_verified": True})
+    with pytest.raises(IdentityError) as error:
+        require_approved_user(deactivated)
+    assert error.value.status_code == 403
+
+
+def test_dependency_layers_load_profiles_and_enforce_roles() -> None:
+    approved_user = UserProfile(
+        user_id="reader",
+        email="reader@example.com",
+        username="Reader",
+        approval_state="approved",
+        email_verified=True,
+    )
+    admin = approved_user.model_copy(update={"role": "admin"})
+    repository = MemoryUserRepository()
+    repository.profiles[approved_user.user_id] = approved_user
+    principal = IdentityPrincipal(user_id="reader", email="reader@example.com", email_verified=True)
+
+    assert get_current_profile(principal, repository) == approved_user
+    assert get_approved_user(approved_user) == approved_user
+    with pytest.raises(IdentityError) as error:
+        get_admin_user(approved_user)
+    assert error.value.status_code == 403
+    assert get_admin_user(admin) == admin
 
 
 def test_approved_user_counter_changes_only_on_state_transitions() -> None:

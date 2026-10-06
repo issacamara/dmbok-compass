@@ -6,7 +6,7 @@ from functools import lru_cache
 from typing import Literal
 
 import firebase_admin
-from fastapi import Header, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 from firebase_admin import auth, firestore
 from google.cloud import firestore as google_firestore
 from pydantic import BaseModel, ConfigDict, Field
@@ -63,7 +63,11 @@ def verify_firebase_token(authorization: str | None = Header(default=None)) -> I
         )
     token = authorization.removeprefix("Bearer ").strip()
     if not token:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid bearer token.")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid bearer token.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     try:
         claims = auth.verify_id_token(token, app=_firebase_app(), check_revoked=True)
         email = claims.get("email")
@@ -232,3 +236,25 @@ def require_admin(profile: UserProfile) -> UserProfile:
     if profile.role != "admin":
         raise IdentityError("Administrator access is required.", status.HTTP_403_FORBIDDEN)
     return profile
+
+
+def get_current_profile(
+    principal: IdentityPrincipal = Depends(verify_firebase_token),
+    repository: FirestoreUserRepository = Depends(get_user_repository),
+) -> UserProfile:
+    """Load the durable profile for the Firebase identity on every request."""
+    return current_profile(principal, repository)
+
+
+def get_approved_user(
+    profile: UserProfile = Depends(get_current_profile),
+) -> UserProfile:
+    """Authorize verified, approved users for protected application operations."""
+    return require_approved_user(profile)
+
+
+def get_admin_user(
+    profile: UserProfile = Depends(get_current_profile),
+) -> UserProfile:
+    """Authorize the approved administrator role for administrative operations."""
+    return require_admin(profile)

@@ -44,6 +44,14 @@ must be provisioned out of band in Firestore with `role: "admin"`,
 `approval_state: "approved"`, and `email_verified: true` after verifying the
 Firebase UID and email.
 
+Every API request that reads a profile first verifies the Firebase ID token and
+loads `users/{uid}` from Firestore. Application operations must use the approved
+user dependency; administrative operations additionally require `role: "admin"`.
+Missing or invalid tokens return HTTP 401, while unverified, pending, rejected,
+deactivated, and non-admin profiles return HTTP 403. Registration status remains
+available to an authenticated user so the client can explain why access is not
+yet available.
+
 ## Pull-request quality checks
 
 Pull requests and pushes to `main` run `.github/workflows/quality.yml`. The workflow

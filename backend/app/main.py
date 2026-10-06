@@ -9,9 +9,9 @@ from app.identity import (
     IdentityPrincipal,
     RegistrationRequest,
     RegistrationStatus,
-    current_profile,
+    get_admin_user,
+    get_current_profile,
     get_user_repository,
-    require_admin,
     verify_firebase_token,
 )
 
@@ -56,21 +56,18 @@ def registration_status(
 
 @app.get("/api/me", response_model=UserProfile)
 def current_user(
-    principal: IdentityPrincipal = Depends(verify_firebase_token),
-    repository: FirestoreUserRepository = Depends(get_user_repository),
+    profile: UserProfile = Depends(get_current_profile),
 ) -> UserProfile:
-    return current_profile(principal, repository)
+    return profile
 
 
 @app.get("/api/admin/users", response_model=list[UserProfile])
 def list_users(
     approval_state: str | None = Query(default=None, pattern="^(pending|approved|rejected|deactivated)$"),
     limit: int = Query(default=100, ge=1, le=100),
-    principal: IdentityPrincipal = Depends(verify_firebase_token),
+    _: UserProfile = Depends(get_admin_user),
     repository: FirestoreUserRepository = Depends(get_user_repository),
 ) -> list[UserProfile]:
-    admin = current_profile(principal, repository)
-    require_admin(admin)
     return repository.list_profiles(approval_state, limit)
 
 
@@ -78,9 +75,7 @@ def list_users(
 def update_user_approval(
     user_id: str,
     request: ApprovalUpdate,
-    principal: IdentityPrincipal = Depends(verify_firebase_token),
+    _: UserProfile = Depends(get_admin_user),
     repository: FirestoreUserRepository = Depends(get_user_repository),
 ) -> UserProfile:
-    admin = current_profile(principal, repository)
-    require_admin(admin)
     return repository.set_approval(user_id, request.approval_state)

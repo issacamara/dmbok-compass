@@ -11,6 +11,7 @@ import {
 import { getCurrentProfile, IdentityApiError, registerProfile } from "./api/identity";
 import type { UserProfile } from "./api/contracts";
 import { auth, firebaseConfigured } from "./firebase";
+import { AdminPanel } from "./AdminPanel";
 
 type Mode = "sign-in" | "sign-up" | "reset-password" | "complete-profile";
 
@@ -38,6 +39,7 @@ export function AuthPanel() {
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [profileMissing, setProfileMissing] = useState(false);
+  const [accessToken, setAccessToken] = useState("");
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
@@ -48,7 +50,9 @@ export function AuthPanel() {
     setLoading(true);
     setError("");
     try {
-      setProfile(await getCurrentProfile(await currentUser.getIdToken()));
+      const token = await currentUser.getIdToken();
+      setAccessToken(token);
+      setProfile(await getCurrentProfile(token));
       setProfileMissing(false);
     } catch (cause) {
       if (cause instanceof IdentityApiError && cause.status === 404) {
@@ -71,7 +75,9 @@ export function AuthPanel() {
       setProfileMissing(false);
       if (currentUser?.emailVerified) {
         try {
-          const currentProfile = await getCurrentProfile(await currentUser.getIdToken());
+          const token = await currentUser.getIdToken();
+          if (active) setAccessToken(token);
+          const currentProfile = await getCurrentProfile(token);
           if (active) setProfile(currentProfile);
         } catch (cause) {
           if (active && cause instanceof IdentityApiError && cause.status === 404) {
@@ -168,6 +174,9 @@ export function AuthPanel() {
   if (loading) return <p role="status">Checking your account and access…</p>;
 
   if (user?.emailVerified && profile) {
+    if (profile.approval_state === "approved" && profile.role === "admin") {
+      return <AdminPanel token={accessToken} onSignOut={logout} />;
+    }
     const stateContent = {
       pending: ["Request received", "Your email is verified. An administrator must approve your account before you can use DMBOK Compass."],
       approved: ["Access approved", "Your account is verified and approved."],

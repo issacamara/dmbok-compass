@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: dmbok-compass-backend
+Version: 0.1.0
+Requires-Python: >=3.11
+Requires-Dist: fastapi<1.0,>=0.115
+Requires-Dist: uvicorn[standard]<1.0,>=0.30
+Provides-Extra: test
+Requires-Dist: httpx<1.0,>=0.27; extra == "test"
+Requires-Dist: pytest<9.0,>=8.0; extra == "test"

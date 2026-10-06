@@ -1,0 +1,8 @@
+:root { font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #17202a; background: #f4f1eb; }
+body { margin: 0; min-width: 320px; }
+main { box-sizing: border-box; max-width: 760px; margin: 0 auto; min-height: 100vh; padding: 18vh 2rem; }
+.eyebrow { color: #a34f2a; font-size: .78rem; font-weight: 700; letter-spacing: .16em; }
+h1 { max-width: 12ch; font-family: Georgia, serif; font-size: clamp(3rem, 8vw, 6rem); line-height: .95; margin: 1rem 0; }
+.intro { max-width: 38rem; font-size: 1.15rem; line-height: 1.6; }
+.status { display: inline-block; margin-top: 1.5rem; padding: .55rem .8rem; border-radius: 999px; color: #195c45; background: #d9eee3; font-size: .9rem; }
+

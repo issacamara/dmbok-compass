@@ -60,6 +60,14 @@ Telemetry is content-free and allowlisted to the fields in the fixture. Any
 question, prompt, passage, answer, trace, excerpt, password, token, secret, or
 credential field is rejected.
 
+The backend telemetry adapter accepts only `TelemetryEvent` values. Successful
+question requests emit request count, outcome, elapsed time, and model
+identifier; failures emit request count, elapsed time, and exception class.
+Exception messages are never emitted because they can contain interaction
+content. The question UI keeps the question, answer, citations, and trace in
+React state for the active view only and does not write them to browser
+storage.
+
 The administrator metrics API (`/api/admin/metrics`) exposes persisted
 `AggregateMetric` records only. A record contains a metric name, numerator,
 denominator, and percentage, so request counts, quota consumption, provider

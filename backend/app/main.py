@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from functools import lru_cache
+from time import perf_counter
 
 from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.responses import JSONResponse
@@ -29,6 +30,7 @@ from app.identity import (
 )
 from app.metrics import AggregateMetricRepository, FirestoreAggregateMetricRepository
 from app.quota import FirestoreQuotaRepository, QuotaExceededError, QuotaRepository
+from app.telemetry import LoggingTelemetryAdapter, TelemetryAdapter, error_event, response_event
 from app.evaluation import (
     EvaluationJobService,
     InMemoryEvaluationDatasetStore,
@@ -38,6 +40,15 @@ from app.evaluation import (
 
 app = FastAPI(title="DMBOK Compass API", version="0.1.0")
 app.include_router(evaluations_router)
+
+
+@lru_cache(maxsize=1)
+def get_telemetry_adapter() -> LoggingTelemetryAdapter:
+    return LoggingTelemetryAdapter()
+
+
+def telemetry_adapter() -> TelemetryAdapter:
+    return get_telemetry_adapter()
 
 
 @lru_cache(maxsize=1)
@@ -58,11 +69,13 @@ app.dependency_overrides[evaluation_service] = configured_evaluation_service
 
 @app.exception_handler(IdentityError)
 async def identity_error_handler(_, exc: IdentityError) -> JSONResponse:
+    telemetry_adapter().emit(error_event(exc))
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 
 @app.exception_handler(QuotaExceededError)
 async def quota_error_handler(_, exc: QuotaExceededError) -> JSONResponse:
+    telemetry_adapter().emit(error_event(exc))
     status_value = exc.status
     limit = status_value.user_limit if exc.scope == "user" else status_value.global_limit
     return JSONResponse(
@@ -176,9 +189,17 @@ async def answer_question(
     request: QuestionRequest,
     quota: QuotaStatus = Depends(reserve_request_quota),
     answerer: QuestionAnswerer = Depends(question_answerer),
+    telemetry: TelemetryAdapter = Depends(telemetry_adapter),
 ) -> AnswerResponse:
     """Reserve quota before invoking the request-scoped grounded answerer."""
-    return await answerer.answer(request.question, quota)
+    started = perf_counter()
+    try:
+        response = await answerer.answer(request.question, quota)
+    except Exception as exc:
+        telemetry.emit(error_event(exc, started))
+        raise
+    telemetry.emit(response_event(response, started))
+    return response
 
 
 @app.get("/api/admin/users", response_model=list[UserProfile])

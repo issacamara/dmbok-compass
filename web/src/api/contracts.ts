@@ -12,6 +12,7 @@ export const ADMIN_ROUTES = {
   users: "/api/admin/users",
   configuration: "/api/admin/configuration",
   aggregateMetrics: "/api/admin/metrics",
+  releaseDecisions: "/api/releases",
 } as const;
 
 export type Outcome = "answer" | "qualified" | "refusal";
@@ -126,8 +127,17 @@ export interface EvaluationItemResult {
 export interface ReleaseDecision {
   release_id: string;
   evaluation_run_id: string;
+  dataset_version_id: string;
+  corpus_version_id: string;
+  configuration_version_id: string;
+  provider_version_id: string;
+  model_version_id: string;
+  scorer_version_id: string;
+  gate_report_ids: string[];
   decision: "pending" | "approved" | "rejected";
   rationale: string;
+  exception_approved: boolean;
+  exception_rationale: string | null;
 }
 
 export const TELEMETRY_FIELDS = [

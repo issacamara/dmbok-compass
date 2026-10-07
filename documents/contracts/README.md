@@ -77,3 +77,12 @@ success, grounded claims, citation correctness, answer quality, refusal
 correctness, and response time.
 Each metric records its numerator, denominator, percentage, release threshold,
 and pass/fail result.
+
+Release decisions are administrator-only and immutable.  A decision binds the
+release ID to the evaluation run's exact dataset, corpus, configuration, and
+model versions, plus the provider, scorer, and gate-report identifiers supplied
+for that candidate.  Approval requires a completed run with gate reports and
+all metrics passing.  A failed or incomplete gate may be approved only when
+the administrator records an explicit approved exception and rationale;
+otherwise the API fails closed.  Repeating an identical release submission is
+idempotent, while reusing a release ID with different evidence is rejected.

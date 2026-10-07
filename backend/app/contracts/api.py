@@ -11,6 +11,7 @@ class ContractModel(BaseModel):
 
 
 Outcome = Literal["answer", "qualified", "refusal"]
+QuestionCategory = Literal["definitions", "explanations", "comparisons", "study", "scenarios"]
 
 
 class ApiError(ContractModel):
@@ -118,6 +119,7 @@ class EvaluationItem(ContractModel):
     item_id: str = Field(min_length=1, max_length=128)
     question: str = Field(min_length=1, max_length=2000)
     dataset_version_id: str = Field(min_length=1, max_length=128)
+    category: QuestionCategory = "definitions"
 
 
 class GoldAnnotation(ContractModel):

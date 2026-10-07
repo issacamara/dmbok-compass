@@ -2,7 +2,7 @@ from .dataset import EvaluationDatasetError, EvaluationDatasetStore, InMemoryEva
 from .job import (
     EvaluationJobDispatcher,
     EvaluationJobService,
-    EvaluationItemResult,
+    EvaluationOutcome,
     EvaluationWorker,
     EvaluationRunError,
     EvaluationRunStore,
@@ -15,6 +15,6 @@ from .job import (
 __all__ = [
     "EvaluationDatasetError", "EvaluationDatasetStore", "InMemoryEvaluationDatasetStore",
     "EvaluationJobDispatcher", "EvaluationJobService", "EvaluationRunError", "EvaluationRunStore",
-    "EvaluationItemResult", "EvaluationWorker",
+    "EvaluationOutcome", "EvaluationWorker",
     "InMemoryEvaluationJobDispatcher", "InMemoryEvaluationRunStore", "select_items", "stable_run_id",
 ]

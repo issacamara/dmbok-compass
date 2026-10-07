@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from fastapi import status
 from fastapi.testclient import TestClient
 
 from app.api.evaluations import evaluation_service
@@ -9,10 +10,10 @@ from app.evaluation import (
     InMemoryEvaluationDatasetStore,
     InMemoryEvaluationJobDispatcher,
     InMemoryEvaluationRunStore,
-    EvaluationItemResult,
+    EvaluationOutcome,
     EvaluationWorker,
 )
-from app.identity import get_admin_user
+from app.identity import IdentityError, get_admin_user
 from app.main import app
 
 
@@ -78,6 +79,27 @@ def test_admin_api_launch_and_status_require_admin_and_dispatch_once() -> None:
         app.dependency_overrides.clear()
 
 
+def test_evaluation_api_rejects_non_admin_callers() -> None:
+    job, _ = service()
+
+    def reject_non_admin() -> UserProfile:
+        raise IdentityError("Administrator access is required.", status.HTTP_403_FORBIDDEN)
+
+    app.dependency_overrides[get_admin_user] = reject_non_admin
+    app.dependency_overrides[evaluation_service] = lambda: job
+    try:
+        response = TestClient(app).post(
+            "/api/evaluations",
+            json={
+                "dataset_version_id": "dataset-v1", "corpus_version_id": "corpus-v2",
+                "configuration_version_id": "config-v3", "model_version_id": "model-v4",
+            },
+        )
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_worker_completes_with_six_aggregate_metrics_and_is_idempotent() -> None:
     job, _ = service()
     run = job.launch(
@@ -88,9 +110,11 @@ def test_worker_completes_with_six_aggregate_metrics_and_is_idempotent() -> None
     result = worker.execute(
         run.run_id,
         dataset(),
-        lambda _: EvaluationItemResult(True, True, True, False, True, 10),
+        lambda _: EvaluationOutcome(True, True, True, False, True, 10),
     )
     assert result.status == "completed"
     assert len(result.metrics) == 6
     assert result.metrics[0].numerator == 2
+    assert [item.item_id for item in result.item_results] == ["item-0", "item-1"]
+    assert result.item_results[0].answer_quality is False
     assert worker.execute(run.run_id, dataset(), lambda _: (_ for _ in ()).throw(AssertionError())).metrics == result.metrics

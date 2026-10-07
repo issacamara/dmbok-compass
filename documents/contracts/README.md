@@ -65,5 +65,6 @@ the complete dataset or an explicit subset, returns a queued `EvaluationRun`,
 and dispatches the same run ID at most once; retrying the identical request is
 idempotent. Only administrators may launch or inspect runs. A run records the
 four immutable version bindings and selected item IDs, and the worker stores
-only six aggregate pass/fail metrics: retrieval success, grounded claims,
-citation correctness, answer quality, refusal correctness, and response time.
+content-free per-item pass/fail results plus six aggregate metrics: retrieval
+success, grounded claims, citation correctness, answer quality, refusal
+correctness, and response time.

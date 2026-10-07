@@ -9,7 +9,7 @@ from typing import Protocol
 from dataclasses import dataclass
 from collections.abc import Callable
 
-from app.contracts import AggregateMetric, EvaluationDataset, EvaluationRun
+from app.contracts import AggregateMetric, EvaluationDataset, EvaluationItemResult, EvaluationRun
 from app.evaluation.dataset import EvaluationDatasetStore
 
 
@@ -65,7 +65,9 @@ class InMemoryEvaluationJobDispatcher:
 
 
 @dataclass(frozen=True)
-class EvaluationItemResult:
+class EvaluationOutcome:
+    """Internal, content-free outcome produced by one evaluator invocation."""
+
     retrieval_success: bool
     grounded: bool
     citation_correct: bool
@@ -81,7 +83,7 @@ class EvaluationWorker:
         self.runs = runs
         self.response_time_threshold_ms = response_time_threshold_ms
 
-    def execute(self, run_id: str, dataset: EvaluationDataset, evaluate: Callable[[str], EvaluationItemResult]) -> EvaluationRun:
+    def execute(self, run_id: str, dataset: EvaluationDataset, evaluate: Callable[[str], EvaluationOutcome]) -> EvaluationRun:
         run = self.runs.get(run_id)
         if run is None:
             raise EvaluationRunError("unknown evaluation run")
@@ -102,7 +104,13 @@ class EvaluationWorker:
                 _metric("refusal_correctness", results, lambda result: result.refusal_correct),
                 _metric("response_time", results, lambda result: result.response_time_ms <= self.response_time_threshold_ms),
             ]
-            return self.runs.update(running.model_copy(update={"status": "completed", "metrics": metrics}))
+            item_results = [
+                EvaluationItemResult(item_id=item_id, **result.__dict__)
+                for item_id, result in zip(run.selected_item_ids, results, strict=True)
+            ]
+            return self.runs.update(
+                running.model_copy(update={"status": "completed", "metrics": metrics, "item_results": item_results})
+            )
         except Exception as exc:
             return self.runs.update(running.model_copy(update={"status": "failed", "error": str(exc)[:500]}))
 
@@ -171,7 +179,7 @@ class EvaluationJobService:
         return run
 
 
-def _metric(name: str, results: list[EvaluationItemResult], predicate: Callable[[EvaluationItemResult], bool]) -> AggregateMetric:
+def _metric(name: str, results: list[EvaluationOutcome], predicate: Callable[[EvaluationOutcome], bool]) -> AggregateMetric:
     numerator = sum(predicate(result) for result in results)
     denominator = len(results)
     return AggregateMetric(

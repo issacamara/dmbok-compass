@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { getConfiguration, listAggregateMetrics, listUsers, updateConfiguration, updateUser } from "./api/admin";
 import type { AggregateMetric, ApprovalState, QuotaPolicy, UserProfile } from "./api/contracts";
+import { EvaluationPanel } from "./admin/evaluation/EvaluationPanel";
 
 type AdminPanelProps = { token: string; onSignOut: () => void };
 const APPROVED_USER_CEILING = 10;
@@ -122,6 +123,7 @@ export function AdminPanel({ token, onSignOut }: AdminPanelProps) {
           </form>}
         </section>
       </div>
+      <EvaluationPanel token={token} />
     </section>
   );
 }

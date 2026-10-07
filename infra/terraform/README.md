@@ -22,6 +22,12 @@ Worker jobs are bounded batch execution with one task and no always-on
 instance. These limits keep the initial deployment aligned with the three-user
 capacity target and the monthly infrastructure budget.
 
+`delivery.tf` defines the API service and bounded ingestion/evaluation jobs.
+Cloud Build supplies an immutable registry-digest image during the reviewed
+plan; its preview step creates a zero-traffic revision and the production step
+routes traffic only after an explicit release decision. See
+`documents/runbooks/immutable-delivery.md` for the evidence and rollback drill.
+
 Secret values must be created out of band with `gcloud secrets versions add` or
 the approved secret-management workflow. This configuration creates only
 Secret Manager metadata, so secret values never enter Terraform configuration
@@ -44,6 +50,15 @@ Firestore's `document_chunks` collection stores immutable chunk provenance,
 the 768-dimensional `gemini-embedding-001` document vector, and its
 `corpus_version_id`. The native vector index combines the corpus-version
 filter with the embedding field so retrieval can never cross corpus versions.
+
+Firestore application and vector data is protected by the managed daily backup
+schedule in `backup.tf`. Its 30-day retention is the explicit upper bound for
+scheduled copies: one daily backup per day means no more than 30 retained
+copies. Backup retention is independent of the corpus recovery path; the
+source PDF and its versioned generation remain the authoritative input for a
+deterministic index rebuild. Follow
+[`documents/runbooks/firestore-restore.md`](../../documents/runbooks/firestore-restore.md)
+for the restore drill and evidence record.
 
 ## Validate and plan
 

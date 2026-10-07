@@ -60,6 +60,14 @@ Telemetry is content-free and allowlisted to the fields in the fixture. Any
 question, prompt, passage, answer, trace, excerpt, password, token, secret, or
 credential field is rejected.
 
+The backend telemetry adapter accepts only `TelemetryEvent` values. Successful
+question requests emit request count, outcome, elapsed time, and model
+identifier; failures emit request count, elapsed time, and exception class.
+Exception messages are never emitted because they can contain interaction
+content. The question UI keeps the question, answer, citations, and trace in
+React state for the active view only and does not write them to browser
+storage.
+
 The administrator metrics API (`/api/admin/metrics`) exposes persisted
 `AggregateMetric` records only. A record contains a metric name, numerator,
 denominator, and percentage, so request counts, quota consumption, provider
@@ -77,3 +85,12 @@ success, grounded claims, citation correctness, answer quality, refusal
 correctness, and response time.
 Each metric records its numerator, denominator, percentage, release threshold,
 and pass/fail result.
+
+Release decisions are administrator-only and immutable.  A decision binds the
+release ID to the evaluation run's exact dataset, corpus, configuration, and
+model versions, plus the provider, scorer, and gate-report identifiers supplied
+for that candidate.  Approval requires a completed run with gate reports and
+all metrics passing.  A failed or incomplete gate may be approved only when
+the administrator records an explicit approved exception and rationale;
+otherwise the API fails closed.  Repeating an identical release submission is
+idempotent, while reusing a release ID with different evidence is rejected.

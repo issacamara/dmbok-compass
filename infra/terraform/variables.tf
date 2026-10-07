@@ -8,6 +8,33 @@ variable "project_id" {
   }
 }
 
+variable "billing_account_id" {
+  description = "Billing account that owns the EUR monthly budget, for example 000000-000000-000000."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[A-Z0-9]{6}-[A-Z0-9]{6}-[A-Z0-9]{6}$", var.billing_account_id))
+    error_message = "billing_account_id must use the GCP billing account format."
+  }
+}
+
+variable "fallback_model" {
+  description = "Configured fallback model identifier used by the content-free fallback log counter."
+  type        = string
+  default     = "nvidia/nemotron-3.5-lightning:free"
+
+  validation {
+    condition     = length(trimspace(var.fallback_model)) > 0
+    error_message = "fallback_model must not be empty."
+  }
+}
+
+variable "notification_channel_ids" {
+  description = "Optional Cloud Monitoring notification channel IDs for operational alerts."
+  type        = list(string)
+  default     = []
+}
+
 variable "region" {
   description = "Primary GCP region for regional resources."
   type        = string

@@ -52,8 +52,27 @@ select, .quota-form input { padding: .55rem; border: 1px solid #aaa397; border-r
 .secondary { min-height: 2.75rem; padding: .65rem .85rem; border: 1px solid #195c45; border-radius: .45rem; color: #195c45; background: transparent; font-weight: 650; cursor: pointer; }
 .link { padding: .3rem .2rem; border: 0; color: #195c45; background: transparent; font-weight: 650; text-decoration: underline; cursor: pointer; }
 .primary, .question-composer button { min-height: 2.75rem; padding: .65rem .85rem; border: 0; border-radius: .45rem; color: white; background: #195c45; font-weight: 650; cursor: pointer; }
+.evaluation-panel { margin-top: 1rem; }
+.evaluation-form, .decision-form { display: grid; gap: .65rem; margin-top: 1rem; }
+.evaluation-form { grid-template-columns: 1fr 1fr auto; align-items: end; }
+.evaluation-form fieldset { display: grid; gap: .45rem; min-width: 0; padding: .8rem; border: 1px solid #ebe6dd; border-radius: .6rem; }
+.evaluation-form legend { padding: 0 .25rem; font-weight: 700; }
+.evaluation-form label, .decision-form label { display: grid; gap: .35rem; font-weight: 650; }
+.evaluation-form input:not([type="radio"]), .evaluation-form textarea, .decision-form input, .decision-form textarea, .decision-form select { box-sizing: border-box; width: 100%; padding: .55rem; border: 1px solid #aaa397; border-radius: .45rem; font: inherit; }
+.evaluation-form textarea, .decision-form textarea { min-height: 4rem; resize: vertical; }
+.evaluation-form button, .decision-form button { min-height: 2.4rem; padding: .55rem .75rem; border: 0; border-radius: .4rem; color: white; background: #195c45; font: inherit; font-weight: 650; cursor: pointer; }
+.evaluation-form button:disabled, .decision-form button:disabled { opacity: .6; cursor: wait; }
+.evaluation-report, .decision-form { margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid #ebe6dd; }
+.evaluation-report h4, .decision-form h4 { margin: 0 0 .6rem; font-family: Georgia, serif; font-size: 1.25rem; }
+.version-context { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .6rem; margin: .75rem 0; }
+.version-context div { padding: .6rem; border-radius: .45rem; background: #f3f0e9; }
+.version-context dt { color: #665f55; font-size: .78rem; }.version-context dd { margin: .2rem 0 0; overflow-wrap: anywhere; font-weight: 650; }
+.gate-list { display: grid; gap: .45rem; padding: 0; list-style: none; }.gate-list li { display: flex; justify-content: space-between; gap: 1rem; padding: .7rem; border-left: 4px solid; border-radius: .35rem; background: #f3f0e9; }.gate-list li div { display: grid; gap: .15rem; }.gate-list li span { color: #665f55; font-size: .88rem; }.gate-passed { border-color: #195c45; }.gate-failed { border-color: #8d3028; }
+.confirmation { display: flex !important; align-items: start; gap: .5rem !important; }
 @media (max-width: 900px) { .metric-row { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 760px) { .admin-header, .section-heading { flex-direction: column; } .admin-grid { grid-template-columns: 1fr; } .user-list li { grid-template-columns: 1fr; } .metric-row { grid-template-columns: 1fr; } }
+@media (max-width: 900px) { .evaluation-form { grid-template-columns: 1fr; } .version-context { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 520px) { .version-context { grid-template-columns: 1fr; } .gate-list li { flex-direction: column; gap: .25rem; } }
 
 .question-panel { max-width: 1100px; margin: 0 auto; }
 .question-header { display: flex; justify-content: space-between; align-items: end; gap: 1.5rem; margin-bottom: 1.5rem; }

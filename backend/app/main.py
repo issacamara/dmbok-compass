@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from functools import lru_cache
+from time import perf_counter
 
 from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.responses import JSONResponse
@@ -12,6 +13,7 @@ from app.contracts.api import (
     QuotaPolicy,
     QuotaStatus,
     QuestionRequest,
+    ReleaseDecision,
     UserProfile,
 )
 from app.identity import (
@@ -29,15 +31,26 @@ from app.identity import (
 )
 from app.metrics import AggregateMetricRepository, FirestoreAggregateMetricRepository
 from app.quota import FirestoreQuotaRepository, QuotaExceededError, QuotaRepository
+from app.telemetry import LoggingTelemetryAdapter, TelemetryAdapter, error_event, response_event
 from app.evaluation import (
     EvaluationJobService,
     InMemoryEvaluationDatasetStore,
     InMemoryEvaluationJobDispatcher,
     InMemoryEvaluationRunStore,
 )
+from app.release import ReleaseDecisionError, ReleaseDecisionRequest, ReleaseDecisionService
 
 app = FastAPI(title="DMBOK Compass API", version="0.1.0")
 app.include_router(evaluations_router)
+
+
+@lru_cache(maxsize=1)
+def get_telemetry_adapter() -> LoggingTelemetryAdapter:
+    return LoggingTelemetryAdapter()
+
+
+def telemetry_adapter() -> TelemetryAdapter:
+    return get_telemetry_adapter()
 
 
 @lru_cache(maxsize=1)
@@ -56,13 +69,27 @@ def configured_evaluation_service() -> EvaluationJobService:
 app.dependency_overrides[evaluation_service] = configured_evaluation_service
 
 
+@lru_cache(maxsize=1)
+def get_release_decision_service() -> ReleaseDecisionService:
+    service = configured_evaluation_service()
+    from app.release import InMemoryReleaseDecisionStore
+
+    return ReleaseDecisionService(service.runs, InMemoryReleaseDecisionStore())
+
+
+def release_decision_service() -> ReleaseDecisionService:
+    return get_release_decision_service()
+
+
 @app.exception_handler(IdentityError)
 async def identity_error_handler(_, exc: IdentityError) -> JSONResponse:
+    telemetry_adapter().emit(error_event(exc))
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 
 
 @app.exception_handler(QuotaExceededError)
 async def quota_error_handler(_, exc: QuotaExceededError) -> JSONResponse:
+    telemetry_adapter().emit(error_event(exc))
     status_value = exc.status
     limit = status_value.user_limit if exc.scope == "user" else status_value.global_limit
     return JSONResponse(
@@ -176,9 +203,17 @@ async def answer_question(
     request: QuestionRequest,
     quota: QuotaStatus = Depends(reserve_request_quota),
     answerer: QuestionAnswerer = Depends(question_answerer),
+    telemetry: TelemetryAdapter = Depends(telemetry_adapter),
 ) -> AnswerResponse:
     """Reserve quota before invoking the request-scoped grounded answerer."""
-    return await answerer.answer(request.question, quota)
+    started = perf_counter()
+    try:
+        response = await answerer.answer(request.question, quota)
+    except Exception as exc:
+        telemetry.emit(error_event(exc, started))
+        raise
+    telemetry.emit(response_event(response, started))
+    return response
 
 
 @app.get("/api/admin/users", response_model=list[UserProfile])
@@ -225,3 +260,33 @@ def list_aggregate_metrics(
 ) -> list[AggregateMetric]:
     """Return allowlisted aggregate metrics without interaction content."""
     return repository.list_metrics()
+
+
+@app.post("/api/releases", response_model=ReleaseDecision, status_code=status.HTTP_201_CREATED, tags=["admin"])
+def record_release_decision(
+    request: ReleaseDecisionRequest,
+    _: UserProfile = Depends(get_admin_user),
+    service: ReleaseDecisionService = Depends(release_decision_service),
+) -> ReleaseDecision:
+    try:
+        return service.record(request)
+    except ReleaseDecisionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "invalid_release_decision", "message": str(exc)},
+        ) from exc
+
+
+@app.get("/api/releases/{release_id}", response_model=ReleaseDecision, tags=["admin"])
+def get_release_decision(
+    release_id: str,
+    _: UserProfile = Depends(get_admin_user),
+    service: ReleaseDecisionService = Depends(release_decision_service),
+) -> ReleaseDecision:
+    try:
+        return service.get(release_id)
+    except ReleaseDecisionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "release_decision_not_found", "message": str(exc)},
+        ) from exc

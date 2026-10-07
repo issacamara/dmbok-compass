@@ -170,8 +170,25 @@ class EvaluationRun(ContractModel):
 class ReleaseDecision(ContractModel):
     release_id: str = Field(min_length=1, max_length=128)
     evaluation_run_id: str = Field(min_length=1, max_length=128)
+    dataset_version_id: str = Field(min_length=1, max_length=128)
+    corpus_version_id: str = Field(min_length=1, max_length=128)
+    configuration_version_id: str = Field(min_length=1, max_length=128)
+    provider_version_id: str = Field(min_length=1, max_length=128)
+    model_version_id: str = Field(min_length=1, max_length=128)
+    scorer_version_id: str = Field(min_length=1, max_length=128)
+    gate_report_ids: list[str] = Field(min_length=1, max_length=100)
     decision: Literal["pending", "approved", "rejected"]
     rationale: str = Field(min_length=1, max_length=5000)
+    exception_approved: bool = False
+    exception_rationale: str | None = Field(default=None, max_length=5000)
+
+    @model_validator(mode="after")
+    def validate_exception(self) -> "ReleaseDecision":
+        if self.exception_approved and not self.exception_rationale:
+            raise ValueError("an approved exception requires an exception rationale")
+        if not self.exception_approved and self.exception_rationale:
+            raise ValueError("exception rationale requires an approved exception")
+        return self
 
 
 API_ROUTES = {
@@ -188,4 +205,5 @@ ADMIN_ROUTES = {
     "users": "/api/admin/users",
     "configuration": "/api/admin/configuration",
     "aggregate_metrics": "/api/admin/metrics",
+    "release_decisions": "/api/releases",
 }

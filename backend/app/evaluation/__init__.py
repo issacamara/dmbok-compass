@@ -1,11 +1,19 @@
-from .dataset import EvaluationDatasetError, EvaluationDatasetStore, InMemoryEvaluationDatasetStore
+"""Durable, evaluator-authored evaluation data and version-bound jobs."""
+
+from .dataset import (
+    EvaluationDatasetError,
+    EvaluationDatasetStore,
+    GoldSubsetError,
+    InMemoryEvaluationDatasetStore,
+    ReviewTransitionError,
+)
 from .job import (
     EvaluationJobDispatcher,
     EvaluationJobService,
     EvaluationOutcome,
-    EvaluationWorker,
     EvaluationRunError,
     EvaluationRunStore,
+    EvaluationWorker,
     InMemoryEvaluationJobDispatcher,
     InMemoryEvaluationRunStore,
     select_items,
@@ -13,8 +21,19 @@ from .job import (
 )
 
 __all__ = [
-    "EvaluationDatasetError", "EvaluationDatasetStore", "InMemoryEvaluationDatasetStore",
-    "EvaluationJobDispatcher", "EvaluationJobService", "EvaluationRunError", "EvaluationRunStore",
-    "EvaluationOutcome", "EvaluationWorker",
-    "InMemoryEvaluationJobDispatcher", "InMemoryEvaluationRunStore", "select_items", "stable_run_id",
+    "EvaluationDatasetError",
+    "EvaluationDatasetStore",
+    "GoldSubsetError",
+    "InMemoryEvaluationDatasetStore",
+    "ReviewTransitionError",
+    "EvaluationJobDispatcher",
+    "EvaluationJobService",
+    "EvaluationOutcome",
+    "EvaluationRunError",
+    "EvaluationRunStore",
+    "EvaluationWorker",
+    "InMemoryEvaluationJobDispatcher",
+    "InMemoryEvaluationRunStore",
+    "select_items",
+    "stable_run_id",
 ]

@@ -49,6 +49,13 @@ logs, analytics, traces, backups, or build artifacts. Evaluation-authored
 questions and annotations are separate durable data because reproducible
 release evaluation requires them.
 
+Evaluation datasets are versioned by `dataset_version_id`. Each
+evaluator-authored item has one of five categories: definitions, explanations,
+comparisons, study, or scenarios. Generated annotations begin as `candidate`;
+human review may move them once to `approved` or `rejected`. A dataset is
+eligible for release evaluation only after 30–50 annotations reach `approved`.
+These records are not a storage path for production questions or answer traces.
+
 Telemetry is content-free and allowlisted to the fields in the fixture. Any
 question, prompt, passage, answer, trace, excerpt, password, token, secret, or
 credential field is rejected.

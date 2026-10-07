@@ -28,7 +28,8 @@ def dataset() -> EvaluationDataset:
 
 
 def service() -> tuple[EvaluationJobService, InMemoryEvaluationJobDispatcher]:
-    datasets = InMemoryEvaluationDatasetStore([dataset()])
+    datasets = InMemoryEvaluationDatasetStore()
+    datasets.create(dataset())
     dispatcher = InMemoryEvaluationJobDispatcher()
     return EvaluationJobService(datasets, InMemoryEvaluationRunStore(), dispatcher), dispatcher
 

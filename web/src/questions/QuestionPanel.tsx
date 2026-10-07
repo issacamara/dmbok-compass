@@ -83,7 +83,7 @@ export function QuestionPanel({ token, onSignOut }: QuestionPanelProps) {
       </div>
 
       {error && <p className="error" role="alert">{error}</p>}
-      <div className="question-layout">
+      <div className="question-layout" aria-busy={submitting}>
         <section className="question-card" aria-label="Question and answer">
           <div className="question-card-header">
             <strong>New question</strong>
@@ -103,7 +103,7 @@ export function QuestionPanel({ token, onSignOut }: QuestionPanelProps) {
               </div>)}
             </div>}
           </article> : <p className="empty-answer">Ask a definition, relationship, or scenario question to see grounded evidence here.</p>}
-          <form className="question-composer" onSubmit={submit}>
+          <form className="question-composer" onSubmit={submit} aria-busy={submitting}>
             <label htmlFor="question-input">Ask a DMBOK question</label>
             <div className="composer-row">
               <textarea
@@ -114,11 +114,13 @@ export function QuestionPanel({ token, onSignOut }: QuestionPanelProps) {
                 placeholder="Ask about a definition, relationship, or scenario…"
                 maxLength={2000}
                 disabled={submitting}
+                aria-describedby="question-help"
               />
               <button className="primary" type="submit" disabled={submitting || loadingQuota}>
                 {submitting ? "Finding evidence…" : "Send"}
               </button>
             </div>
+            <span id="question-help" className="visually-hidden">Questions are answered from the approved DMBOK corpus.</span>
           </form>
         </section>
 

@@ -69,6 +69,21 @@ describe("QuestionPanel", () => {
     await waitFor(() => expect(input).toHaveFocus());
   });
 
+  it("exposes the composer guidance and answer controls to keyboard and assistive technology", async () => {
+    mockApi(response("answer"));
+    const user = userEvent.setup();
+    render(<QuestionPanel token="firebase-token" onSignOut={vi.fn()} />);
+
+    const input = await screen.findByLabelText("Ask a DMBOK question");
+    expect(input).toHaveAttribute("aria-describedby", "question-help");
+    expect(screen.getByText("Questions are answered from the approved DMBOK corpus.")).toHaveClass("visually-hidden");
+
+    await user.type(input, "What is data governance?");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    expect(await screen.findByText("Strong evidence")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Clear" })).toBeEnabled();
+  });
+
   it("does not persist the question or trace in browser storage", async () => {
     mockApi(response("answer"));
     const user = userEvent.setup();

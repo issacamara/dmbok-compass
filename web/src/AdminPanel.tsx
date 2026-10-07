@@ -96,7 +96,7 @@ export function AdminPanel({ token, onSignOut }: AdminPanelProps) {
       <div className="admin-grid">
         <section className="admin-card" aria-labelledby="users-title">
           <div className="section-heading"><h3 id="users-title">Users</h3>
-            <label>Filter users<select aria-label="Filter users" value={filter} onChange={(event) => {
+            <label htmlFor="user-filter">Filter users<select id="user-filter" value={filter} onChange={(event) => {
               const value = event.target.value as "" | ApprovalState; setFilter(value); void load(value);
             }}>{filters.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
           </div>

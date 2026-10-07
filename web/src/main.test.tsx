@@ -56,6 +56,7 @@ describe("Firebase email and password identity", () => {
 
   it("renders the workspace and email sign-in form", async () => {
     render(<App />);
+    expect(screen.getByRole("main")).toHaveAttribute("id", "main-content");
     expect(screen.getByRole("heading", { name: /grounded data management guidance/i })).toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
     expect(screen.getByLabelText("Email")).toHaveAttribute("type", "email");

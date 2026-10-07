@@ -95,6 +95,13 @@ class AggregateMetric(ContractModel):
     percentage: float = Field(ge=0, le=100)
 
 
+class EvaluationMetric(AggregateMetric):
+    """Content-free release-gate result for one evaluated metric."""
+
+    threshold: float = Field(ge=0, le=100)
+    passed: bool
+
+
 class CorpusVersion(ContractModel):
     version_id: str = Field(min_length=1, max_length=128)
     source_uri: str = Field(min_length=1, max_length=2048)
@@ -152,7 +159,7 @@ class EvaluationRun(ContractModel):
     dataset_version_id: str = Field(min_length=1, max_length=128)
     corpus_version_id: str = Field(min_length=1, max_length=128)
     status: Literal["queued", "running", "completed", "failed"]
-    metrics: list[AggregateMetric] = Field(default_factory=list)
+    metrics: list[EvaluationMetric] = Field(default_factory=list)
     item_results: list[EvaluationItemResult] = Field(default_factory=list, max_length=10000)
     selected_item_ids: list[str] = Field(default_factory=list, max_length=10000)
     configuration_version_id: str = Field(min_length=1, max_length=128)

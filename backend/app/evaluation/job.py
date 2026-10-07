@@ -9,7 +9,7 @@ from typing import Protocol
 from dataclasses import dataclass
 from collections.abc import Callable
 
-from app.contracts import AggregateMetric, EvaluationDataset, EvaluationItemResult, EvaluationRun
+from app.contracts import EvaluationDataset, EvaluationItemResult, EvaluationMetric, EvaluationRun
 from app.evaluation.dataset import EvaluationDatasetStore
 
 
@@ -97,12 +97,17 @@ class EvaluationWorker:
                 raise EvaluationRunError("run contains items outside its dataset version")
             results = [evaluate(item_id) for item_id in run.selected_item_ids]
             metrics = [
-                _metric("retrieval_success", results, lambda result: result.retrieval_success),
-                _metric("grounded_claims", results, lambda result: result.grounded),
-                _metric("citation_correctness", results, lambda result: result.citation_correct),
-                _metric("answer_quality", results, lambda result: result.answer_quality),
-                _metric("refusal_correctness", results, lambda result: result.refusal_correct),
-                _metric("response_time", results, lambda result: result.response_time_ms <= self.response_time_threshold_ms),
+                _metric("retrieval_success", results, lambda result: result.retrieval_success, threshold=90),
+                _metric("grounded_claims", results, lambda result: result.grounded, threshold=95),
+                _metric("citation_correctness", results, lambda result: result.citation_correct, threshold=95),
+                _metric("answer_quality", results, lambda result: result.answer_quality, threshold=85),
+                _metric("refusal_correctness", results, lambda result: result.refusal_correct, threshold=95),
+                _metric(
+                    "response_time",
+                    results,
+                    lambda result: result.response_time_ms <= self.response_time_threshold_ms,
+                    threshold=95,
+                ),
             ]
             item_results = [
                 EvaluationItemResult(item_id=item_id, **result.__dict__)
@@ -179,12 +184,21 @@ class EvaluationJobService:
         return run
 
 
-def _metric(name: str, results: list[EvaluationOutcome], predicate: Callable[[EvaluationOutcome], bool]) -> AggregateMetric:
+def _metric(
+    name: str,
+    results: list[EvaluationOutcome],
+    predicate: Callable[[EvaluationOutcome], bool],
+    *,
+    threshold: float,
+) -> EvaluationMetric:
     numerator = sum(predicate(result) for result in results)
     denominator = len(results)
-    return AggregateMetric(
+    percentage = round(100 * numerator / denominator, 2) if denominator else 0.0
+    return EvaluationMetric(
         metric_name=name,
         numerator=numerator,
         denominator=denominator,
-        percentage=round(100 * numerator / denominator, 2) if denominator else 0.0,
+        percentage=percentage,
+        threshold=threshold,
+        passed=percentage >= threshold,
     )

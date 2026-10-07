@@ -30,6 +30,18 @@ same 768-dimensional embedding model used for document chunks. Firestore
 nearest-neighbor search must filter on the active corpus-version ID before
 returning at most five ranked passages. Each passage preserves its chunk ID,
 page, section, excerpt, and available relevance score for the answer trace.
+Evidence classification then filters to finite normalized scores at or above
+the partial threshold (`0.45`), ranks ties by chunk ID, and keeps at most five
+passages. A top score at or above `0.75` is `strong`, a score from `0.45` to
+below `0.75` is `partial`, and no qualifying score is `absent`. The evidence
+bundle records the outcome basis and cited chunk IDs. Top-five retrieval
+success is reported as a content-free numerator, denominator, and percentage.
+
+Citation IDs returned by an answer model are accepted only when they match a
+retrieved chunk. The API reconstructs every citation's page, section, and
+excerpt from that chunk's stored provenance; provider-supplied citation
+metadata is never trusted. The live response trace also contains request-scoped
+retrieval, generation, and total timings.
 
 Production questions, prompts, retrieved passages, generated answers, and
 request traces are ephemeral. They must not be persisted to Firestore, Storage,

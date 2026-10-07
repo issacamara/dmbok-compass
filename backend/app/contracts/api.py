@@ -43,6 +43,10 @@ class RetrievedPassage(ContractModel):
     relevance_score: float | None = None
 
 
+class QuestionRequest(ContractModel):
+    question: str = Field(min_length=1, max_length=2000)
+
+
 class RetrievalTrace(ContractModel):
     retrieved_passages: list[RetrievedPassage] = Field(max_length=5)
     selected_model: str = Field(min_length=1, max_length=128)

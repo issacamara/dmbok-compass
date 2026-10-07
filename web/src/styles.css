@@ -49,3 +49,39 @@ select, .quota-form input { padding: .55rem; border: 1px solid #aaa397; border-r
 .secondary { min-height: 2.75rem; padding: .65rem .85rem; border: 1px solid #195c45; border-radius: .45rem; color: #195c45; background: transparent; font: inherit; font-weight: 650; cursor: pointer; }
 @media (max-width: 900px) { .metric-row { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 760px) { .admin-header, .section-heading { flex-direction: column; } .admin-grid { grid-template-columns: 1fr; } .user-list li { grid-template-columns: 1fr; } .metric-row { grid-template-columns: 1fr; } }
+
+.question-panel { max-width: 1100px; margin: 0 auto; }
+.question-header { display: flex; justify-content: space-between; align-items: end; gap: 1.5rem; margin-bottom: 1.5rem; }
+.question-header h2 { margin: .35rem 0; font-family: Georgia, serif; font-size: clamp(2rem, 5vw, 3.5rem); line-height: 1; }
+.helper-text { color: #665f55; line-height: 1.5; }
+.question-actions { display: flex; align-items: center; gap: .75rem; flex-wrap: wrap; justify-content: flex-end; }
+.quota-chip, .evidence-chip, .synthesis-chip { display: inline-block; padding: .4rem .65rem; border-radius: 999px; font-size: .82rem; font-weight: 700; }
+.quota-chip { color: #195c45; background: #d9eee3; }
+.question-layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 1rem; align-items: start; }
+.question-card, .trace-card { border: 1px solid #ddd7cc; border-radius: 1rem; background: #fffefa; }
+.question-card-header { display: flex; justify-content: space-between; align-items: center; padding: 1rem 1.25rem; border-bottom: 1px solid #ebe6dd; }
+.question-card-header .link { margin: 0; }
+.answer { min-height: 230px; padding: 1.5rem 1.25rem; }
+.answer-labels { display: flex; gap: .5rem; flex-wrap: wrap; }
+.evidence-chip { color: #195c45; background: #d9eee3; }
+.answer-qualified .evidence-chip { color: #8a5a00; background: #fff0c2; }
+.answer-refusal .evidence-chip { color: #8d3028; background: #f8ded9; }
+.synthesis-chip { color: #66418c; background: #eee4fa; }
+.answer-text { max-width: 70ch; font-size: 1.08rem; line-height: 1.65; }
+.citation-list { display: grid; gap: .7rem; }
+.citation { padding: .75rem .9rem; border-left: 3px solid #195c45; border-radius: .35rem; background: #f3f7f0; color: #665f55; }
+.citation strong { color: #17202a; }
+.citation p { margin: .35rem 0 0; line-height: 1.45; }
+.empty-answer { min-height: 230px; box-sizing: border-box; margin: 0; padding: 2rem 1.25rem; color: #665f55; line-height: 1.6; }
+.question-composer { padding: 1rem 1.25rem; border-top: 1px solid #ebe6dd; }
+.question-composer label { display: block; margin-bottom: .5rem; font-weight: 650; }
+.composer-row { display: flex; gap: .65rem; }
+.composer-row textarea { box-sizing: border-box; min-height: 3rem; width: 100%; resize: vertical; padding: .8rem; border: 1px solid #aaa397; border-radius: .55rem; font: inherit; }
+.trace-card { padding: 1.25rem; }
+.trace-card h3 { margin-top: 0; font-family: Georgia, serif; font-size: 1.5rem; }
+.trace-row { display: flex; justify-content: space-between; gap: .75rem; padding: .75rem 0; border-bottom: 1px solid #ebe6dd; font-size: .9rem; text-transform: capitalize; }
+.passage-details { margin-top: 1rem; color: #195c45; }
+.passage-details p { color: #665f55; font-size: .85rem; line-height: 1.45; }
+.quota-reset { color: #665f55; font-size: .85rem; }
+.error { color: #8d3028; }
+@media (max-width: 800px) { .question-header, .question-layout { grid-template-columns: 1fr; flex-direction: column; align-items: stretch; } .question-actions { justify-content: flex-start; } .composer-row { flex-direction: column; } .composer-row .primary { width: 100%; } }

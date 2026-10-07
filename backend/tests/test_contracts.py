@@ -79,6 +79,18 @@ def test_telemetry_is_allowlisted_and_rejects_interaction_content() -> None:
 
     with pytest.raises(ValueError):
         validate_telemetry_payload({"nested": {"question": "secret input"}})
+
+
+def test_answer_response_cannot_be_forwarded_as_telemetry_payload() -> None:
+    response = AnswerResponse(
+        outcome="answer",
+        answer_text="Do not persist this.",
+        trace=trace(),
+        quota=quota(),
+    )
+
+    with pytest.raises(ValueError, match="answer_text"):
+        validate_telemetry_payload(response.model_dump())
     with pytest.raises(ValidationError):
         TelemetryEvent(question="secret input")  # type: ignore[call-arg]
 

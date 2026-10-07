@@ -1,0 +1,46 @@
+{
+  "schema_version": "1",
+  "release_id": "release-YYYY-MM-DD",
+  "artifact": {
+    "commit": "<COMMIT_SHA>",
+    "api_image": "<IMAGE_REPOSITORY>@sha256:<64-HEX-DIGEST>",
+    "api_digest": "sha256:<64-HEX-DIGEST>",
+    "frontend_digest": "<64-HEX-DIGEST>",
+    "preview_revision": "<CLOUD_RUN_REVISION>"
+  },
+  "evaluation": {
+    "run_id": "<EVALUATION_RUN_ID>",
+    "dataset_version_id": "<DATASET_VERSION>",
+    "corpus_version_id": "<CORPUS_VERSION>",
+    "configuration_version_id": "<CONFIGURATION_VERSION>",
+    "model_version_id": "<MODEL_VERSION>",
+    "status": "completed",
+    "gates": [
+      {"metric_name": "retrieval_success", "threshold": 90.0, "passed": true},
+      {"metric_name": "grounded_claims", "threshold": 95.0, "passed": true},
+      {"metric_name": "citation_correctness", "threshold": 95.0, "passed": true},
+      {"metric_name": "answer_quality", "threshold": 85.0, "passed": true},
+      {"metric_name": "refusal_correctness", "threshold": 95.0, "passed": true},
+      {"metric_name": "response_time", "threshold": 95.0, "passed": true}
+    ]
+  },
+  "evidence": {
+    "artifact": {"status": "pass", "references": ["<MANIFEST_OBJECT>"]},
+    "evaluation": {"status": "pass", "references": ["<EVALUATION_REPORT>"]},
+    "gates": {"status": "pass", "references": ["<GATE_REPORT>"]},
+    "provider": {"status": "pass", "references": ["documents/decisions/provider.md", "<TERMS_REVIEW>"]},
+    "privacy": {"status": "pass", "references": ["<PRIVACY_CHECK>"]},
+    "accessibility": {"status": "pass", "references": ["<A11Y_REPORT>"]},
+    "recovery": {"status": "pass", "references": ["<RESTORE_DRILL>"]},
+    "performance": {"status": "pass", "references": ["<THREE_USER_TEST>"]},
+    "cost": {"status": "pass", "references": ["<COST_FORECAST>"]},
+    "rollback": {"status": "pass", "references": ["<ROLLBACK_DRILL>"]},
+    "decisions": {"status": "pass", "references": ["<PUBLISHER_DECISION>"]}
+  },
+  "release_decision": {
+    "release_id": "release-YYYY-MM-DD",
+    "decision": "approved",
+    "approver": "<SPONSOR>",
+    "decision_record": "<RELEASE_DECISION_ID>"
+  }
+}

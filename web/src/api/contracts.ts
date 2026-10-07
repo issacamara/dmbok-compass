@@ -101,6 +101,21 @@ export interface EvaluationRun {
   corpus_version_id: string;
   status: "queued" | "running" | "completed" | "failed";
   metrics: AggregateMetric[];
+  item_results: EvaluationItemResult[];
+  selected_item_ids: string[];
+  configuration_version_id: string;
+  model_version_id: string;
+  error: string | null;
+}
+
+export interface EvaluationItemResult {
+  item_id: string;
+  retrieval_success: boolean;
+  grounded: boolean;
+  citation_correct: boolean;
+  answer_quality: boolean;
+  refusal_correct: boolean;
+  response_time_ms: number;
 }
 
 export interface ReleaseDecision {

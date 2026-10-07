@@ -135,12 +135,29 @@ class EvaluationDataset(ContractModel):
     gold_annotations: list[GoldAnnotation] = Field(default_factory=list)
 
 
+class EvaluationItemResult(ContractModel):
+    """Content-free outcome for one evaluator-authored item."""
+
+    item_id: str = Field(min_length=1, max_length=128)
+    retrieval_success: bool
+    grounded: bool
+    citation_correct: bool
+    answer_quality: bool
+    refusal_correct: bool
+    response_time_ms: float = Field(ge=0)
+
+
 class EvaluationRun(ContractModel):
     run_id: str = Field(min_length=1, max_length=128)
     dataset_version_id: str = Field(min_length=1, max_length=128)
     corpus_version_id: str = Field(min_length=1, max_length=128)
     status: Literal["queued", "running", "completed", "failed"]
     metrics: list[AggregateMetric] = Field(default_factory=list)
+    item_results: list[EvaluationItemResult] = Field(default_factory=list, max_length=10000)
+    selected_item_ids: list[str] = Field(default_factory=list, max_length=10000)
+    configuration_version_id: str = Field(min_length=1, max_length=128)
+    model_version_id: str = Field(min_length=1, max_length=128)
+    error: str | None = Field(default=None, max_length=500)
 
 
 class ReleaseDecision(ContractModel):

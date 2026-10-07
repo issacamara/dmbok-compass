@@ -4,6 +4,7 @@ from functools import lru_cache
 from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 
+from app.api.evaluations import evaluation_service, router as evaluations_router
 from app.answering import QuestionAnswerer
 from app.contracts.api import (
     AggregateMetric,
@@ -28,8 +29,31 @@ from app.identity import (
 )
 from app.metrics import AggregateMetricRepository, FirestoreAggregateMetricRepository
 from app.quota import FirestoreQuotaRepository, QuotaExceededError, QuotaRepository
+from app.evaluation import (
+    EvaluationJobService,
+    InMemoryEvaluationDatasetStore,
+    InMemoryEvaluationJobDispatcher,
+    InMemoryEvaluationRunStore,
+)
 
 app = FastAPI(title="DMBOK Compass API", version="0.1.0")
+app.include_router(evaluations_router)
+
+
+@lru_cache(maxsize=1)
+def get_evaluation_service() -> EvaluationJobService:
+    return EvaluationJobService(
+        InMemoryEvaluationDatasetStore(),
+        InMemoryEvaluationRunStore(),
+        InMemoryEvaluationJobDispatcher(),
+    )
+
+
+def configured_evaluation_service() -> EvaluationJobService:
+    return get_evaluation_service()
+
+
+app.dependency_overrides[evaluation_service] = configured_evaluation_service
 
 
 @app.exception_handler(IdentityError)

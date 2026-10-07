@@ -116,6 +116,42 @@ def test_worker_completes_with_six_aggregate_metrics_and_is_idempotent() -> None
     assert result.status == "completed"
     assert len(result.metrics) == 6
     assert result.metrics[0].numerator == 2
+    assert result.metrics[0].threshold == 90
+    assert result.metrics[0].passed is True
+    assert result.metrics[3].threshold == 85
+    assert result.metrics[3].passed is False
     assert [item.item_id for item in result.item_results] == ["item-0", "item-1"]
     assert result.item_results[0].answer_quality is False
     assert worker.execute(run.run_id, dataset(), lambda _: (_ for _ in ()).throw(AssertionError())).metrics == result.metrics
+
+
+def test_worker_marks_each_release_gate_from_gold_evidence_scores() -> None:
+    job, _ = service()
+    run = job.launch(
+        dataset_version_id="dataset-v1", corpus_version_id="corpus-v2",
+        configuration_version_id="config-v3", model_version_id="model-v4", item_ids=None,
+    )
+    result = EvaluationWorker(job.runs).execute(
+        run.run_id,
+        dataset(),
+        lambda item_id: EvaluationOutcome(
+            retrieval_success=item_id != "item-2",
+            grounded=True,
+            citation_correct=True,
+            answer_quality=True,
+            refusal_correct=True,
+            response_time_ms=100,
+        ),
+    )
+
+    assert [
+        (metric.metric_name, metric.numerator, metric.denominator, metric.threshold, metric.passed)
+        for metric in result.metrics
+    ] == [
+        ("retrieval_success", 2, 3, 90, False),
+        ("grounded_claims", 3, 3, 95, True),
+        ("citation_correctness", 3, 3, 95, True),
+        ("answer_quality", 3, 3, 85, True),
+        ("refusal_correctness", 3, 3, 95, True),
+        ("response_time", 3, 3, 95, True),
+    ]

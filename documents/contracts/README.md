@@ -75,3 +75,5 @@ four immutable version bindings and selected item IDs, and the worker stores
 content-free per-item pass/fail results plus six aggregate metrics: retrieval
 success, grounded claims, citation correctness, answer quality, refusal
 correctness, and response time.
+Each metric records its numerator, denominator, percentage, release threshold,
+and pass/fail result.

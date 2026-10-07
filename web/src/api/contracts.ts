@@ -95,12 +95,17 @@ export interface AggregateMetric {
   percentage: number;
 }
 
+export interface EvaluationMetric extends AggregateMetric {
+  threshold: number;
+  passed: boolean;
+}
+
 export interface EvaluationRun {
   run_id: string;
   dataset_version_id: string;
   corpus_version_id: string;
   status: "queued" | "running" | "completed" | "failed";
-  metrics: AggregateMetric[];
+  metrics: EvaluationMetric[];
   item_results: EvaluationItemResult[];
   selected_item_ids: string[];
   configuration_version_id: string;

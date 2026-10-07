@@ -12,6 +12,7 @@ from app.contracts.api import (
     QuotaPolicy,
     QuotaStatus,
     QuestionRequest,
+    ReleaseDecision,
     UserProfile,
 )
 from app.identity import (
@@ -35,6 +36,7 @@ from app.evaluation import (
     InMemoryEvaluationJobDispatcher,
     InMemoryEvaluationRunStore,
 )
+from app.release import ReleaseDecisionError, ReleaseDecisionRequest, ReleaseDecisionService
 
 app = FastAPI(title="DMBOK Compass API", version="0.1.0")
 app.include_router(evaluations_router)
@@ -54,6 +56,18 @@ def configured_evaluation_service() -> EvaluationJobService:
 
 
 app.dependency_overrides[evaluation_service] = configured_evaluation_service
+
+
+@lru_cache(maxsize=1)
+def get_release_decision_service() -> ReleaseDecisionService:
+    service = configured_evaluation_service()
+    from app.release import InMemoryReleaseDecisionStore
+
+    return ReleaseDecisionService(service.runs, InMemoryReleaseDecisionStore())
+
+
+def release_decision_service() -> ReleaseDecisionService:
+    return get_release_decision_service()
 
 
 @app.exception_handler(IdentityError)
@@ -225,3 +239,33 @@ def list_aggregate_metrics(
 ) -> list[AggregateMetric]:
     """Return allowlisted aggregate metrics without interaction content."""
     return repository.list_metrics()
+
+
+@app.post("/api/releases", response_model=ReleaseDecision, status_code=status.HTTP_201_CREATED, tags=["admin"])
+def record_release_decision(
+    request: ReleaseDecisionRequest,
+    _: UserProfile = Depends(get_admin_user),
+    service: ReleaseDecisionService = Depends(release_decision_service),
+) -> ReleaseDecision:
+    try:
+        return service.record(request)
+    except ReleaseDecisionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "invalid_release_decision", "message": str(exc)},
+        ) from exc
+
+
+@app.get("/api/releases/{release_id}", response_model=ReleaseDecision, tags=["admin"])
+def get_release_decision(
+    release_id: str,
+    _: UserProfile = Depends(get_admin_user),
+    service: ReleaseDecisionService = Depends(release_decision_service),
+) -> ReleaseDecision:
+    try:
+        return service.get(release_id)
+    except ReleaseDecisionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "release_decision_not_found", "message": str(exc)},
+        ) from exc

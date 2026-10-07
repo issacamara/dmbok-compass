@@ -11,6 +11,7 @@ class ContractModel(BaseModel):
 
 
 Outcome = Literal["answer", "qualified", "refusal"]
+QuestionCategory = Literal["definitions", "explanations", "comparisons", "study", "scenarios"]
 
 
 class ApiError(ContractModel):
@@ -118,6 +119,7 @@ class EvaluationItem(ContractModel):
     item_id: str = Field(min_length=1, max_length=128)
     question: str = Field(min_length=1, max_length=2000)
     dataset_version_id: str = Field(min_length=1, max_length=128)
+    category: QuestionCategory = "definitions"
 
 
 class GoldAnnotation(ContractModel):
@@ -139,6 +141,10 @@ class EvaluationRun(ContractModel):
     corpus_version_id: str = Field(min_length=1, max_length=128)
     status: Literal["queued", "running", "completed", "failed"]
     metrics: list[AggregateMetric] = Field(default_factory=list)
+    selected_item_ids: list[str] = Field(default_factory=list, max_length=10000)
+    configuration_version_id: str = Field(min_length=1, max_length=128)
+    model_version_id: str = Field(min_length=1, max_length=128)
+    error: str | None = Field(default=None, max_length=500)
 
 
 class ReleaseDecision(ContractModel):

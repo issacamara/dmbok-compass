@@ -58,3 +58,12 @@ The administrator metrics API (`/api/admin/metrics`) exposes persisted
 denominator, and percentage, so request counts, quota consumption, provider
 failures, fallback rates, and cost indicators can be reported without storing
 question, answer, passage, or trace content.
+
+Evaluation runs are identified by a deterministic hash of dataset, corpus,
+configuration, model, and selected item IDs. `POST /api/evaluations` accepts
+the complete dataset or an explicit subset, returns a queued `EvaluationRun`,
+and dispatches the same run ID at most once; retrying the identical request is
+idempotent. Only administrators may launch or inspect runs. A run records the
+four immutable version bindings and selected item IDs, and the worker stores
+only six aggregate pass/fail metrics: retrieval success, grounded claims,
+citation correctness, answer quality, refusal correctness, and response time.

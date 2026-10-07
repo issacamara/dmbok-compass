@@ -1,4 +1,4 @@
-"""Administrator-only release decision domain services."""
+"""Release decision and promotion evidence."""
 
 from .decision import (
     InMemoryReleaseDecisionStore,
@@ -7,6 +7,13 @@ from .decision import (
     ReleaseDecisionService,
     ReleaseDecisionStore,
 )
+from .evidence import (
+    GATE_REQUIREMENTS,
+    REQUIRED_EVIDENCE_SECTIONS,
+    ReleaseEvidenceError,
+    ReleaseEvidenceResult,
+    validate_release_evidence,
+)
 
 __all__ = [
     "InMemoryReleaseDecisionStore",
@@ -14,4 +21,9 @@ __all__ = [
     "ReleaseDecisionRequest",
     "ReleaseDecisionService",
     "ReleaseDecisionStore",
+    "GATE_REQUIREMENTS",
+    "REQUIRED_EVIDENCE_SECTIONS",
+    "ReleaseEvidenceError",
+    "ReleaseEvidenceResult",
+    "validate_release_evidence",
 ]

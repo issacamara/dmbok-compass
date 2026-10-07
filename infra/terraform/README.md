@@ -45,6 +45,30 @@ the 768-dimensional `gemini-embedding-001` document vector, and its
 `corpus_version_id`. The native vector index combines the corpus-version
 filter with the embedding field so retrieval can never cross corpus versions.
 
+## Operations and cost controls
+
+`monitoring.tf` provisions a content-free operations dashboard and alert
+policies for Cloud Run latency and 5xx responses, provider fallback, quota
+exhaustions, ingestion failures, backup failures, and retrieval failures. The
+log-derived metrics match only the allowlisted telemetry fields or explicit
+content-free job markers (`dmbok_ingestion_failure`, `dmbok_backup_failure`,
+and `dmbok_retrieval_failure`). They must not be emitted with questions,
+prompts, passages, answers, traces, credentials, or provider payloads.
+
+It also provisions a recurring EUR 5 budget with 50%, 90%, and 100% current
+spend thresholds plus a 90% forecast threshold. Budgets are alerting controls,
+not automatic spending cutoffs; application quotas remain the request guard.
+
+Set `billing_account_id` and, when available, `notification_channel_ids` in
+the reviewed Terraform plan. The notification list defaults to empty so a
+plan can be validated before an operations channel is selected.
+
+For a no-GCP alert simulation, run `terraform plan -refresh=false` with a
+project, billing account, and bucket variable. Review that the plan contains
+six log metrics and alert policies, latency and 5xx policies, one operations
+dashboard, and four budget thresholds. No simulation requires production logs
+or interaction content.
+
 ## Validate and plan
 
 From this directory:

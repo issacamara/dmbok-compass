@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { getConfiguration, listUsers, updateConfiguration, updateUser } from "./admin";
+import { getConfiguration, listAggregateMetrics, listUsers, updateConfiguration, updateUser } from "./admin";
 
 describe("administrator API", () => {
   beforeEach(() => vi.restoreAllMocks());
@@ -28,6 +28,14 @@ describe("administrator API", () => {
     }));
     expect(fetchMock.mock.calls[2][1]).toEqual(expect.objectContaining({
       method: "PATCH", body: JSON.stringify({ per_user_daily_limit: 20, global_daily_limit: 50 }),
+    }));
+  });
+
+  it("reads content-free aggregate metrics through the guarded admin route", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response("[]", { status: 200 }));
+    await listAggregateMetrics("firebase-token");
+    expect(fetchMock).toHaveBeenCalledWith("/api/admin/metrics", expect.objectContaining({
+      headers: { Authorization: "Bearer firebase-token" },
     }));
   });
 });

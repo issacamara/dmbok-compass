@@ -20,3 +20,7 @@ Open `index.html` in a browser. The mockup is a lightweight interactive concept,
 ## Accessibility notes
 
 The concept uses semantic landmarks, visible text labels, native form controls, color plus text/status cues, and large click targets. Before implementation, run keyboard and screen-reader checks, contrast checks, and responsive tests against the final component library; this mockup does not claim WCAG conformance.
+
+## Implemented administration surface
+
+The web administrator route keeps the mockup's privacy boundary: it displays pending and approved-user actions, the ten-approved-user ceiling, editable UTC-daily quota limits, and allowlisted aggregate metric cards. It does not render questions, answers, retrieved passages, traces, evaluation controls, or release decisions.

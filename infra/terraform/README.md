@@ -22,6 +22,12 @@ Worker jobs are bounded batch execution with one task and no always-on
 instance. These limits keep the initial deployment aligned with the three-user
 capacity target and the monthly infrastructure budget.
 
+`delivery.tf` defines the API service and bounded ingestion/evaluation jobs.
+Cloud Build supplies an immutable registry-digest image during the reviewed
+plan; its preview step creates a zero-traffic revision and the production step
+routes traffic only after an explicit release decision. See
+`documents/runbooks/immutable-delivery.md` for the evidence and rollback drill.
+
 Secret values must be created out of band with `gcloud secrets versions add` or
 the approved secret-management workflow. This configuration creates only
 Secret Manager metadata, so secret values never enter Terraform configuration

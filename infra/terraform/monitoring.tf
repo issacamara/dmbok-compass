@@ -51,6 +51,7 @@ resource "google_monitoring_alert_policy" "operational" {
   display_name          = "DMBOK ${replace(each.key, "_", " ")}"
   combiner              = "OR"
   notification_channels = var.notification_channel_ids
+  depends_on            = [google_logging_metric.operational]
 
   documentation {
     content   = "${each.value.description} This alert contains no interaction content."

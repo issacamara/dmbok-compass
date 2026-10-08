@@ -46,8 +46,10 @@ resource "google_cloud_run_v2_service" "api" {
   }
 
   traffic {
-    type    = "TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST"
-    percent = 0
+    type = "TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST"
+    # Cloud Run requires initial service creation to allocate traffic. The
+    # delivery workflow creates subsequent revisions with zero traffic.
+    percent = 100
   }
 
   depends_on = [google_project_service.required]

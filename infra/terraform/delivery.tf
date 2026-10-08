@@ -35,6 +35,23 @@ resource "google_cloud_run_v2_service" "api" {
     }
     containers {
       image = var.api_image
+      env {
+        name  = "GOOGLE_CLOUD_PROJECT"
+        value = var.project_id
+      }
+      env {
+        name  = "GOOGLE_CLOUD_LOCATION"
+        value = var.region
+      }
+      env {
+        name = "OPENROUTER_API_KEY"
+        value_source {
+          secret_key_ref {
+            secret  = google_secret_manager_secret.managed["answer-provider-api-key"].secret_id
+            version = "latest"
+          }
+        }
+      }
       resources {
         limits = {
           cpu    = "1"
@@ -52,7 +69,18 @@ resource "google_cloud_run_v2_service" "api" {
     percent = 100
   }
 
-  depends_on = [google_project_service.required]
+  depends_on = [
+    google_project_service.required,
+    google_secret_manager_secret_iam_member.workload_access,
+  ]
+}
+
+resource "google_cloud_run_v2_service_iam_member" "public_invoker" {
+  project  = var.project_id
+  location = var.region
+  name     = google_cloud_run_v2_service.api.name
+  role     = "roles/run.invoker"
+  member   = "allUsers"
 }
 
 resource "google_cloud_run_v2_job" "ingestion" {
@@ -67,7 +95,23 @@ resource "google_cloud_run_v2_job" "ingestion" {
       timeout         = "3600s"
       containers {
         image = var.api_image
-        args  = ["python", "-m", "app.ingestion.job"]
+        args  = ["python", "-m", "app.ingestion.entrypoint"]
+        env {
+          name  = "GOOGLE_CLOUD_PROJECT"
+          value = var.project_id
+        }
+        env {
+          name  = "GOOGLE_CLOUD_LOCATION"
+          value = var.region
+        }
+        env {
+          name  = "CORPUS_BUCKET_NAME"
+          value = var.corpus_bucket_name
+        }
+        env {
+          name  = "CORPUS_OBJECT_NAME"
+          value = var.corpus_object_name
+        }
       }
     }
   }

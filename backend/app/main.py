@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from functools import lru_cache
+import os
 from time import perf_counter
 
 from fastapi import Depends, FastAPI, HTTPException, Query, status
@@ -7,6 +8,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.evaluations import evaluation_service, router as evaluations_router
 from app.answering import QuestionAnswerer
+from app.answering.pipeline import GroundedAnswerPolicy, RetrievedAnswerService
 from app.contracts.api import (
     AggregateMetric,
     AnswerResponse,
@@ -32,6 +34,9 @@ from app.identity import (
 from app.metrics import AggregateMetricRepository, FirestoreAggregateMetricRepository
 from app.quota import FirestoreQuotaRepository, QuotaExceededError, QuotaRepository
 from app.telemetry import LoggingTelemetryAdapter, TelemetryAdapter, error_event, response_event
+from app.corpus.firestore import FirestoreCorpusVersionStore
+from app.retrieval.search import FirestorePassageRetriever, create_vertex_query_embedder
+from model.openrouter import OpenRouterAdapter
 from app.evaluation import (
     EvaluationJobService,
     InMemoryEvaluationDatasetStore,
@@ -184,18 +189,31 @@ def reserve_request_quota(
 
 
 def question_answerer() -> QuestionAnswerer:
-    """Resolve the configured answerer; production wiring is runtime-specific."""
+    """Resolve the live Vertex/Firestore/OpenRouter answer pipeline."""
     configured = getattr(app.state, "question_answerer", None)
-    if configured is not None:
-        return configured
-    raise HTTPException(
-        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-        detail={
-            "code": "answer_service_unavailable",
-            "message": "The grounded answer service is not configured.",
-            "retryable": True,
-        },
+    return configured or configured_question_answerer()
+
+
+@lru_cache(maxsize=1)
+def configured_question_answerer() -> RetrievedAnswerService:
+    project = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("GCP_PROJECT_ID")
+    location = os.environ.get("GOOGLE_CLOUD_LOCATION", "europe-west1")
+    if not project:
+        raise HTTPException(status_code=503, detail="The Google Cloud project is not configured.")
+    import firebase_admin
+    from firebase_admin import firestore
+
+    try:
+        firebase_admin.get_app()
+    except ValueError:
+        firebase_admin.initialize_app()
+    client = firestore.client()
+    retriever = FirestorePassageRetriever(client, create_vertex_query_embedder(project=project, location=location))
+    policy = GroundedAnswerPolicy(
+        OpenRouterAdapter.from_environment(),
+        model_name=os.environ.get("OPENROUTER_PRIMARY_MODEL", "answer-model"),
     )
+    return RetrievedAnswerService(retriever, FirestoreCorpusVersionStore(client), policy)
 
 
 @app.post("/api/questions", response_model=AnswerResponse)

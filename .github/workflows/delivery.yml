@@ -128,7 +128,8 @@ jobs:
           firebase_dir="$RUNNER_TEMP/firebase-deploy"
           mkdir -p "$firebase_dir"
           cp -R web/dist "$firebase_dir/dist"
-          jq -n '{hosting: [{target: "app", public: "dist"}]}' \
+          jq -n --arg service "$API_SERVICE" --arg region "$REGION" \
+            '{hosting: [{target: "app", public: "dist", rewrites: [{source: "/api/**", run: {serviceId: $service, region: $region}}]}]}' \
             > "$firebase_dir/firebase.json"
           jq -n --arg project "$PROJECT_ID" --arg site "$HOSTING_SITE" \
             '{projects: {default: $project}, targets: {($project): {hosting: {app: [$site]}}}}' \
@@ -205,7 +206,8 @@ jobs:
           firebase_dir="$RUNNER_TEMP/firebase-deploy"
           mkdir -p "$firebase_dir"
           tar -xf delivery-evidence/frontend.tar -C "$firebase_dir"
-          jq -n '{hosting: [{target: "app", public: "."}]}' \
+          jq -n --arg service "$API_SERVICE" --arg region "$REGION" \
+            '{hosting: [{target: "app", public: ".", rewrites: [{source: "/api/**", run: {serviceId: $service, region: $region}}]}]}' \
             > "$firebase_dir/firebase.json"
           jq -n --arg project "$PROJECT_ID" --arg site "$HOSTING_SITE" \
             '{projects: {default: $project}, targets: {($project): {hosting: {app: [$site]}}}}' \

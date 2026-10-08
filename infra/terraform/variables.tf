@@ -57,6 +57,12 @@ variable "corpus_bucket_name" {
   type        = string
 }
 
+variable "corpus_object_name" {
+  description = "Approved PDF object path used by the ingestion job."
+  type        = string
+  default     = "corpus/dmbok.pdf"
+}
+
 variable "artifact_repository_id" {
   description = "Artifact Registry repository ID for immutable application images."
   type        = string

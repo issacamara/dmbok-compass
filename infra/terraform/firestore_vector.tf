@@ -17,4 +17,11 @@ resource "google_firestore_index" "document_chunks_vector" {
       flat {}
     }
   }
+
+  lifecycle {
+    # Firestore adds the document-name field to composite indexes server-side.
+    # Ignore that provider-managed field so routine plans do not replace the
+    # active vector index.
+    ignore_changes = [fields]
+  }
 }

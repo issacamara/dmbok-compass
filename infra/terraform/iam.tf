@@ -39,6 +39,7 @@ locals {
   runtime_roles = toset([
     "roles/aiplatform.user",
     "roles/datastore.user",
+    "roles/firebaseauth.viewer",
     "roles/logging.logWriter",
     "roles/monitoring.metricWriter",
   ])

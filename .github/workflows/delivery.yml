@@ -124,8 +124,11 @@ jobs:
         run: |
           mkdir -p web/dist
           tar -xf "$RUNNER_TEMP/frontend.tar" -C web/dist
+          jq --arg site "$HOSTING_SITE" '.hosting.site = $site' firebase.json \
+            > "$RUNNER_TEMP/firebase.json"
           npx --yes firebase-tools@13 hosting:channel:deploy "$PREVIEW_CHANNEL" \
-            --only "hosting:${HOSTING_SITE}" --project="$PROJECT_ID" --expires 7d --non-interactive
+            --config "$RUNNER_TEMP/firebase.json" --only "hosting:${HOSTING_SITE}" \
+            --project="$PROJECT_ID" --expires 7d --non-interactive
 
       - name: Deploy preview jobs
         run: |
@@ -195,7 +198,10 @@ jobs:
             --to-revisions="${revision}=100" --quiet
           mkdir -p web/dist
           tar -xf delivery-evidence/frontend.tar -C web/dist
-          npx --yes firebase-tools@13 deploy --only "hosting:${HOSTING_SITE}" \
+          jq --arg site "$HOSTING_SITE" '.hosting.site = $site' firebase.json \
+            > "$RUNNER_TEMP/firebase.json"
+          npx --yes firebase-tools@13 deploy --config "$RUNNER_TEMP/firebase.json" \
+            --only "hosting:${HOSTING_SITE}" \
             --project="$PROJECT_ID" --non-interactive
           jq --arg decision "$RELEASE_DECISION" --arg revision "$revision" \
             '.release_decision = $decision | .release_revision = $revision' \

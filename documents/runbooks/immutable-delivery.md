@@ -16,6 +16,14 @@ channel in `dev-dmbok-compass`; they never change production traffic. Manual
 runs may target either environment. Save the generated workflow artifact containing
 `delivery-manifest.json`, the Terraform plan, preview URL, and evaluation
 result with the release decision.
+## Preview
+
+Pushes to `main` target the `development` environment and, with promotion
+disabled, create a Cloud Run revision with zero traffic and a Firebase preview
+channel in the development project; they never change production traffic.
+Manual runs may target either environment. Save the generated workflow artifact
+containing `delivery-manifest.json`, the Terraform plan, preview URL, and
+evaluation result with the release decision.
 
 The manifest is valid only when `api_image` ends in `@api_digest`; a mutable
 tag is not a promotable artifact. Do not rebuild between preview and promotion.
@@ -29,6 +37,10 @@ approval from the protected `production` GitHub environment. The promotion
 step first validates the saved manifest, then routes 100% of Cloud Run traffic
 in the selected project to the exact preview revision and deploys the
 already-built frontend artifact to that environment's Firebase Hosting site.
+The promotion step first validates the saved manifest, then routes 100% of
+Cloud Run traffic in the selected project to the exact preview revision and
+deploys the already-built frontend artifact to that environment's Firebase
+Hosting site.
 
 There is no automatic production promotion. An empty or false release decision
 leaves production unchanged.

@@ -26,6 +26,13 @@ vi.mock("./api/identity", () => identityApi);
 describe("Firebase email and password identity", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    globalThis.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        user_used: 1, user_limit: 100, global_used: 1, global_limit: 100,
+        resets_at: "2030-01-01T00:00:00Z",
+      }),
+    });
     authSdk.onAuthStateChanged.mockImplementation((_auth, callback) => {
       callback(null);
       return vi.fn();
@@ -49,6 +56,7 @@ describe("Firebase email and password identity", () => {
 
   it("renders the workspace and email sign-in form", async () => {
     render(<App />);
+    expect(screen.getByRole("main")).toHaveAttribute("id", "main-content");
     expect(screen.getByRole("heading", { name: /grounded data management guidance/i })).toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
     expect(screen.getByLabelText("Email")).toHaveAttribute("type", "email");
@@ -139,7 +147,7 @@ describe("Firebase email and password identity", () => {
 
     expect(await screen.findByRole("heading", { name: "Request received" })).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Refresh access status" }));
-    expect(await screen.findByRole("heading", { name: "Access approved" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "What are you trying to understand?" })).toBeInTheDocument();
     expect(identityApi.getCurrentProfile).toHaveBeenCalledTimes(2);
   });
 

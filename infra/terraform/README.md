@@ -68,6 +68,15 @@ the 768-dimensional `gemini-embedding-001` document vector, and its
 `corpus_version_id`. The native vector index combines the corpus-version
 filter with the embedding field so retrieval can never cross corpus versions.
 
+Firestore application and vector data is protected by the managed daily backup
+schedule in `backup.tf`. Its 30-day retention is the explicit upper bound for
+scheduled copies: one daily backup per day means no more than 30 retained
+copies. Backup retention is independent of the corpus recovery path; the
+source PDF and its versioned generation remain the authoritative input for a
+deterministic index rebuild. Follow
+[`documents/runbooks/firestore-restore.md`](../../documents/runbooks/firestore-restore.md)
+for the restore drill and evidence record.
+
 ## Validate and plan
 
 From this directory, after the matching state bucket exists:

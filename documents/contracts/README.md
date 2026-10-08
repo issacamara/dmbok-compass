@@ -30,6 +30,18 @@ same 768-dimensional embedding model used for document chunks. Firestore
 nearest-neighbor search must filter on the active corpus-version ID before
 returning at most five ranked passages. Each passage preserves its chunk ID,
 page, section, excerpt, and available relevance score for the answer trace.
+Evidence classification then filters to finite normalized scores at or above
+the partial threshold (`0.45`), ranks ties by chunk ID, and keeps at most five
+passages. A top score at or above `0.75` is `strong`, a score from `0.45` to
+below `0.75` is `partial`, and no qualifying score is `absent`. The evidence
+bundle records the outcome basis and cited chunk IDs. Top-five retrieval
+success is reported as a content-free numerator, denominator, and percentage.
+
+Citation IDs returned by an answer model are accepted only when they match a
+retrieved chunk. The API reconstructs every citation's page, section, and
+excerpt from that chunk's stored provenance; provider-supplied citation
+metadata is never trusted. The live response trace also contains request-scoped
+retrieval, generation, and total timings.
 
 Production questions, prompts, retrieved passages, generated answers, and
 request traces are ephemeral. They must not be persisted to Firestore, Storage,
@@ -37,12 +49,48 @@ logs, analytics, traces, backups, or build artifacts. Evaluation-authored
 questions and annotations are separate durable data because reproducible
 release evaluation requires them.
 
+Evaluation datasets are versioned by `dataset_version_id`. Each
+evaluator-authored item has one of five categories: definitions, explanations,
+comparisons, study, or scenarios. Generated annotations begin as `candidate`;
+human review may move them once to `approved` or `rejected`. A dataset is
+eligible for release evaluation only after 30–50 annotations reach `approved`.
+These records are not a storage path for production questions or answer traces.
+
 Telemetry is content-free and allowlisted to the fields in the fixture. Any
 question, prompt, passage, answer, trace, excerpt, password, token, secret, or
 credential field is rejected.
+
+The backend telemetry adapter accepts only `TelemetryEvent` values. Successful
+question requests emit request count, outcome, elapsed time, and model
+identifier; failures emit request count, elapsed time, and exception class.
+Exception messages are never emitted because they can contain interaction
+content. The question UI keeps the question, answer, citations, and trace in
+React state for the active view only and does not write them to browser
+storage.
 
 The administrator metrics API (`/api/admin/metrics`) exposes persisted
 `AggregateMetric` records only. A record contains a metric name, numerator,
 denominator, and percentage, so request counts, quota consumption, provider
 failures, fallback rates, and cost indicators can be reported without storing
 question, answer, passage, or trace content.
+
+Evaluation runs are identified by a deterministic hash of dataset, corpus,
+configuration, model, and selected item IDs. `POST /api/evaluations` accepts
+the complete dataset or an explicit subset, returns a queued `EvaluationRun`,
+and dispatches the same run ID at most once; retrying the identical request is
+idempotent. Only administrators may launch or inspect runs. A run records the
+four immutable version bindings and selected item IDs, and the worker stores
+content-free per-item pass/fail results plus six aggregate metrics: retrieval
+success, grounded claims, citation correctness, answer quality, refusal
+correctness, and response time.
+Each metric records its numerator, denominator, percentage, release threshold,
+and pass/fail result.
+
+Release decisions are administrator-only and immutable.  A decision binds the
+release ID to the evaluation run's exact dataset, corpus, configuration, and
+model versions, plus the provider, scorer, and gate-report identifiers supplied
+for that candidate.  Approval requires a completed run with gate reports and
+all metrics passing.  A failed or incomplete gate may be approved only when
+the administrator records an explicit approved exception and rationale;
+otherwise the API fails closed.  Repeating an identical release submission is
+idempotent, while reusing a release ID with different evidence is rejected.

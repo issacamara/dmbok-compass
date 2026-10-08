@@ -12,6 +12,7 @@ import { getCurrentProfile, IdentityApiError, registerProfile } from "./api/iden
 import type { UserProfile } from "./api/contracts";
 import { auth, firebaseConfigured } from "./firebase";
 import { AdminPanel } from "./AdminPanel";
+import { QuestionPanel } from "./questions/QuestionPanel";
 
 type Mode = "sign-in" | "sign-up" | "reset-password" | "complete-profile";
 
@@ -176,6 +177,9 @@ export function AuthPanel() {
   if (user?.emailVerified && profile) {
     if (profile.approval_state === "approved" && profile.role === "admin") {
       return <AdminPanel token={accessToken} onSignOut={logout} />;
+    }
+    if (profile.approval_state === "approved") {
+      return <QuestionPanel token={accessToken} onSignOut={logout} />;
     }
     const stateContent = {
       pending: ["Request received", "Your email is verified. An administrator must approve your account before you can use DMBOK Compass."],

@@ -1,8 +1,18 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { getConfiguration, listUsers, updateConfiguration, updateUser } from "./api/admin";
-import type { ApprovalState, QuotaPolicy, UserProfile } from "./api/contracts";
+import { getConfiguration, listAggregateMetrics, listUsers, updateConfiguration, updateUser } from "./api/admin";
+import type { AggregateMetric, ApprovalState, QuotaPolicy, UserProfile } from "./api/contracts";
+import { EvaluationPanel } from "./admin/evaluation/EvaluationPanel";
 
 type AdminPanelProps = { token: string; onSignOut: () => void };
+const APPROVED_USER_CEILING = 10;
+
+const metricLabels: Record<string, string> = {
+  request_count: "Requests today",
+  quota_consumption: "Quota consumed",
+  provider_failures: "Provider failures",
+  fallback_rate: "Fallback rate",
+  estimated_cost_cents: "Estimated infrastructure cost",
+};
 
 const filters: Array<{ value: "" | ApprovalState; label: string }> = [
   { value: "", label: "All users" }, { value: "pending", label: "Pending" },
@@ -17,7 +27,9 @@ const actions: Record<ApprovalState, Array<{ state: ApprovalState; label: string
 
 export function AdminPanel({ token, onSignOut }: AdminPanelProps) {
   const [users, setUsers] = useState<UserProfile[]>([]);
+  const [allUsers, setAllUsers] = useState<UserProfile[]>([]);
   const [policy, setPolicy] = useState<QuotaPolicy | null>(null);
+  const [metrics, setMetrics] = useState<AggregateMetric[]>([]);
   const [filter, setFilter] = useState<"" | ApprovalState>("pending");
   const [loading, setLoading] = useState(true);
   const [busyUser, setBusyUser] = useState<string | null>(null);
@@ -28,11 +40,20 @@ export function AdminPanel({ token, onSignOut }: AdminPanelProps) {
   async function load(filterValue = filter) {
     setLoading(true); setError("");
     try {
-      const [loadedUsers, loadedPolicy] = await Promise.all([
-        listUsers(token, filterValue || undefined), policy ? Promise.resolve(policy) : getConfiguration(token),
+      const allUsersRequest = listUsers(token);
+      const [loadedUsers, loadedAllUsers, loadedPolicy, loadedMetrics] = await Promise.all([
+        filterValue ? listUsers(token, filterValue) : allUsersRequest,
+        allUsersRequest,
+        policy ? Promise.resolve(policy) : getConfiguration(token),
+        listAggregateMetrics(token),
       ]);
-      setUsers(loadedUsers); if (!policy) setPolicy(loadedPolicy);
-    } catch { setError("Could not load administrator controls. Try again shortly."); }
+      setUsers(loadedUsers); setAllUsers(loadedAllUsers); setMetrics(loadedMetrics);
+      if (!policy) setPolicy(loadedPolicy);
+    } catch (cause) {
+      setError(isForbidden(cause)
+        ? "You do not have administrator access."
+        : "Could not load administrator controls. Try again shortly.");
+    }
     finally { setLoading(false); }
   }
 
@@ -41,7 +62,7 @@ export function AdminPanel({ token, onSignOut }: AdminPanelProps) {
   async function changeUser(userId: string, state: ApprovalState) {
     setBusyUser(userId); setError(""); setMessage("");
     try { await updateUser(token, userId, state); setMessage("User access updated."); await load(); }
-    catch { setError("Could not update that user’s access."); }
+    catch (cause) { setError(isForbidden(cause) ? "You do not have administrator access." : "Could not update that user’s access."); }
     finally { setBusyUser(null); }
   }
 
@@ -49,7 +70,7 @@ export function AdminPanel({ token, onSignOut }: AdminPanelProps) {
     event.preventDefault(); if (!policy) return;
     setSavingPolicy(true); setError(""); setMessage("");
     try { setPolicy(await updateConfiguration(token, policy)); setMessage("Quota limits saved."); }
-    catch { setError("Could not save quota limits."); }
+    catch (cause) { setError(isForbidden(cause) ? "You do not have administrator access." : "Could not save quota limits."); }
     finally { setSavingPolicy(false); }
   }
 
@@ -62,10 +83,20 @@ export function AdminPanel({ token, onSignOut }: AdminPanelProps) {
       </div><button className="secondary" type="button" onClick={onSignOut}>Sign out</button></div>
       {error && <p className="error" role="alert">{error}</p>}
       {message && <p className="status" role="status">{message}</p>}
+      <section className="metric-row" aria-labelledby="metrics-title">
+        <h3 className="visually-hidden" id="metrics-title">Aggregate activity</h3>
+        <div className="metric-card">
+          <span>Active users</span>
+          <strong>{allUsers.filter((user) => user.approval_state === "approved").length} / {APPROVED_USER_CEILING}</strong>
+          <progress max={APPROVED_USER_CEILING} value={allUsers.filter((user) => user.approval_state === "approved").length} aria-label="Active users" />
+          <small>Approval is capped at ten accounts.</small>
+        </div>
+        {metrics.map((metric) => <MetricCard key={metric.metric_name} metric={metric} />)}
+      </section>
       <div className="admin-grid">
         <section className="admin-card" aria-labelledby="users-title">
           <div className="section-heading"><h3 id="users-title">Users</h3>
-            <label>Filter users<select aria-label="Filter users" value={filter} onChange={(event) => {
+            <label htmlFor="user-filter">Filter users<select id="user-filter" value={filter} onChange={(event) => {
               const value = event.target.value as "" | ApprovalState; setFilter(value); void load(value);
             }}>{filters.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</select></label>
           </div>
@@ -92,6 +123,27 @@ export function AdminPanel({ token, onSignOut }: AdminPanelProps) {
           </form>}
         </section>
       </div>
+      <EvaluationPanel token={token} />
     </section>
   );
+}
+
+function isForbidden(cause: unknown): boolean {
+  return typeof cause === "object" && cause !== null && "status" in cause && cause.status === 403;
+}
+
+function MetricCard({ metric }: { metric: AggregateMetric }) {
+  const value = metric.metric_name === "estimated_cost_cents"
+    ? `€${(metric.numerator / 100).toFixed(2)}`
+    : metric.metric_name === "fallback_rate"
+      ? `${metric.percentage}%`
+      : metric.numerator.toLocaleString();
+  const denominator = metric.metric_name === "fallback_rate" || metric.denominator === 0
+    ? null
+    : `of ${metric.denominator.toLocaleString()}`;
+  return <div className="metric-card">
+    <span>{metricLabels[metric.metric_name] ?? metric.metric_name.replaceAll("_", " ")}</span>
+    <strong>{value}</strong>
+    <small>{denominator ?? `${metric.percentage}%`}</small>
+  </div>;
 }

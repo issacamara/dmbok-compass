@@ -11,6 +11,7 @@ class ContractModel(BaseModel):
 
 
 Outcome = Literal["answer", "qualified", "refusal"]
+QuestionCategory = Literal["definitions", "explanations", "comparisons", "study", "scenarios"]
 
 
 class ApiError(ContractModel):
@@ -41,6 +42,10 @@ class RetrievedPassage(ContractModel):
     section: str = Field(min_length=1, max_length=500)
     excerpt: str = Field(min_length=1, max_length=5000)
     relevance_score: float | None = None
+
+
+class QuestionRequest(ContractModel):
+    question: str = Field(min_length=1, max_length=2000)
 
 
 class RetrievalTrace(ContractModel):
@@ -90,6 +95,13 @@ class AggregateMetric(ContractModel):
     percentage: float = Field(ge=0, le=100)
 
 
+class EvaluationMetric(AggregateMetric):
+    """Content-free release-gate result for one evaluated metric."""
+
+    threshold: float = Field(ge=0, le=100)
+    passed: bool
+
+
 class CorpusVersion(ContractModel):
     version_id: str = Field(min_length=1, max_length=128)
     source_uri: str = Field(min_length=1, max_length=2048)
@@ -114,6 +126,7 @@ class EvaluationItem(ContractModel):
     item_id: str = Field(min_length=1, max_length=128)
     question: str = Field(min_length=1, max_length=2000)
     dataset_version_id: str = Field(min_length=1, max_length=128)
+    category: QuestionCategory = "definitions"
 
 
 class GoldAnnotation(ContractModel):
@@ -129,19 +142,53 @@ class EvaluationDataset(ContractModel):
     gold_annotations: list[GoldAnnotation] = Field(default_factory=list)
 
 
+class EvaluationItemResult(ContractModel):
+    """Content-free outcome for one evaluator-authored item."""
+
+    item_id: str = Field(min_length=1, max_length=128)
+    retrieval_success: bool
+    grounded: bool
+    citation_correct: bool
+    answer_quality: bool
+    refusal_correct: bool
+    response_time_ms: float = Field(ge=0)
+
+
 class EvaluationRun(ContractModel):
     run_id: str = Field(min_length=1, max_length=128)
     dataset_version_id: str = Field(min_length=1, max_length=128)
     corpus_version_id: str = Field(min_length=1, max_length=128)
     status: Literal["queued", "running", "completed", "failed"]
-    metrics: list[AggregateMetric] = Field(default_factory=list)
+    metrics: list[EvaluationMetric] = Field(default_factory=list)
+    item_results: list[EvaluationItemResult] = Field(default_factory=list, max_length=10000)
+    selected_item_ids: list[str] = Field(default_factory=list, max_length=10000)
+    configuration_version_id: str = Field(min_length=1, max_length=128)
+    model_version_id: str = Field(min_length=1, max_length=128)
+    error: str | None = Field(default=None, max_length=500)
 
 
 class ReleaseDecision(ContractModel):
     release_id: str = Field(min_length=1, max_length=128)
     evaluation_run_id: str = Field(min_length=1, max_length=128)
+    dataset_version_id: str = Field(min_length=1, max_length=128)
+    corpus_version_id: str = Field(min_length=1, max_length=128)
+    configuration_version_id: str = Field(min_length=1, max_length=128)
+    provider_version_id: str = Field(min_length=1, max_length=128)
+    model_version_id: str = Field(min_length=1, max_length=128)
+    scorer_version_id: str = Field(min_length=1, max_length=128)
+    gate_report_ids: list[str] = Field(min_length=1, max_length=100)
     decision: Literal["pending", "approved", "rejected"]
     rationale: str = Field(min_length=1, max_length=5000)
+    exception_approved: bool = False
+    exception_rationale: str | None = Field(default=None, max_length=5000)
+
+    @model_validator(mode="after")
+    def validate_exception(self) -> "ReleaseDecision":
+        if self.exception_approved and not self.exception_rationale:
+            raise ValueError("an approved exception requires an exception rationale")
+        if not self.exception_approved and self.exception_rationale:
+            raise ValueError("exception rationale requires an approved exception")
+        return self
 
 
 API_ROUTES = {
@@ -158,4 +205,5 @@ ADMIN_ROUTES = {
     "users": "/api/admin/users",
     "configuration": "/api/admin/configuration",
     "aggregate_metrics": "/api/admin/metrics",
+    "release_decisions": "/api/releases",
 }

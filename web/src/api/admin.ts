@@ -1,4 +1,4 @@
-import { ADMIN_ROUTES, type ApprovalState, type QuotaPolicy, type UserProfile } from "./contracts";
+import { ADMIN_ROUTES, type AggregateMetric, type ApprovalState, type QuotaPolicy, type UserProfile } from "./contracts";
 
 export class AdminApiError extends Error {
   constructor(readonly status: number, message: string) {
@@ -43,4 +43,8 @@ export function updateConfiguration(token: string, policy: QuotaPolicy): Promise
     method: "PATCH",
     body: JSON.stringify(policy),
   });
+}
+
+export function listAggregateMetrics(token: string): Promise<AggregateMetric[]> {
+  return adminRequest<AggregateMetric[]>(ADMIN_ROUTES.aggregateMetrics, token);
 }

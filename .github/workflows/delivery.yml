@@ -133,7 +133,7 @@ jobs:
             '{projects: {default: $project}, targets: {($project): {hosting: {app: [$site]}}}}' \
             > "$firebase_dir/.firebaserc"
           (cd "$firebase_dir" && npx --yes firebase-tools@13 hosting:channel:deploy "$PREVIEW_CHANNEL" \
-            --only hosting:app --project="$PROJECT_ID" --expires 7d --non-interactive)
+            --project="$PROJECT_ID" --expires 7d --non-interactive)
 
       - name: Deploy preview jobs
         run: |
@@ -210,7 +210,7 @@ jobs:
             '{projects: {default: $project}, targets: {($project): {hosting: {app: [$site]}}}}' \
             > "$firebase_dir/.firebaserc"
           (cd "$firebase_dir" && npx --yes firebase-tools@13 deploy \
-            --only hosting:app --project="$PROJECT_ID" --non-interactive)
+            --project="$PROJECT_ID" --non-interactive)
           jq --arg decision "$RELEASE_DECISION" --arg revision "$revision" \
             '.release_decision = $decision | .release_revision = $revision' \
             delivery-evidence/delivery-manifest.json > delivery-evidence/delivery-manifest.promoted.json

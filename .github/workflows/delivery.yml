@@ -127,7 +127,7 @@ jobs:
           jq --arg site "$HOSTING_SITE" '.hosting.site = $site' firebase.json \
             > "$RUNNER_TEMP/firebase.json"
           npx --yes firebase-tools@13 hosting:channel:deploy "$PREVIEW_CHANNEL" \
-            --config "$RUNNER_TEMP/firebase.json" --only "hosting:${HOSTING_SITE}" \
+            --config "$RUNNER_TEMP/firebase.json" --only hosting \
             --project="$PROJECT_ID" --expires 7d --non-interactive
 
       - name: Deploy preview jobs
@@ -201,7 +201,7 @@ jobs:
           jq --arg site "$HOSTING_SITE" '.hosting.site = $site' firebase.json \
             > "$RUNNER_TEMP/firebase.json"
           npx --yes firebase-tools@13 deploy --config "$RUNNER_TEMP/firebase.json" \
-            --only "hosting:${HOSTING_SITE}" \
+            --only hosting \
             --project="$PROJECT_ID" --non-interactive
           jq --arg decision "$RELEASE_DECISION" --arg revision "$revision" \
             '.release_decision = $decision | .release_revision = $revision' \

@@ -127,15 +127,13 @@ jobs:
           firebase_dir="$RUNNER_TEMP/firebase-deploy"
           mkdir -p "$firebase_dir"
           cp -R web/dist "$firebase_dir/dist"
-          jq -n --arg target "$HOSTING_SITE" \
-            '{hosting: [{target: $target, public: "dist"}]}' \
+          jq -n '{hosting: [{target: "app", public: "dist"}]}' \
             > "$firebase_dir/firebase.json"
-          jq -n --arg project "$PROJECT_ID" --arg target "$HOSTING_SITE" \
-            --arg site "$HOSTING_SITE" \
-            '{projects: {default: $project}, targets: {($project): {hosting: {($target): [$site]}}}}' \
+          jq -n --arg project "$PROJECT_ID" --arg site "$HOSTING_SITE" \
+            '{projects: {default: $project}, targets: {($project): {hosting: {app: [$site]}}}}' \
             > "$firebase_dir/.firebaserc"
           (cd "$firebase_dir" && npx --yes firebase-tools@13 hosting:channel:deploy "$PREVIEW_CHANNEL" \
-            --only "hosting:${HOSTING_SITE}" --project="$PROJECT_ID" --expires 7d --non-interactive)
+            --only hosting:app --project="$PROJECT_ID" --expires 7d --non-interactive)
 
       - name: Deploy preview jobs
         run: |
@@ -206,15 +204,13 @@ jobs:
           firebase_dir="$RUNNER_TEMP/firebase-deploy"
           mkdir -p "$firebase_dir"
           tar -xf delivery-evidence/frontend.tar -C "$firebase_dir"
-          jq -n --arg target "$HOSTING_SITE" \
-            '{hosting: [{target: $target, public: "."}]}' \
+          jq -n '{hosting: [{target: "app", public: "."}]}' \
             > "$firebase_dir/firebase.json"
-          jq -n --arg project "$PROJECT_ID" --arg target "$HOSTING_SITE" \
-            --arg site "$HOSTING_SITE" \
-            '{projects: {default: $project}, targets: {($project): {hosting: {($target): [$site]}}}}' \
+          jq -n --arg project "$PROJECT_ID" --arg site "$HOSTING_SITE" \
+            '{projects: {default: $project}, targets: {($project): {hosting: {app: [$site]}}}}' \
             > "$firebase_dir/.firebaserc"
           (cd "$firebase_dir" && npx --yes firebase-tools@13 deploy \
-            --only "hosting:${HOSTING_SITE}" --project="$PROJECT_ID" --non-interactive)
+            --only hosting:app --project="$PROJECT_ID" --non-interactive)
           jq --arg decision "$RELEASE_DECISION" --arg revision "$revision" \
             '.release_decision = $decision | .release_revision = $revision' \
             delivery-evidence/delivery-manifest.json > delivery-evidence/delivery-manifest.promoted.json

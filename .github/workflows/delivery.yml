@@ -43,6 +43,7 @@ jobs:
     runs-on: ubuntu-latest
     environment: ${{ inputs.target_environment || 'development' }}
     env:
+      DEPLOY_ENVIRONMENT: ${{ inputs.target_environment || 'development' }}
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
       CORPUS_BUCKET_NAME: ${{ vars.CORPUS_BUCKET_NAME }}
       BILLING_ACCOUNT_ID: ${{ vars.GCP_BILLING_ACCOUNT_ID }}
@@ -101,7 +102,7 @@ jobs:
       - name: Plan Terraform against immutable image
         working-directory: infra/terraform
         run: |
-          terraform init -backend=false -input=false
+          terraform init -backend-config="backends/${DEPLOY_ENVIRONMENT}.hcl" -reconfigure -input=false
           terraform plan -input=false -refresh=false -out="$RUNNER_TEMP/delivery.tfplan" \
             -var="project_id=${PROJECT_ID}" -var="corpus_bucket_name=${CORPUS_BUCKET_NAME}" \
             -var="billing_account_id=${BILLING_ACCOUNT_ID}" \

@@ -1,3 +1,5 @@
+from google.cloud.firestore_v1.vector import Vector
+
 from app.contracts import DocumentChunk
 from app.corpus import (
     CorpusEmbeddingWriter,
@@ -66,6 +68,8 @@ def test_chunk_upsert_is_deterministic_and_corpus_version_scoped() -> None:
     assert len(document.writes) == 2
     assert document.writes[0] == document.writes[1]
     assert document.writes[0]["corpus_version_id"] == "v1"
+    assert isinstance(document.writes[0]["embedding"], Vector)
+    assert list(document.writes[0]["embedding"]) == [0.0] * 768
 
 
 def test_embedding_writer_persists_the_embedding_with_the_chunk() -> None:

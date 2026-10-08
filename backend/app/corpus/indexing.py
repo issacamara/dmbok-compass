@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
+from google.cloud.firestore_v1.vector import Vector
+
 from app.contracts import DocumentChunk
 from app.corpus.chunking import TextChunk
 from app.corpus.embedding import VertexDocumentEmbedder
@@ -31,7 +33,9 @@ class FirestoreChunkRepository:
 
     def upsert(self, chunk: DocumentChunk) -> DocumentChunk:
         """Write the same deterministic document on retries and return it."""
-        self.chunks.document(chunk.chunk_id).set(chunk.model_dump(mode="json"))
+        payload = chunk.model_dump(mode="json")
+        payload["embedding"] = Vector(chunk.embedding)
+        self.chunks.document(chunk.chunk_id).set(payload)
         return chunk
 
 

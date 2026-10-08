@@ -1,0 +1,208 @@
+name: Immutable delivery
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: GCP/GitHub environment to deploy
+        required: true
+        default: development
+        type: choice
+        options: [development, production]
+      promote:
+        description: Promote the reviewed preview to production
+        required: true
+        default: false
+        type: boolean
+      release_decision:
+        description: Release decision identifier required for promotion
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: delivery-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  REGION: europe-west1
+  API_SERVICE: dmbok-compass-api
+  INGESTION_JOB: dmbok-compass-ingestion
+  EVALUATION_JOB: dmbok-compass-evaluation
+  HOSTING_SITE: dmbok-compass
+  PREVIEW_CHANNEL: commit-${{ github.sha }}
+
+jobs:
+  preview:
+    name: Build and preview immutable release
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target_environment || 'development' }}
+    env:
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      CORPUS_BUCKET_NAME: ${{ vars.CORPUS_BUCKET_NAME }}
+      IMAGE_REPOSITORY: europe-west1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/dmbok-compass
+      HOSTING_SITE: ${{ vars.HOSTING_SITE }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_BUILD_SERVICE_ACCOUNT }}
+
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Configure Docker for Artifact Registry
+        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+
+      - name: Build and push API image
+        uses: docker/build-push-action@v6
+        with:
+          context: backend
+          file: backend/Dockerfile
+          push: true
+          tags: ${{ env.IMAGE_REPOSITORY }}/api:${{ github.sha }}
+
+      - name: Build and hash frontend artifact
+        working-directory: web
+        env:
+          VITE_FIREBASE_API_KEY: ${{ vars.VITE_FIREBASE_API_KEY }}
+          VITE_FIREBASE_AUTH_DOMAIN: ${{ vars.VITE_FIREBASE_AUTH_DOMAIN }}
+          VITE_FIREBASE_PROJECT_ID: ${{ vars.VITE_FIREBASE_PROJECT_ID }}
+          VITE_FIREBASE_APP_ID: ${{ vars.VITE_FIREBASE_APP_ID }}
+        run: |
+          npm ci
+          npm run build
+          tar -cf "$RUNNER_TEMP/frontend.tar" -C dist .
+          sha256sum "$RUNNER_TEMP/frontend.tar" | cut -d' ' -f1 > "$RUNNER_TEMP/frontend.sha256"
+
+      - name: Resolve immutable delivery manifest
+        run: |
+          api_digest="$(gcloud artifacts docker images describe "${IMAGE_REPOSITORY}/api:${GITHUB_SHA}" --format='value(image_summary.digest)')"
+          test -n "$api_digest"
+          frontend_digest="$(cat "$RUNNER_TEMP/frontend.sha256")"
+          jq -n --arg commit "$GITHUB_SHA" --arg image "${IMAGE_REPOSITORY}/api@${api_digest}" \
+            --arg digest "$api_digest" --arg frontend_digest "$frontend_digest" \
+            '{commit: $commit, api_image: $image, api_digest: $digest, frontend_digest: $frontend_digest, preview_revision: "", release_revision: ""}' \
+            > "$RUNNER_TEMP/delivery-manifest.json"
+
+      - name: Plan Terraform against immutable image
+        working-directory: infra/terraform
+        run: |
+          terraform init -backend=false -input=false
+          terraform plan -input=false -refresh=false -out="$RUNNER_TEMP/delivery.tfplan" \
+            -var="project_id=${PROJECT_ID}" -var="corpus_bucket_name=${CORPUS_BUCKET_NAME}" \
+            -var="api_image=$(jq -r .api_image "$RUNNER_TEMP/delivery-manifest.json")"
+          terraform show -no-color "$RUNNER_TEMP/delivery.tfplan" > "$RUNNER_TEMP/delivery.tfplan.txt"
+
+      - name: Deploy zero-traffic API preview
+        run: |
+          api_image="$(jq -r .api_image "$RUNNER_TEMP/delivery-manifest.json")"
+          gcloud run deploy "$API_SERVICE" --image="$api_image" --region="$REGION" \
+            --platform=managed --no-traffic --quiet --format='value(status.latestCreatedRevisionName)' \
+            > "$RUNNER_TEMP/preview_revision"
+          revision="$(cat "$RUNNER_TEMP/preview_revision")"
+          test -n "$revision"
+          jq --arg revision "$revision" '.preview_revision = $revision' "$RUNNER_TEMP/delivery-manifest.json" \
+            > "$RUNNER_TEMP/delivery-manifest.updated.json"
+          mv "$RUNNER_TEMP/delivery-manifest.updated.json" "$RUNNER_TEMP/delivery-manifest.json"
+
+      - name: Deploy Firebase preview channel
+        run: |
+          mkdir -p web/dist
+          tar -xf "$RUNNER_TEMP/frontend.tar" -C web/dist
+          npx --yes firebase-tools@13 hosting:channel:deploy "$PREVIEW_CHANNEL" \
+            --only "hosting:${HOSTING_SITE}" --project="$PROJECT_ID" --expires 7d --non-interactive
+
+      - name: Deploy preview jobs
+        run: |
+          api_image="$(jq -r .api_image "$RUNNER_TEMP/delivery-manifest.json")"
+          gcloud run jobs deploy "$INGESTION_JOB" --image="$api_image" --region="$REGION" --quiet
+          gcloud run jobs deploy "$EVALUATION_JOB" --image="$api_image" --region="$REGION" --quiet
+
+      - name: Validate and upload release evidence
+        run: |
+          python3 scripts/verify_delivery_manifest.py "$RUNNER_TEMP/delivery-manifest.json"
+          mkdir -p "$RUNNER_TEMP/delivery-evidence/web"
+          cp "$RUNNER_TEMP/delivery-manifest.json" "$RUNNER_TEMP/delivery-evidence/delivery-manifest.json"
+          cp "$RUNNER_TEMP/delivery.tfplan.txt" "$RUNNER_TEMP/delivery-evidence/delivery.tfplan.txt"
+          cp "$RUNNER_TEMP/frontend.tar" "$RUNNER_TEMP/delivery-evidence/frontend.tar"
+          cp -R web/dist/. "$RUNNER_TEMP/delivery-evidence/web/"
+
+      - name: Publish release evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: delivery-evidence-${{ github.sha }}
+          path: ${{ runner.temp }}/delivery-evidence
+          if-no-files-found: error
+          retention-days: 14
+
+  promote:
+    name: Promote reviewed release
+    needs: preview
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.promote == true }}
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target_environment || 'development' }}
+    env:
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      IMAGE_REPOSITORY: europe-west1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/dmbok-compass
+      HOSTING_SITE: ${{ vars.HOSTING_SITE }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate promotion input
+        env:
+          RELEASE_DECISION: ${{ inputs.release_decision }}
+        run: test -n "$RELEASE_DECISION"
+
+      - name: Download release evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: delivery-evidence-${{ github.sha }}
+          path: delivery-evidence
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_BUILD_SERVICE_ACCOUNT }}
+
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Promote exact preview artifacts
+        env:
+          RELEASE_DECISION: ${{ inputs.release_decision }}
+        run: |
+          python3 scripts/verify_delivery_manifest.py delivery-evidence/delivery-manifest.json
+          revision="$(jq -r .preview_revision delivery-evidence/delivery-manifest.json)"
+          test -n "$revision"
+          gcloud run services update-traffic "$API_SERVICE" --region="$REGION" \
+            --to-revisions="${revision}=100" --quiet
+          mkdir -p web/dist
+          tar -xf delivery-evidence/frontend.tar -C web/dist
+          npx --yes firebase-tools@13 deploy --only "hosting:${HOSTING_SITE}" \
+            --project="$PROJECT_ID" --non-interactive
+          jq --arg decision "$RELEASE_DECISION" --arg revision "$revision" \
+            '.release_decision = $decision | .release_revision = $revision' \
+            delivery-evidence/delivery-manifest.json > delivery-evidence/delivery-manifest.promoted.json
+
+      - name: Publish promotion evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: promoted-delivery-evidence-${{ github.sha }}
+          path: delivery-evidence
+          if-no-files-found: error
+          retention-days: 30

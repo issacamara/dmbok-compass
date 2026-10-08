@@ -109,7 +109,7 @@ flowchart LR
     Primary --> API
     Fallback --> API
 
-    Build[Cloud Build + Artifact Registry + Terraform] -. deploys .-> Web
+    Build[GitHub Actions + Artifact Registry + Terraform] -. deploys .-> Web
     Build -. deploys .-> API
     Build -. deploys .-> Job
 
@@ -185,9 +185,9 @@ flowchart LR
 ### 5.10 Google Cloud Operations and Delivery Platform
 
 - **Purpose and responsibilities:** Static hosting, serverless runtime, scheduling, secret delivery, builds, artifact storage, infrastructure-as-code deployment, content-free logs/metrics, alerts, budgets, and rollback.
-- **Classification:** **Reused.** Firebase Hosting, Cloud Run, Cloud Scheduler, Secret Manager, Cloud Build, Artifact Registry, Cloud Logging, and Cloud Monitoring provide managed capabilities at the required scale.
+- **Classification:** **Reused.** Firebase Hosting, Cloud Run, Cloud Scheduler, Secret Manager, GitHub Actions, Artifact Registry, Cloud Logging, and Cloud Monitoring provide managed capabilities at the required scale.
 - **Interfaces and data owned:** CI/CD interacts with source control and Terraform; runtime emits allowlisted metadata only. Secret Manager owns provider credentials; Artifact Registry owns immutable images.
-- **Technology:** GCP managed services, Terraform, Cloud Build, and one production project in `europe-west1`, with local emulators and preview revisions instead of a persistent staging environment.
+- **Technology:** GCP managed services, Terraform, GitHub Actions, and two isolated projects in `europe-west1`: `dev-dmbok-compass` for development and `prod-dmbok-compass` for production. Each project uses its own preview revisions and Firebase Hosting environment.
 
 ## 6. Reuse Inventory
 
@@ -202,7 +202,7 @@ flowchart LR
 | Cloud Storage | Source corpus and reproducible artifacts | Durable object storage fits PDF and manifest retention. |
 | Vertex AI embeddings | Document and query vector generation | Managed GCP inference satisfies the GCP-first decision. |
 | Secret Manager | Provider credential storage | Prevents browser, source-control, and image exposure. |
-| Cloud Build and Artifact Registry | Immutable build and image supply chain | Managed CI and regional artifact storage reduce operations. |
+| GitHub Actions and Artifact Registry | Immutable build and image supply chain | Repository-native CI and regional artifact storage reduce operations. |
 | Cloud Logging and Monitoring | Safe aggregate telemetry and alerts | Managed operations support the single administrator when content is excluded. |
 
 No application source code, reusable modules, deployment configuration, or existing services were found in the repository. Every new application component in section 5 is therefore justified as greenfield work.
@@ -229,7 +229,7 @@ The backend and worker call Vertex AI for embeddings using workload identity. In
 
 The external model adapter sends the minimum ephemeral prompt and passages over HTTPS. It validates structured output, normalizes errors, applies bounded timeouts, and invokes fallback only for configured model-level unavailability, timeout, capacity, or rate-limit conditions. Authentication or policy failures are not blindly retried. Since both models use one provider, provider-wide failure produces a clear service error rather than an unsupported answer.
 
-Cloud Scheduler invokes Cloud Run Jobs using a dedicated authenticated service account. Secret Manager supplies provider credentials only to the backend and evaluation job. Cloud Build produces immutable frontend and container artifacts; Artifact Registry stores images by digest; Terraform defines infrastructure and IAM. No interface permits browser access to Firestore vectors, source files, service credentials, evaluation internals, or other users' records.
+Cloud Scheduler invokes Cloud Run Jobs using a dedicated authenticated service account. Secret Manager supplies provider credentials only to the backend and evaluation job. GitHub Actions produces immutable frontend and container artifacts through repository-restricted Workload Identity Federation; Artifact Registry stores images by digest; Terraform defines infrastructure and IAM. No interface permits browser access to Firestore vectors, source files, service credentials, evaluation internals, or other users' records.
 
 ## 9. Cross-Cutting Concerns
 
@@ -268,14 +268,14 @@ Cloud Scheduler invokes Cloud Run Jobs using a dedicated authenticated service a
 | Persist production questions for diagnosis | Better retrospective debugging | Violates FR-013 and NFR-011 | Rejected | Privacy requirement |
 | Persist evaluator-authored questions | Enables reproducible release gates | Requires clear separation from user interactions | Selected | FR-021 and FR-022 explicitly require it |
 | Minimum Cloud Run instance of one | Lower cold-start latency | Recurring idle cost threatens €5 target | Rejected initially | Cost takes precedence; performance is tested |
-| One production project plus local/preview validation | Low cost and adequate release controls | Less isolation than permanent staging | Selected | Small learning service and cost constraint |
+| Two isolated GCP projects plus preview validation | Environment isolation and adequate release controls | Duplicates low-volume managed resources | Selected | Development and production safety |
 | Multi-region/high-availability deployment | Better infrastructure resilience | Higher cost and complexity | Rejected | Best-effort availability is accepted |
 | Proceed without publisher permission | Allows project to continue | High-severity legal and release risk remains | Sponsor accepted, with release warning | Explicit BRD decision |
 
 ## 11. Assumptions
 
 1. **A-01 — Greenfield repository.** No reusable application code or infrastructure exists. **Owner:** solution design. **Validation:** repository inspection completed; revisit if external assets are supplied.
-2. **A-02 — GCP placement.** One production GCP project uses `europe-west1`; local emulators and preview revisions replace permanent staging. **Owner:** sponsor. **Validation:** confirm project and immutable Firestore location before provisioning.
+2. **A-02 — GCP placement.** Two GCP projects use `europe-west1`: `dev-dmbok-compass` for development and `prod-dmbok-compass` for production. Each has isolated Firebase, Firestore, storage, secrets, Artifact Registry, and Cloud Run resources. **Owner:** sponsor. **Validation:** confirm both projects and immutable Firestore locations before provisioning.
 3. **A-03 — External answer provider.** OpenRouter provides primary `google/gemma-2-27b-it` and fallback `nvidia/nemotron-3.5-lightning:free` through the provider-neutral adapter. **Owner:** sponsor. **Validation:** revalidate model availability, upstream route, and provider evaluation before production release.
 4. **A-04 — Provider privacy terms.** Production sends only minimum ephemeral context through OpenRouter; upstream no-training and minimal-retention terms must be reviewed for the selected route. **Owner:** sponsor. **Validation:** retain [provider decision evidence](decisions/provider.md) and verify terms before release.
 5. **A-05 — Quota defaults.** Per-user and global limits both initially default to 100 accepted requests per UTC day and remain administrator-configurable. **Owner:** sponsor. **Validation:** confirm in acceptance testing and cost baseline.

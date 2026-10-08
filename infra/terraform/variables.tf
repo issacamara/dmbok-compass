@@ -69,6 +69,17 @@ variable "hosting_site_id" {
   default     = "dmbok-compass"
 }
 
+variable "github_repository" {
+  description = "GitHub owner/repository allowed to exchange OIDC tokens for the CI service account."
+  type        = string
+  default     = "issacamara/dmbok-compass"
+
+  validation {
+    condition     = can(regex("^[^/]+/[^/]+$", var.github_repository))
+    error_message = "github_repository must be in owner/repository form."
+  }
+}
+
 variable "secret_names" {
   description = "Secret Manager metadata to provision; values are created out of band."
   type        = set(string)

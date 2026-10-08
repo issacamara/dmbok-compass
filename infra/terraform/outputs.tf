@@ -24,3 +24,8 @@ output "hosting_site" {
   description = "Firebase Hosting site used by the web application."
   value       = var.hosting_site_id
 }
+
+output "github_workload_identity_provider" {
+  description = "Workload Identity provider resource name for GitHub Actions authentication."
+  value       = google_iam_workload_identity_pool_provider.github_actions.name
+}

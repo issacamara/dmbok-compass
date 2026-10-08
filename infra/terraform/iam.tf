@@ -8,6 +8,33 @@ resource "google_service_account" "workload" {
   depends_on = [google_project_service.required]
 }
 
+resource "google_iam_workload_identity_pool" "github_actions" {
+  project                   = var.project_id
+  workload_identity_pool_id = "${var.name_prefix}-github"
+  display_name              = "${var.name_prefix} GitHub Actions"
+  description               = "OIDC identities for the repository's GitHub Actions delivery workflow."
+
+  depends_on = [google_project_service.required]
+}
+
+resource "google_iam_workload_identity_pool_provider" "github_actions" {
+  project                            = var.project_id
+  workload_identity_pool_id          = google_iam_workload_identity_pool.github_actions.workload_identity_pool_id
+  workload_identity_pool_provider_id = "github"
+  display_name                       = "GitHub Actions OIDC"
+
+  attribute_mapping = {
+    "google.subject"       = "assertion.sub"
+    "attribute.repository" = "assertion.repository"
+  }
+
+  attribute_condition = "assertion.repository == '${var.github_repository}' && assertion.ref == 'refs/heads/main'"
+
+  oidc {
+    issuer_uri = "https://token.actions.githubusercontent.com"
+  }
+}
+
 locals {
   runtime_roles = toset([
     "roles/aiplatform.user",
@@ -91,6 +118,12 @@ resource "google_service_account_iam_member" "build_runtime_user" {
   service_account_id = google_service_account.workload[each.value].name
   role               = "roles/iam.serviceAccountUser"
   member             = "serviceAccount:${google_service_account.workload["build"].email}"
+}
+
+resource "google_service_account_iam_member" "github_actions_workload_identity_user" {
+  service_account_id = google_service_account.workload["build"].name
+  role               = "roles/iam.workloadIdentityUser"
+  member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github_actions.name}/attribute.repository/${var.github_repository}"
 }
 
 # Cloud Scheduler receives only an identity here. The run.invoker grant is

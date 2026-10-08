@@ -5,7 +5,23 @@ GCP foundation. It provisions the regional managed services, Firebase project
 and email/password Authentication, deny-by-default Firestore rules, the corpus
 bucket, Artifact Registry, Firebase Hosting metadata, Secret Manager metadata,
 and separate service identities for runtime, worker, scheduler, build, and
-hosting concerns.
+hosting concerns. GitHub Actions authenticates as the build identity through
+the repository-restricted Workload Identity Federation provider.
+
+Apply this foundation separately to the `dev-dmbok-compass` and
+`prod-dmbok-compass` projects. Each project has its own Artifact Registry,
+Cloud Run resources, Firebase Hosting site, secrets, service identities, and
+GitHub OIDC provider. Store the resulting provider and build-service-account
+outputs in the matching GitHub `development` or `production` environment.
+
+Terraform state is stored remotely in separate, versioned GCS buckets:
+
+- Development: `gs://dev-dmbok-compass-tfstate/terraform/foundation/default.tfstate`
+- Production: `gs://prod-dmbok-compass-tfstate/terraform/foundation/default.tfstate`
+
+Create and protect those buckets in the bootstrap step before initializing the
+main configuration. The backend configuration files are
+`backends/development.hcl` and `backends/production.hcl`.
 
 The default region is `europe-west1`. The corpus bucket is regional, private,
 uniformly access-controlled, versioned, and protected against public access.
@@ -23,9 +39,10 @@ instance. These limits keep the initial deployment aligned with the three-user
 capacity target and the monthly infrastructure budget.
 
 `delivery.tf` defines the API service and bounded ingestion/evaluation jobs.
-Cloud Build supplies an immutable registry-digest image during the reviewed
+GitHub Actions supplies an immutable registry-digest image during the reviewed
 plan; its preview step creates a zero-traffic revision and the production step
-routes traffic only after an explicit release decision. See
+routes traffic only after an explicit release decision and protected
+`production` environment approval. See
 `documents/runbooks/immutable-delivery.md` for the evidence and rollback drill.
 
 Secret values must be created out of band with `gcloud secrets versions add` or
@@ -62,16 +79,21 @@ for the restore drill and evidence record.
 
 ## Validate and plan
 
-From this directory:
+From this directory, after the matching state bucket exists:
 
 ```sh
-terraform init
+terraform init \
+  -backend-config=backends/development.hcl \
+  -reconfigure
 terraform fmt -check -recursive
 terraform validate
 terraform plan \
-  -var='project_id=YOUR_PROJECT_ID' \
+  -var='project_id=dev-dmbok-compass' \
   -var='corpus_bucket_name=globally-unique-bucket-name'
 ```
+
+For production, use `backends/production.hcl`, set
+`project_id=prod-dmbok-compass`, and use the production corpus bucket name.
 
 Applying requires explicit project authorization and a reviewed plan:
 

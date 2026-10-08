@@ -10,3 +10,5 @@ web/*.tsbuildinfo
 web/vite.config.d.ts
 web/vite.config.js
 infra/terraform/.terraform/
+infra/terraform/terraform.tfstate*
+.pnpm-store/

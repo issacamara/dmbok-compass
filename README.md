@@ -85,6 +85,25 @@ terraform init -backend=false -input=false
 terraform validate
 ```
 
+## GitHub Actions delivery
+
+`.github/workflows/delivery.yml` replaces Cloud Build for immutable preview and
+production delivery. It authenticates to GCP with GitHub OIDC and Terraform's
+repository-restricted Workload Identity Federation provider; no long-lived
+service-account key is stored in GitHub.
+
+Create GitHub environments named `development` and `production`. Configure
+these variables separately in each environment from the matching Terraform
+outputs and reviewed project settings: `GCP_PROJECT_ID`,
+`CORPUS_BUCKET_NAME`, `GCP_WORKLOAD_IDENTITY_PROVIDER`, and
+`GCP_BUILD_SERVICE_ACCOUNT`. Set `GCP_PROJECT_ID` to `dev-dmbok-compass` in
+development and `prod-dmbok-compass` in production. Protect the `production`
+environment with required reviewers.
+
+Pushes to `main` target development by default. Manual runs can select either
+environment; a run with `promote=true` and a release decision identifier
+promotes the exact reviewed artifacts in the selected project.
+
 ## Workspace boundaries
 
 - `backend/` owns the FastAPI API and Python tests.

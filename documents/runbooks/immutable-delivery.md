@@ -1,19 +1,21 @@
 # Immutable preview and production delivery
 
-The Cloud Build manifest in `cloudbuild.yaml` builds the API once, pushes it
-under the commit SHA, resolves the registry digest, and records that digest in
-`delivery-manifest.json`. The same digest is used for the zero-traffic Cloud Run
-revision. The frontend is tarred and hashed once; the preview and production
-hosting steps consume that same workspace artifact. `delivery.tfplan.txt` is
-the human-review evidence for the Terraform plan used by the build.
+The GitHub Actions workflow in `.github/workflows/delivery.yml` builds the API
+once, pushes it under the commit SHA, resolves the registry digest, and records
+that digest in `delivery-manifest.json`. The same digest is used for the
+zero-traffic Cloud Run revision. The frontend is tarred and hashed once; the
+preview and production hosting steps consume that same uploaded artifact.
+`delivery.tfplan.txt` is the human-review evidence for the Terraform plan used
+by the workflow.
 
 ## Preview
 
-Run the build with the reviewed project and bucket substitutions. The default
-`_PROMOTE=false` creates a Cloud Run revision with zero traffic and a Firebase
-preview channel, but never changes production traffic. Save the generated
-`delivery-manifest.json`, Terraform plan, preview URL, and evaluation result
-with the release decision.
+Pushes to `main` target the `development` environment and, with promotion
+disabled, create a Cloud Run revision with zero traffic and a Firebase preview
+channel in `dev-dmbok-compass`; they never change production traffic. Manual
+runs may target either environment. Save the generated workflow artifact containing
+`delivery-manifest.json`, the Terraform plan, preview URL, and evaluation
+result with the release decision.
 
 The manifest is valid only when `api_image` ends in `@api_digest`; a mutable
 tag is not a promotable artifact. Do not rebuild between preview and promotion.
@@ -21,11 +23,12 @@ tag is not a promotable artifact. Do not rebuild between preview and promotion.
 ## Promotion
 
 After the sponsor records the release decision and the evaluation gates pass,
-rerun the same reviewed build with `_PROMOTE=true`,
-`_RELEASE_APPROVED=true`, and a non-empty `_RELEASE_DECISION` identifier. The
-promotion step first validates the saved manifest, then routes 100% of Cloud
-Run traffic to the exact preview revision and deploys the already-built
-frontend artifact to the production Firebase Hosting site.
+manually run the workflow with the target environment, `promote=true`, and a
+non-empty `release_decision` identifier. Production promotion requires
+approval from the protected `production` GitHub environment. The promotion
+step first validates the saved manifest, then routes 100% of Cloud Run traffic
+in the selected project to the exact preview revision and deploys the
+already-built frontend artifact to that environment's Firebase Hosting site.
 
 There is no automatic production promotion. An empty or false release decision
 leaves production unchanged.

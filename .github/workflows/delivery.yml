@@ -45,6 +45,7 @@ jobs:
     env:
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
       CORPUS_BUCKET_NAME: ${{ vars.CORPUS_BUCKET_NAME }}
+      BILLING_ACCOUNT_ID: ${{ vars.GCP_BILLING_ACCOUNT_ID }}
       IMAGE_REPOSITORY: europe-west1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/dmbok-compass
       HOSTING_SITE: ${{ vars.HOSTING_SITE }}
     steps:
@@ -103,6 +104,7 @@ jobs:
           terraform init -backend=false -input=false
           terraform plan -input=false -refresh=false -out="$RUNNER_TEMP/delivery.tfplan" \
             -var="project_id=${PROJECT_ID}" -var="corpus_bucket_name=${CORPUS_BUCKET_NAME}" \
+            -var="billing_account_id=${BILLING_ACCOUNT_ID}" \
             -var="api_image=$(jq -r .api_image "$RUNNER_TEMP/delivery-manifest.json")"
           terraform show -no-color "$RUNNER_TEMP/delivery.tfplan" > "$RUNNER_TEMP/delivery.tfplan.txt"
 

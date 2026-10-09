@@ -135,7 +135,10 @@ class OpenRouterAdapter(ModelAdapter):
                 "The model provider rate limit was reached.",
                 retryable=True,
             )
-        if response.status_code >= 500:
+        # OpenRouter uses 404 when a configured model/route is no longer
+        # available. Treat that as a provider outage so the fallback model can
+        # still serve grounded answers.
+        if response.status_code == 404 or response.status_code >= 500:
             raise GenerationError(
                 GenerationErrorCode.UNAVAILABLE,
                 "The model provider is unavailable.",

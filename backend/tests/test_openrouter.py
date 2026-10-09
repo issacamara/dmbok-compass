@@ -69,6 +69,22 @@ def test_openrouter_uses_free_fallback_for_rate_limit() -> None:
     assert result.usage.model == "nvidia/nemotron-3.5-lightning:free"
 
 
+def test_openrouter_uses_free_fallback_when_primary_model_is_missing() -> None:
+    models: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        models.append(json.loads(request.content)["model"])
+        if len(models) == 1:
+            return httpx.Response(404)
+        return httpx.Response(200, json=response_payload("Fallback answer."))
+
+    adapter = OpenRouterAdapter("test-key", transport=httpx.MockTransport(handler))
+    result = asyncio.run(adapter.generate(request()))
+
+    assert models == ["google/gemma-2-27b-it", "nvidia/nemotron-3.5-lightning:free"]
+    assert result.candidate.answer_text == "Fallback answer."
+
+
 def test_openrouter_does_not_fallback_on_authentication_failure() -> None:
     calls = 0
 

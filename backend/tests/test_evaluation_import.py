@@ -122,3 +122,57 @@ def test_import_error_messages_and_logs_do_not_expose_evaluator_text(caplog) -> 
     assert response.status_code == status.HTTP_200_OK
     assert secret_question not in rendered
     assert secret_passage not in rendered
+
+
+def test_active_generation_and_terminal_review_are_admin_only_and_content_free() -> None:
+    firestore = FakeFirestore()
+    repository = _store(firestore)
+    app.dependency_overrides[get_admin_user] = _admin
+    app.dependency_overrides[evaluation_generation_store] = lambda: repository
+    try:
+        client = TestClient(app)
+        created = _post(client, [_record()])
+        generation_id = created.json()["generation_id"]
+        active = client.get("/api/admin/evaluation-datasets/active")
+        items = client.get("/api/admin/evaluation-datasets/active/items")
+        reviewed = client.put(
+            "/api/admin/evaluation-datasets/active/items/" + items.json()[0]["item_id"] + "/review",
+            json={"review_status": "approved"},
+        )
+        repeated = client.put(
+            "/api/admin/evaluation-datasets/active/items/" + items.json()[0]["item_id"] + "/review",
+            json={"review_status": "rejected"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert active.json() == {
+        "generation_id": generation_id,
+        "item_count": 1,
+        "approved_gold_count": 0,
+        "status": "active",
+    }
+    assert items.json() == [{"generation_id": generation_id, "item_id": items.json()[0]["item_id"], "review_status": "candidate"}]
+    assert "Metadata describes data." not in items.text
+    assert reviewed.status_code == status.HTTP_200_OK
+    assert reviewed.json()["review_status"] == "approved"
+    assert repeated.status_code == status.HTTP_409_CONFLICT
+
+
+def test_active_dataset_endpoints_reject_missing_and_non_admin_access() -> None:
+    app.dependency_overrides[get_admin_user] = _admin
+    app.dependency_overrides[evaluation_generation_store] = lambda: _store(FakeFirestore())
+    try:
+        missing = TestClient(app).get("/api/admin/evaluation-datasets/active")
+    finally:
+        app.dependency_overrides.clear()
+    assert missing.status_code == status.HTTP_404_NOT_FOUND
+
+    app.dependency_overrides[get_admin_user] = lambda: (_ for _ in ()).throw(
+        IdentityError("Administrator access is required.", status.HTTP_403_FORBIDDEN)
+    )
+    try:
+        denied = TestClient(app).get("/api/admin/evaluation-datasets/active")
+    finally:
+        app.dependency_overrides.clear()
+    assert denied.status_code == status.HTTP_403_FORBIDDEN

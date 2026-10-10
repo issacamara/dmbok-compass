@@ -21,6 +21,7 @@ from app.contracts import (
     EvaluationItem,
     EvaluationReportEligibility,
     GoldAnnotation,
+    ItemReview,
 )
 
 
@@ -210,6 +211,55 @@ class FirestoreEvaluationGenerationStore:
 
         active = self.active()
         return self.get(active.generation_id) if active is not None else None
+
+    def active_item_reviews(self) -> list[ItemReview]:
+        """Return content-free review state for the current generation only."""
+
+        active = self.active()
+        if active is None:
+            return []
+        dataset = self.get(active.generation_id)
+        if dataset is None:
+            raise EvaluationGenerationError("active-generation pointer references missing data")
+        return [
+            ItemReview(
+                generation_id=active.generation_id,
+                item_id=annotation.item_id,
+                review_status=annotation.review_status,
+            )
+            for annotation in dataset.gold_annotations
+        ]
+
+    def review_active_annotation(self, item_id: str, review_status: str) -> ItemReview:
+        """Apply one terminal review transition to an active annotation atomically."""
+
+        if review_status not in {"approved", "rejected"}:
+            raise EvaluationGenerationError("review status must be approved or rejected")
+
+        def apply(transaction: Any) -> ItemReview:
+            pointer_snapshot = self.pointer.get(transaction=transaction)
+            if not pointer_snapshot.exists:
+                raise EvaluationGenerationError("no active evaluation generation")
+            generation_id = pointer_snapshot.to_dict().get("generation_id")
+            if not isinstance(generation_id, str):
+                raise EvaluationGenerationError("active-generation pointer is invalid")
+            generation = self.generations.document(generation_id)
+            generation_snapshot = generation.get(transaction=transaction)
+            if not generation_snapshot.exists or generation_snapshot.to_dict().get("status") != "active":
+                raise EvaluationGenerationError("active evaluation generation is unavailable")
+            annotation = generation.collection("annotations").document(item_id)
+            annotation_snapshot = annotation.get(transaction=transaction)
+            if not annotation_snapshot.exists:
+                raise EvaluationGenerationError("unknown annotation item")
+            current = annotation_snapshot.to_dict().get("review_status")
+            if current != "candidate":
+                raise EvaluationGenerationError("annotation review has already been decided")
+            transaction.update(annotation, {"review_status": review_status})
+            approved_count = int(generation_snapshot.to_dict().get("approved_gold_count", 0))
+            transaction.update(generation, {"approved_gold_count": approved_count + (review_status == "approved")})
+            return ItemReview(generation_id=generation_id, item_id=item_id, review_status=review_status)
+
+        return self._transaction_runner(self.client.transaction(), apply)
 
     def report_eligibility(self, generation_id: str) -> EvaluationReportEligibility:
         """Classify evidence against the pointer visible at report-read time."""

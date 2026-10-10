@@ -166,6 +166,12 @@ class ItemReview(ContractModel):
     review_status: ReviewStatus
 
 
+class ItemReviewUpdate(ContractModel):
+    """The terminal administrator decision for one candidate annotation."""
+
+    review_status: Literal["approved", "rejected"]
+
+
 class EvaluationRunSelection(ContractModel):
     """Launch input. The server resolves the active generation, never the client."""
 

@@ -1,7 +1,7 @@
 import logging
 from time import perf_counter
 
-from app.contracts.api import AnswerResponse, QuotaStatus, RetrievalTrace
+from app.contracts.api import AnswerResponse, ModelAttempt, QuotaStatus, RetrievalTrace
 from app.telemetry import InMemoryTelemetryAdapter, LoggingTelemetryAdapter, error_event, response_event
 
 
@@ -69,4 +69,20 @@ def test_in_memory_adapter_keeps_only_typed_events() -> None:
         "corpus_version",
         "configuration_version",
         "error_class",
+        "model_attempts",
     }
+
+
+def test_provider_failure_telemetry_records_only_route_metadata() -> None:
+    failed = answer().model_copy(update={
+        "trace": RetrievalTrace(
+            retrieved_passages=[], selected_model="fallback",
+            model_attempts=[
+                ModelAttempt(model="primary", outcome="unavailable", status_code=404),
+                ModelAttempt(model="fallback", outcome="unavailable", status_code=503),
+            ],
+        )
+    })
+    event = response_event(failed, perf_counter()).model_dump(exclude_none=True)
+    assert [item["status_code"] for item in event["model_attempts"]] == [404, 503]
+    assert "CANARY" not in str(event)

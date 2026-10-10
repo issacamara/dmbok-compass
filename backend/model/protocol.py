@@ -12,7 +12,7 @@ from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from app.contracts.api import Citation, ContractModel, Outcome
+from app.contracts.api import Citation, ContractModel, ModelAttempt, Outcome
 
 
 class Passage(BaseModel):
@@ -63,6 +63,7 @@ class UsageMetadata(BaseModel):
     input_tokens: int | None = Field(default=None, ge=0)
     output_tokens: int | None = Field(default=None, ge=0)
     total_tokens: int | None = Field(default=None, ge=0)
+    attempts: list[ModelAttempt] = Field(default_factory=list)
 
 
 class GenerationResult(BaseModel):
@@ -70,6 +71,7 @@ class GenerationResult(BaseModel):
 
     candidate: GenerationCandidate
     usage: UsageMetadata
+    raw_output: str | None = Field(default=None, max_length=20_000)
 
 
 class GenerationErrorCode(StrEnum):
@@ -91,11 +93,15 @@ class GenerationError(Exception):
         message: str,
         *,
         retryable: bool = False,
+        status_code: int | None = None,
+        attempts: tuple[ModelAttempt, ...] = (),
     ) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
         self.retryable = retryable
+        self.status_code = status_code
+        self.attempts = attempts
 
     def as_dict(self) -> dict[str, str | bool]:
         return {"code": self.code.value, "message": self.message, "retryable": self.retryable}

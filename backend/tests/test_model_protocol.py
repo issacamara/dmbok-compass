@@ -32,6 +32,7 @@ def test_fake_adapter_returns_valid_candidate_and_safe_usage() -> None:
         "input_tokens": 4,
         "output_tokens": 3,
         "total_tokens": 7,
+        "attempts": [],
     }
 
 

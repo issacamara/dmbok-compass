@@ -52,6 +52,7 @@ def test_gemini_adapter_maps_structured_output_and_usage() -> None:
         "input_tokens": 4,
         "output_tokens": 3,
         "total_tokens": 7,
+        "attempts": [],
     }
     assert models.calls[0]["model"] == PRIMARY_MODEL
     assert models.calls[0]["config"]["response_mime_type"] == "application/json"

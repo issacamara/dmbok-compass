@@ -208,10 +208,17 @@ def test_retrieved_service_includes_retrieval_timing_in_ephemeral_trace() -> Non
 
 def test_provider_failure_is_safe_refusal() -> None:
     from model.protocol import GenerationError, GenerationErrorCode
+    from app.contracts.api import ModelAttempt
 
     adapter = FakeAdapter(
         {"outcome": "answer", "answer_text": "unused"},
-        failure=GenerationError(GenerationErrorCode.UNAVAILABLE, "Provider unavailable.", retryable=True),
+        failure=GenerationError(
+            GenerationErrorCode.UNAVAILABLE, "Provider unavailable.", retryable=True,
+            attempts=(
+                ModelAttempt(model="primary", outcome="unavailable", status_code=404),
+                ModelAttempt(model="fallback", outcome="unavailable", status_code=503),
+            ),
+        ),
     )
 
     response = asyncio.run(GroundedAnswerPolicy(adapter).answer(
@@ -221,3 +228,5 @@ def test_provider_failure_is_safe_refusal() -> None:
     assert response.outcome == "refusal"
     assert response.error is not None
     assert response.error.retryable is True
+    assert response.trace.selected_model == "fallback"
+    assert [attempt.status_code for attempt in response.trace.model_attempts] == [404, 503]

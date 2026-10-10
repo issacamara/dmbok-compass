@@ -69,6 +69,28 @@ describe("QuestionPanel", () => {
     await waitFor(() => expect(input).toHaveFocus());
   });
 
+  it("shows which provider routes failed after retrieval", async () => {
+    const failed = response("refusal");
+    failed.answer_text = undefined;
+    failed.error = { code: "answer_provider_unavailable", message: "The model provider is unavailable.", retryable: true, status: 503 };
+    failed.trace.selected_model = "fallback";
+    failed.trace.model_attempts = [
+      { model: "primary", outcome: "unavailable", status_code: 404 },
+      { model: "fallback", outcome: "unavailable", status_code: 503 },
+    ];
+    mockApi(failed);
+    const user = userEvent.setup();
+    render(<QuestionPanel token="firebase-token" onSignOut={vi.fn()} />);
+    await user.type(await screen.findByLabelText("Ask a DMBOK question"), "List the dimensions");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(await screen.findByText("primary · unavailable (404)")).toBeInTheDocument();
+    expect(screen.getByText("fallback · unavailable (503)")).toBeInTheDocument();
+    expect(screen.getByText("The model provider is unavailable.")).toBeInTheDocument();
+    expect(screen.getByText("Answer unavailable")).toBeInTheDocument();
+    expect(screen.queryByText("Evidence-based refusal")).not.toBeInTheDocument();
+  });
+
   it("exposes the composer guidance and answer controls to keyboard and assistive technology", async () => {
     mockApi(response("answer"));
     const user = userEvent.setup();

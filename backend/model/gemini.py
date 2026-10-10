@@ -111,6 +111,7 @@ class GeminiAdapter(ModelAdapter):
         return GenerationResult(
             candidate=candidate,
             usage=_usage_metadata(response, model),
+            raw_output=getattr(response, "text", None),
         )
 
     @property
@@ -124,6 +125,9 @@ class GeminiAdapter(ModelAdapter):
 def create_gemini_adapter(
     *,
     api_key: str | None = None,
+    project: str | None = None,
+    location: str = "europe-west1",
+    vertexai: bool = False,
     primary_model: str = PRIMARY_MODEL,
     fallback_model: str = FALLBACK_MODEL,
 ) -> GeminiAdapter:
@@ -134,7 +138,12 @@ def create_gemini_adapter(
     """
     from google import genai
 
-    client = genai.Client(api_key=api_key) if api_key else genai.Client()
+    if vertexai:
+        if not project:
+            raise ValueError("A Google Cloud project is required for Vertex AI.")
+        client = genai.Client(vertexai=True, project=project, location=location)
+    else:
+        client = genai.Client(api_key=api_key) if api_key else genai.Client()
     return GeminiAdapter(
         client,
         primary_model=primary_model,

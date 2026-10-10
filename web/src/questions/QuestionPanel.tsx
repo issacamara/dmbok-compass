@@ -9,6 +9,7 @@ function resetLabel(quota: QuotaStatus): string {
 }
 
 function outcomeLabel(answer: AnswerResponse): string {
+  if (answer.error) return "Answer unavailable";
   if (answer.outcome === "answer") return "Strong evidence";
   if (answer.outcome === "qualified") return "Qualified answer · partial evidence";
   return "Evidence-based refusal";
@@ -130,7 +131,11 @@ export function QuestionPanel({ token, onSignOut }: QuestionPanelProps) {
           {answer ? <>
             <div className="trace-row"><span>Evidence</span><strong>{answer.trace.retrieved_passages.length} passages</strong></div>
             <div className="trace-row"><span>Model</span><strong>{answer.trace.selected_model}</strong></div>
+            {answer.trace.model_attempts?.map((attempt, index) => <div className="trace-row" key={`${attempt.model}-${index}`}>
+              <span>Model attempt {index + 1}</span><strong>{attempt.model} · {attempt.outcome}{attempt.status_code ? ` (${attempt.status_code})` : ""}</strong>
+            </div>)}
             {Object.entries(answer.trace.timings_ms).map(([name, value]) => <div className="trace-row" key={name}><span>{name.replaceAll("_", " ")}</span><strong>{Math.round(value)} ms</strong></div>)}
+            {answer.trace.model_output && <details className="passage-details"><summary>View model output</summary><pre>{answer.trace.model_output}</pre></details>}
             <details className="passage-details"><summary>View passage details</summary>
               {answer.trace.retrieved_passages.map((passage) => <p key={passage.chunk_id}>p. {passage.page} · {passage.section}: {passage.excerpt}</p>)}
             </details>

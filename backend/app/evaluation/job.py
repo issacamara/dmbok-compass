@@ -202,3 +202,15 @@ def _metric(
         threshold=threshold,
         passed=percentage >= threshold,
     )
+
+
+def main() -> None:
+    """Fail clearly until the production evaluation worker is configured."""
+    raise RuntimeError(
+        "The evaluation Cloud Run Job is not configured with a durable dataset, "
+        "run store, and evaluator."
+    )
+
+
+if __name__ == "__main__":
+    main()

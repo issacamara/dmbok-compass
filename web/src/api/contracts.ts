@@ -66,6 +66,8 @@ export interface RetrievalTrace {
   retrieved_passages: RetrievedPassage[];
   selected_model: string;
   timings_ms: Record<string, number>;
+  model_attempts?: { model: string; outcome: string; status_code?: number | null }[];
+  model_output?: string;
 }
 
 export interface AnswerResponse {
@@ -150,6 +152,7 @@ export const TELEMETRY_FIELDS = [
   "corpus_version",
   "configuration_version",
   "error_class",
+  "model_attempts",
 ] as const;
 
 export type TelemetryField = (typeof TELEMETRY_FIELDS)[number];

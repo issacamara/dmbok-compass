@@ -11,6 +11,7 @@ dependencies = [
   "langsmith==0.8.18",
   "google-cloud-firestore==2.32.0",
   "google-cloud-storage==3.15.0",
+  "google-auth==2.49.2",
   "google-genai==1.75.0",
   "pypdf==6.19.0",
   "uvicorn[standard]==0.34.0",

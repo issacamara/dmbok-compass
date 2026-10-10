@@ -12,6 +12,7 @@ from .generations import (
     EvaluationGenerationError,
     FirestoreEvaluationGenerationStore,
     GenerationIntegrityError,
+    ReviewStateError,
 )
 from .job import (
     EvaluationJobDispatcher,
@@ -27,6 +28,7 @@ from .job import (
     select_items,
     stable_run_id,
 )
+from .dispatch import CloudRunEvaluationJobDispatcher, CloudRunJobExecutor, EvaluationDispatchClaimStore
 
 __all__ = [
     "EvaluationDatasetError",
@@ -38,6 +40,7 @@ __all__ = [
     "EvaluationGenerationError",
     "FirestoreEvaluationGenerationStore",
     "GenerationIntegrityError",
+    "ReviewStateError",
     "EvaluationJobDispatcher",
     "EvaluationJobService",
     "ActiveEvaluationDatasetStore",
@@ -50,4 +53,7 @@ __all__ = [
     "InMemoryEvaluationRunStore",
     "select_items",
     "stable_run_id",
+    "CloudRunEvaluationJobDispatcher",
+    "CloudRunJobExecutor",
+    "EvaluationDispatchClaimStore",
 ]

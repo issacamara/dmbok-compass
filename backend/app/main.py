@@ -41,8 +41,10 @@ from model.fallback import FallbackAdapter
 from model.gemini import create_gemini_adapter
 from model.openrouter import OpenRouterAdapter
 from app.evaluation import (
+    CloudRunEvaluationJobDispatcher,
+    CloudRunJobExecutor,
+    EvaluationDispatchClaimStore,
     EvaluationJobService,
-    InMemoryEvaluationJobDispatcher,
     FirestoreEvaluationGenerationStore,
     FirestoreEvaluationRunStore,
 )
@@ -67,10 +69,20 @@ def get_evaluation_service() -> EvaluationJobService:
     from app.identity import _firebase_app
     from firebase_admin import firestore
 
+    client = firestore.client(app=_firebase_app())
+    project = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("GCP_PROJECT_ID")
+    if not project:
+        raise RuntimeError("The Google Cloud project is not configured.")
+    dispatcher = CloudRunEvaluationJobDispatcher(
+        EvaluationDispatchClaimStore(client),
+        CloudRunJobExecutor(
+            project=project,
+            location=os.environ.get("GOOGLE_CLOUD_LOCATION", "europe-west1"),
+            job_name=os.environ.get("EVALUATION_JOB_NAME", "dmbok-compass-evaluation"),
+        ),
+    )
     return EvaluationJobService(
-        FirestoreEvaluationGenerationStore(firestore.client(app=_firebase_app())),
-        FirestoreEvaluationRunStore(firestore.client(app=_firebase_app())),
-        InMemoryEvaluationJobDispatcher(),
+        FirestoreEvaluationGenerationStore(client), FirestoreEvaluationRunStore(client), dispatcher
     )
 
 

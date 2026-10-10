@@ -9,7 +9,6 @@ from google.api_core.exceptions import AlreadyExists
 from app.contracts import EvaluationDataset, EvaluationItem, EvaluationRun, GoldAnnotation
 from app.evaluation.generations import (
     ConcurrentActivationError,
-    EvaluationGenerationError,
     FirestoreEvaluationGenerationStore,
     GenerationIntegrityError,
 )
@@ -209,19 +208,21 @@ def test_active_dataset_load_and_eligibility_use_persisted_generation_state() ->
     assert eligibility.is_current_generation is True
 
 
-def test_active_annotation_review_is_terminal_and_updates_the_persisted_count() -> None:
+def test_review_is_atomic_current_generation_only_and_updates_gold_count() -> None:
     client = FakeFirestore()
     repository = store(client)
     repository.stage(dataset("generation-1"))
     repository.activate("generation-1", expected_active_generation_id=None)
+    repository.stage(dataset("generation-2"))
 
-    review = repository.review_active_annotation("item-1", "approved")
+    approved = repository.review("generation-1", "item-1", "approved")
 
-    assert review.review_status == "approved"
+    assert approved.review_status == "approved"
     assert repository.active().approved_gold_count == 1  # type: ignore[union-attr]
-    assert repository.active_item_reviews()[0].review_status == "approved"
-    with pytest.raises(EvaluationGenerationError, match="already been decided"):
-        repository.review_active_annotation("item-1", "rejected")
+    with pytest.raises(Exception, match="already final"):
+        repository.review("generation-1", "item-1", "rejected")
+    with pytest.raises(Exception, match="active evaluation generation"):
+        repository.review("generation-2", "item-1", "approved")
 
 
 def test_generation_ids_are_immutable_and_retrying_identical_stage_is_safe() -> None:

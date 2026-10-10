@@ -166,9 +166,13 @@ class ItemReview(ContractModel):
     review_status: ReviewStatus
 
 
-class ItemReviewUpdate(ContractModel):
-    """The terminal administrator decision for one candidate annotation."""
+class ActiveEvaluationDataset(ActiveEvaluationGeneration):
+    """The current generation's safe per-item review state."""
 
+    item_reviews: list[ItemReview] = Field(default_factory=list, max_length=MAX_EVALUATION_IMPORT_ITEMS)
+
+
+class ReviewDecision(ContractModel):
     review_status: Literal["approved", "rejected"]
 
 

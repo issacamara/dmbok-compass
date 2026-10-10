@@ -179,3 +179,34 @@ def test_worker_marks_each_release_gate_from_gold_evidence_scores() -> None:
         ("refusal_correctness", 3, 3, 95, True),
         ("response_time", 3, 3, 95, True),
     ]
+
+
+def test_worker_failure_is_content_free_and_persisted() -> None:
+    job, _ = service()
+    run = job.launch(
+        corpus_version_id="corpus-v2",
+        configuration_version_id="config-v3", model_version_id="model-v4", item_ids=["item-0"],
+    )
+
+    failed = EvaluationWorker(job.runs).execute(
+        run.run_id,
+        dataset(),
+        lambda _: (_ for _ in ()).throw(RuntimeError("Question 0 and generated answer must not persist")),
+    )
+
+    assert failed.status == "failed"
+    assert failed.error == "RuntimeError: evaluation failed"
+
+
+def test_worker_rejects_a_dataset_other_than_the_run_pinned_generation() -> None:
+    job, _ = service()
+    run = job.launch(
+        corpus_version_id="corpus-v2",
+        configuration_version_id="config-v3", model_version_id="model-v4", item_ids=["item-0"],
+    )
+    other = dataset().model_copy(update={"dataset_version_id": "dataset-v2"})
+
+    failed = EvaluationWorker(job.runs).execute(run.run_id, other, lambda _: EvaluationOutcome(True, True, True, True, True, 10))
+
+    assert failed.status == "failed"
+    assert failed.error == "EvaluationRunError: evaluation failed"

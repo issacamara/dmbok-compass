@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from app.answering import GroundedAnswerPolicy, RetrievedAnswerService, classify_evidence
+from app.answering import AnswerInvocation, GroundedAnswerPolicy, RetrievedAnswerService, classify_evidence
 from app.contracts import CorpusVersion, QuotaStatus, RetrievedPassage
 from model.fake import FakeAdapter
 from model.protocol import GenerationCandidate
@@ -230,3 +230,38 @@ def test_provider_failure_is_safe_refusal() -> None:
     assert response.error.retryable is True
     assert response.trace.selected_model == "fallback"
     assert [attempt.status_code for attempt in response.trace.model_attempts] == [404, 503]
+
+
+def test_langchain_rag_runnable_composes_active_retrieval_and_answering() -> None:
+    retriever = FakeRetriever((passage("chunk-1", 0.9),))
+    service = RetrievedAnswerService(
+        retriever,
+        FakeCorpusStore(active_version()),
+        GroundedAnswerPolicy(FakeAdapter({
+            "outcome": "answer", "answer_text": "Grounded.",
+            "citations": [{
+                "citation_id": "chunk-1", "page": 1,
+                "section": "model", "excerpt": "model citation",
+            }],
+        })),
+    )
+
+    response = asyncio.run(service.as_langchain_runnable().ainvoke(
+        AnswerInvocation(question="What is governance?", quota=quota())
+    ))
+
+    assert response.outcome == "answer"
+    assert retriever.calls == [("What is governance?", "v1", 5)]
+
+
+def test_langchain_rag_runnable_rejects_content_callbacks() -> None:
+    service = RetrievedAnswerService(
+        FakeRetriever(()), FakeCorpusStore(active_version()),
+        GroundedAnswerPolicy(FakeAdapter({"outcome": "refusal"})),
+    )
+
+    with pytest.raises(ValueError, match="callbacks"):
+        asyncio.run(service.as_langchain_runnable().ainvoke(
+            AnswerInvocation(question="What is governance?", quota=quota()),
+            {"callbacks": [object()]},
+        ))

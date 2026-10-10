@@ -7,6 +7,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 
 from app.api.evaluations import evaluation_service, router as evaluations_router
+from app.api.evaluation_datasets import evaluation_generation_store, router as evaluation_datasets_router
 from app.answering import QuestionAnswerer
 from app.answering.pipeline import GroundedAnswerPolicy, RetrievedAnswerService
 from app.contracts.api import (
@@ -49,6 +50,7 @@ from app.release import ReleaseDecisionError, ReleaseDecisionRequest, ReleaseDec
 
 app = FastAPI(title="DMBOK Compass API", version="0.1.0")
 app.include_router(evaluations_router)
+app.include_router(evaluation_datasets_router)
 
 
 @lru_cache(maxsize=1)
@@ -77,6 +79,21 @@ def configured_evaluation_service() -> EvaluationJobService:
 
 
 app.dependency_overrides[evaluation_service] = configured_evaluation_service
+
+
+@lru_cache(maxsize=1)
+def get_evaluation_generation_store() -> FirestoreEvaluationGenerationStore:
+    from app.identity import _firebase_app
+    from firebase_admin import firestore
+
+    return FirestoreEvaluationGenerationStore(firestore.client(app=_firebase_app()))
+
+
+def configured_evaluation_generation_store() -> FirestoreEvaluationGenerationStore:
+    return get_evaluation_generation_store()
+
+
+app.dependency_overrides[evaluation_generation_store] = configured_evaluation_generation_store
 
 
 @lru_cache(maxsize=1)

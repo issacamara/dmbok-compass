@@ -12,6 +12,7 @@ from typing import Any
 import httpx
 from app.contracts.api import ModelAttempt
 
+from .langchain import LangChainGenerationRunnable, as_langchain_runnable
 from .protocol import (
     GenerationError,
     GenerationErrorCode,
@@ -58,6 +59,10 @@ class OpenRouterAdapter(ModelAdapter):
             primary_model=os.environ.get("OPENROUTER_PRIMARY_MODEL", OPENROUTER_PRIMARY_MODEL),
             fallback_model=os.environ.get("OPENROUTER_FALLBACK_MODEL", OPENROUTER_FALLBACK_MODEL),
         )
+
+    def as_langchain_runnable(self) -> LangChainGenerationRunnable:
+        """Expose this adapter without changing provider routing behavior."""
+        return as_langchain_runnable(self)
 
     async def generate(self, request: GenerationRequest) -> GenerationResult:
         """Generate with primary, then retry eligible model failures once."""

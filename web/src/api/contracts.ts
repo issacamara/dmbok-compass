@@ -5,7 +5,10 @@ export const API_ROUTES = {
   answer: "/api/questions",
   quota: "/api/quota",
   evaluationRuns: "/api/evaluations",
+  evaluationImport: "/api/admin/evaluation-datasets/import",
+  activeEvaluationGeneration: "/api/admin/evaluation-datasets/active",
   releaseDecisions: "/api/releases",
+  evaluationDatasets: "/api/admin/evaluation-datasets",
 } as const;
 
 export const ADMIN_ROUTES = {
@@ -17,6 +20,15 @@ export const ADMIN_ROUTES = {
 
 export type Outcome = "answer" | "qualified" | "refusal";
 export type ApprovalState = "pending" | "approved" | "rejected" | "deactivated";
+export type QuestionCategory = "definitions" | "explanations" | "comparisons" | "study" | "scenarios";
+export type ReviewStatus = "candidate" | "approved" | "rejected";
+export type RunEligibility = "exploratory" | "release_evidence";
+export type ImportStatus = "accepted" | "rejected";
+
+export const MAX_EVALUATION_IMPORT_BYTES = 1_048_576;
+export const MAX_EVALUATION_IMPORT_ITEMS = 500;
+export const MIN_APPROVED_GOLD_ITEMS = 30;
+export const MAX_APPROVED_GOLD_ITEMS = 50;
 
 export interface QuotaPolicy {
   per_user_daily_limit: number;
@@ -114,6 +126,47 @@ export interface EvaluationRun {
   configuration_version_id: string;
   model_version_id: string;
   error: string | null;
+  report_eligibility?: EvaluationReportEligibility | null;
+}
+
+export interface ImportValidationError {
+  index: number;
+  code: "invalid_record" | "missing_question" | "missing_expected_answer_or_rubric" | "missing_supporting_passage" | "invalid_category";
+  message: string;
+}
+
+export interface EvaluationImportResponse {
+  status: ImportStatus;
+  generation_id: string | null;
+  submitted_count: number;
+  imported_count: number;
+  skipped_count: number;
+  validation_errors: ImportValidationError[];
+}
+
+export interface ActiveEvaluationGeneration {
+  generation_id: string;
+  item_count: number;
+  approved_gold_count: number;
+  status: "active";
+}
+
+export interface ItemReview {
+  generation_id: string;
+  item_id: string;
+  review_status: ReviewStatus;
+}
+
+export interface EvaluationRunSelection {
+  item_ids?: string[] | null;
+}
+
+export interface EvaluationReportEligibility {
+  generation_id: string;
+  eligibility: RunEligibility;
+  approved_gold_count: number;
+  is_current_generation: boolean;
+  is_superseded: boolean;
 }
 
 export interface EvaluationItemResult {

@@ -20,5 +20,15 @@
     "answer",
     "trace",
     "excerpt"
-  ]
+  ],
+  "evaluation": {
+    "maxImportBytes": 1048576,
+    "maxImportItems": 500,
+    "categories": ["definitions", "explanations", "comparisons", "study", "scenarios"],
+    "reviewStatuses": ["candidate", "approved", "rejected"],
+    "runEligibility": ["exploratory", "release_evidence"],
+    "importStatuses": ["accepted", "rejected"],
+    "minApprovedGoldItems": 30,
+    "maxApprovedGoldItems": 50
+  }
 }

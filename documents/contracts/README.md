@@ -49,12 +49,30 @@ logs, analytics, traces, backups, or build artifacts. Evaluation-authored
 questions and annotations are separate durable data because reproducible
 release evaluation requires them.
 
-Evaluation datasets are versioned by `dataset_version_id`. Each
-evaluator-authored item has one of five categories: definitions, explanations,
-comparisons, study, or scenarios. Generated annotations begin as `candidate`;
-human review may move them once to `approved` or `rejected`. A dataset is
-eligible for release evaluation only after 30–50 annotations reach `approved`.
-These records are not a storage path for production questions or answer traces.
+Evaluation datasets are versioned by `dataset_version_id`; the active pointer
+is exposed as `generation_id`. Imports accept one JSON array no larger than
+1,048,576 bytes and 500 submitted records. Every record is independently
+validated for a question, one category (`definitions`, `explanations`,
+`comparisons`, `study`, or `scenarios`), an expected answer or rubric, and a
+supporting passage. An import response always contains `submitted_count`,
+`imported_count`, `skipped_count`, and indexed, content-free validation errors.
+It is `accepted` only when at least one record was staged and atomically made
+active; otherwise it is `rejected` and has no `generation_id`.
+
+Activation is compare-and-set: all valid records are durable before the active
+pointer changes. A failed, zero-valid, or losing concurrent import leaves the
+existing generation and its visible history unchanged. The winning replacement
+marks prior-generation runs superseded for current-evidence queries, while
+retaining them for audit and reproduction. Full-run launch accepts no dataset
+identifier: the server resolves and pins the active generation. Subset launch
+accepts only IDs belonging to that generation.
+
+Generated annotations begin as `candidate`; human review may move them once to
+`approved` or `rejected`. Any non-empty active generation supports an
+`exploratory` run. A report is `release_evidence` only when it is bound to the
+current generation and has 30–50 approved gold annotations; this label does not
+claim that its metrics pass. These records are not a storage path for production
+questions or answer traces.
 
 Telemetry is content-free and allowlisted to the fields in the fixture. Any
 question, prompt, passage, answer, trace, excerpt, password, token, secret, or

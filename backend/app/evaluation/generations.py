@@ -15,7 +15,13 @@ from typing import Any, Callable, Protocol, TypeVar
 from google.cloud import firestore
 from google.api_core.exceptions import AlreadyExists
 
-from app.contracts import ActiveEvaluationGeneration, EvaluationDataset
+from app.contracts import (
+    ActiveEvaluationGeneration,
+    EvaluationDataset,
+    EvaluationItem,
+    EvaluationReportEligibility,
+    GoldAnnotation,
+)
 
 
 class EvaluationGenerationError(ValueError):
@@ -175,6 +181,54 @@ class FirestoreEvaluationGenerationStore:
         if not snapshot.exists:
             raise EvaluationGenerationError("active-generation pointer references missing data")
         return _active_generation(snapshot.to_dict())
+
+    def get(self, generation_id: str) -> EvaluationDataset | None:
+        """Load one immutable evaluator-authored dataset generation."""
+
+        generation = self.generations.document(generation_id)
+        snapshot = generation.get()
+        if not snapshot.exists:
+            return None
+        items = sorted(
+            (EvaluationItem.model_validate(item.to_dict()) for item in generation.collection("items").stream()),
+            key=lambda item: item.item_id,
+        )
+        if not items:
+            raise EvaluationGenerationError("evaluation generation has no staged items")
+        annotations = sorted(
+            (GoldAnnotation.model_validate(annotation.to_dict()) for annotation in generation.collection("annotations").stream()),
+            key=lambda annotation: annotation.item_id,
+        )
+        return EvaluationDataset(
+            dataset_version_id=generation_id,
+            items=items,
+            gold_annotations=annotations,
+        )
+
+    def active_dataset(self) -> EvaluationDataset | None:
+        """Resolve the active dataset immediately before an evaluation launch."""
+
+        active = self.active()
+        return self.get(active.generation_id) if active is not None else None
+
+    def report_eligibility(self, generation_id: str) -> EvaluationReportEligibility:
+        """Classify evidence against the pointer visible at report-read time."""
+
+        snapshot = self.generations.document(generation_id).get()
+        if not snapshot.exists:
+            raise EvaluationGenerationError(f"unknown evaluation generation: {generation_id}")
+        generation = snapshot.to_dict()
+        active = self.active()
+        is_current = active is not None and active.generation_id == generation_id
+        approved_gold_count = int(generation.get("approved_gold_count", 0))
+        release_eligible = is_current and 30 <= approved_gold_count <= 50
+        return EvaluationReportEligibility(
+            generation_id=generation_id,
+            eligibility="release_evidence" if release_eligible else "exploratory",
+            approved_gold_count=approved_gold_count,
+            is_current_generation=is_current,
+            is_superseded=not is_current,
+        )
 
     def generation_status(self, generation_id: str) -> str | None:
         """Return a persisted lifecycle status for audit and reproduction queries."""

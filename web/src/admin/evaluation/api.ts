@@ -15,7 +15,7 @@ async function request<T>(path: string, token: string, init?: RequestInit): Prom
 }
 
 export type EvaluationLaunch = {
-  dataset_version_id: string; corpus_version_id: string; configuration_version_id: string; model_version_id: string; item_ids?: string[];
+  corpus_version_id: string; configuration_version_id: string; model_version_id: string; item_ids?: string[];
 };
 
 export function launchEvaluation(token: string, payload: EvaluationLaunch): Promise<EvaluationRun> {

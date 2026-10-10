@@ -41,9 +41,9 @@ from model.gemini import create_gemini_adapter
 from model.openrouter import OpenRouterAdapter
 from app.evaluation import (
     EvaluationJobService,
-    InMemoryEvaluationDatasetStore,
     InMemoryEvaluationJobDispatcher,
-    InMemoryEvaluationRunStore,
+    FirestoreEvaluationGenerationStore,
+    FirestoreEvaluationRunStore,
 )
 from app.release import ReleaseDecisionError, ReleaseDecisionRequest, ReleaseDecisionService
 
@@ -62,9 +62,12 @@ def telemetry_adapter() -> TelemetryAdapter:
 
 @lru_cache(maxsize=1)
 def get_evaluation_service() -> EvaluationJobService:
+    from app.identity import _firebase_app
+    from firebase_admin import firestore
+
     return EvaluationJobService(
-        InMemoryEvaluationDatasetStore(),
-        InMemoryEvaluationRunStore(),
+        FirestoreEvaluationGenerationStore(firestore.client(app=_firebase_app())),
+        FirestoreEvaluationRunStore(firestore.client(app=_firebase_app())),
         InMemoryEvaluationJobDispatcher(),
     )
 

@@ -36,6 +36,10 @@ class GenerationIntegrityError(EvaluationGenerationError):
     """Raised when a generation identifier is reused for different data."""
 
 
+class ReviewStateError(EvaluationGenerationError):
+    """Raised when an annotation review is not a permitted active-state transition."""
+
+
 class _Snapshot(Protocol):
     exists: bool
 
@@ -235,6 +239,39 @@ class FirestoreEvaluationGenerationStore:
 
         snapshot = self.generations.document(generation_id).get()
         return snapshot.to_dict().get("status") if snapshot.exists else None
+
+    def review(self, generation_id: str, item_id: str, review_status: str) -> GoldAnnotation:
+        """Persist one candidate review, but only on the current generation."""
+
+        if review_status not in {"approved", "rejected"}:
+            raise ReviewStateError("review status must be approved or rejected")
+
+        generation = self.generations.document(generation_id)
+        annotation = generation.collection("annotations").document(item_id)
+
+        def apply(transaction: Any) -> GoldAnnotation:
+            pointer_snapshot = self.pointer.get(transaction=transaction)
+            active_id = pointer_snapshot.to_dict().get("generation_id") if pointer_snapshot.exists else None
+            if active_id != generation_id:
+                raise ReviewStateError("reviews are allowed only for the active evaluation generation")
+
+            generation_snapshot = generation.get(transaction=transaction)
+            if not generation_snapshot.exists:
+                raise EvaluationGenerationError(f"unknown evaluation generation: {generation_id}")
+            annotation_snapshot = annotation.get(transaction=transaction)
+            if not annotation_snapshot.exists:
+                raise EvaluationGenerationError(f"unknown annotation item: {item_id}")
+            current = GoldAnnotation.model_validate(annotation_snapshot.to_dict())
+            if current.review_status != "candidate":
+                raise ReviewStateError("annotation review is already final")
+
+            updated = current.model_copy(update={"review_status": review_status})
+            approved_count = int(generation_snapshot.to_dict().get("approved_gold_count", 0))
+            transaction.update(annotation, updated.model_dump(mode="json"))
+            transaction.update(generation, {"approved_gold_count": approved_count + (review_status == "approved")})
+            return updated
+
+        return self._transaction_runner(self.client.transaction(), apply)
 
     def _commit_staged_writes(self, writes: list[tuple[Any, dict[str, Any]]]) -> None:
         for start in range(0, len(writes), self._staging_batch_size):

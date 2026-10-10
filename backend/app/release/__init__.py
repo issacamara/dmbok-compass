@@ -6,6 +6,7 @@ from .decision import (
     ReleaseDecisionRequest,
     ReleaseDecisionService,
     ReleaseDecisionStore,
+    ReleaseEvidenceStore,
 )
 from .evidence import (
     GATE_REQUIREMENTS,
@@ -21,6 +22,7 @@ __all__ = [
     "ReleaseDecisionRequest",
     "ReleaseDecisionService",
     "ReleaseDecisionStore",
+    "ReleaseEvidenceStore",
     "GATE_REQUIREMENTS",
     "REQUIRED_EVIDENCE_SECTIONS",
     "ReleaseEvidenceError",

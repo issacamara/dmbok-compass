@@ -7,6 +7,12 @@ from .dataset import (
     InMemoryEvaluationDatasetStore,
     ReviewTransitionError,
 )
+from .generations import (
+    ConcurrentActivationError,
+    EvaluationGenerationError,
+    FirestoreEvaluationGenerationStore,
+    GenerationIntegrityError,
+)
 from .job import (
     EvaluationJobDispatcher,
     EvaluationJobService,
@@ -26,6 +32,10 @@ __all__ = [
     "GoldSubsetError",
     "InMemoryEvaluationDatasetStore",
     "ReviewTransitionError",
+    "ConcurrentActivationError",
+    "EvaluationGenerationError",
+    "FirestoreEvaluationGenerationStore",
+    "GenerationIntegrityError",
     "EvaluationJobDispatcher",
     "EvaluationJobService",
     "EvaluationOutcome",

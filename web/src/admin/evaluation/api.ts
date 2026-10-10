@@ -1,4 +1,12 @@
-import { API_ROUTES, type EvaluationRun, type ReleaseDecision } from "../../api/contracts";
+import {
+  API_ROUTES,
+  type ActiveEvaluationGeneration,
+  type EvaluationImportResponse,
+  type EvaluationRun,
+  type ItemReview,
+  type ReleaseDecision,
+  type ReviewStatus,
+} from "../../api/contracts";
 
 export class EvaluationApiError extends Error {
   constructor(readonly status: number, message: string) { super(message); }
@@ -24,6 +32,30 @@ export function launchEvaluation(token: string, payload: EvaluationLaunch): Prom
 
 export function getEvaluationRun(token: string, runId: string): Promise<EvaluationRun> {
   return request<EvaluationRun>(`${API_ROUTES.evaluationRuns}/${encodeURIComponent(runId)}`, token);
+}
+
+export function importEvaluationDataset(token: string, source: unknown): Promise<EvaluationImportResponse> {
+  return request<EvaluationImportResponse>(API_ROUTES.evaluationImport, token, {
+    method: "POST",
+    body: JSON.stringify(source),
+  });
+}
+
+export function getActiveEvaluationGeneration(token: string): Promise<ActiveEvaluationGeneration> {
+  return request<ActiveEvaluationGeneration>(API_ROUTES.activeEvaluationGeneration, token);
+}
+
+export function reviewEvaluationItem(
+  token: string,
+  generationId: string,
+  itemId: string,
+  reviewStatus: Exclude<ReviewStatus, "candidate">,
+): Promise<ItemReview> {
+  return request<ItemReview>(
+    `${API_ROUTES.evaluationDatasets}/${encodeURIComponent(generationId)}/items/${encodeURIComponent(itemId)}/review`,
+    token,
+    { method: "PATCH", body: JSON.stringify({ review_status: reviewStatus }) },
+  );
 }
 
 export type ReleaseDecisionInput = Omit<ReleaseDecision, "decision"> & { decision: "approved" | "rejected" };

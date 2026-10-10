@@ -173,6 +173,11 @@ class GroundedAnswerPolicy:
                 request.model_copy(update={"timeout": TimeoutBudget(total_ms=self._timeout_ms)})
             )
         except GenerationError as exc:
+            if exc.attempts:
+                trace = trace.model_copy(update={
+                    "selected_model": exc.attempts[-1].model,
+                    "model_attempts": list(exc.attempts),
+                })
             return self._finalize(
                 self._operational_refusal(trace, quota, exc),
                 started,
@@ -182,10 +187,12 @@ class GroundedAnswerPolicy:
         trace = trace.model_copy(
             update={
                 "selected_model": result.usage.model,
+                "model_attempts": result.usage.attempts,
                 "timings_ms": {
                     **trace.timings_ms,
                     "generation_ms": _elapsed_ms(generation_started),
                 },
+                "model_output": result.raw_output,
             }
         )
         candidate = result.candidate

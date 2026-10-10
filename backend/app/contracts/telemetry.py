@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+from .api import ModelAttempt
 
 
 TELEMETRY_FIELDS = (
@@ -16,6 +17,7 @@ TELEMETRY_FIELDS = (
     "corpus_version",
     "configuration_version",
     "error_class",
+    "model_attempts",
 )
 
 FORBIDDEN_FIELD_NAMES = frozenset(
@@ -52,6 +54,7 @@ class TelemetryEvent(BaseModel):
     corpus_version: str | None = Field(default=None, min_length=1, max_length=128)
     configuration_version: str | None = Field(default=None, min_length=1, max_length=128)
     error_class: str | None = Field(default=None, min_length=1, max_length=128)
+    model_attempts: list[ModelAttempt] | None = Field(default=None, max_length=2)
 
 
 def validate_telemetry_payload(payload: Mapping[str, Any]) -> None:

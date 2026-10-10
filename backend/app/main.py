@@ -36,6 +36,8 @@ from app.quota import FirestoreQuotaRepository, QuotaExceededError, QuotaReposit
 from app.telemetry import LoggingTelemetryAdapter, TelemetryAdapter, error_event, response_event
 from app.corpus.firestore import FirestoreCorpusVersionStore
 from app.retrieval.search import FirestorePassageRetriever, create_vertex_query_embedder
+from model.fallback import FallbackAdapter
+from model.gemini import create_gemini_adapter
 from model.openrouter import OpenRouterAdapter
 from app.evaluation import (
     EvaluationJobService,
@@ -209,9 +211,21 @@ def configured_question_answerer() -> RetrievedAnswerService:
         firebase_admin.initialize_app()
     client = firestore.client()
     retriever = FirestorePassageRetriever(client, create_vertex_query_embedder(project=project, location=location))
+    openrouter = OpenRouterAdapter.from_environment()
+    provider = os.environ.get("ANSWER_PROVIDER", "vertex").strip().lower()
+    if provider == "openrouter":
+        adapter = openrouter
+        model_name = os.environ.get("OPENROUTER_PRIMARY_MODEL", "answer-model")
+    elif provider == "vertex":
+        vertex = create_gemini_adapter(project=project, location=location, vertexai=True)
+        adapter = FallbackAdapter(vertex, openrouter)
+        model_name = os.environ.get("VERTEX_PRIMARY_MODEL", "gemini-2.5-flash-lite")
+    else:
+        raise HTTPException(status_code=503, detail="The answer provider is not configured.")
     policy = GroundedAnswerPolicy(
-        OpenRouterAdapter.from_environment(),
-        model_name=os.environ.get("OPENROUTER_PRIMARY_MODEL", "answer-model"),
+        adapter,
+        model_name=model_name,
+        timeout_ms=int(os.environ.get("ANSWER_GENERATION_TIMEOUT_MS", "30000")),
     )
     return RetrievedAnswerService(retriever, FirestoreCorpusVersionStore(client), policy)
 

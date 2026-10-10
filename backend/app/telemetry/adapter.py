@@ -51,6 +51,7 @@ def response_event(response: AnswerResponse, started: float) -> TelemetryEvent:
         outcome=response.outcome,
         duration_ms=_elapsed_ms(started),
         provider_model=response.trace.selected_model,
+        model_attempts=response.trace.model_attempts or None,
     )
 
 

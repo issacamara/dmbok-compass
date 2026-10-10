@@ -48,10 +48,21 @@ class QuestionRequest(ContractModel):
     question: str = Field(min_length=1, max_length=2000)
 
 
+class ModelAttempt(ContractModel):
+    model: str = Field(min_length=1, max_length=128)
+    outcome: Literal[
+        "success", "invalid_output", "timeout", "unavailable", "rate_limited",
+        "authentication_failed", "request_rejected", "unknown",
+    ]
+    status_code: int | None = Field(default=None, ge=100, le=599)
+
+
 class RetrievalTrace(ContractModel):
     retrieved_passages: list[RetrievedPassage] = Field(max_length=5)
     selected_model: str = Field(min_length=1, max_length=128)
     timings_ms: dict[str, float] = Field(default_factory=dict)
+    model_attempts: list[ModelAttempt] = Field(default_factory=list, max_length=2)
+    model_output: str | None = Field(default=None, max_length=20_000)
 
 
 class AnswerResponse(ContractModel):

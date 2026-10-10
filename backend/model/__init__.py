@@ -18,6 +18,7 @@ from .protocol import (
     parse_candidate,
 )
 from .gemini import FALLBACK_MODEL, PRIMARY_MODEL, GeminiAdapter, create_gemini_adapter
+from .fallback import FallbackAdapter
 
 __all__ = [
     "GenerationCandidate",
@@ -37,4 +38,5 @@ __all__ = [
     "PRIMARY_MODEL",
     "GeminiAdapter",
     "create_gemini_adapter",
+    "FallbackAdapter",
 ]

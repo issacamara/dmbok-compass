@@ -44,6 +44,18 @@ resource "google_cloud_run_v2_service" "api" {
         value = var.region
       }
       env {
+        name  = "ANSWER_PROVIDER"
+        value = "openrouter"
+      }
+      env {
+        name  = "OPENROUTER_PRIMARY_MODEL"
+        value = "nvidia/nemotron-3.5-lightning:free"
+      }
+      env {
+        name  = "OPENROUTER_FALLBACK_MODEL"
+        value = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
+      }
+      env {
         name = "OPENROUTER_API_KEY"
         value_source {
           secret_key_ref {
@@ -94,8 +106,9 @@ resource "google_cloud_run_v2_job" "ingestion" {
       max_retries     = 1
       timeout         = "3600s"
       containers {
-        image = var.api_image
-        args  = ["python", "-m", "app.ingestion.entrypoint"]
+        image   = var.api_image
+        command = ["python"]
+        args    = ["-m", "app.ingestion.entrypoint"]
         env {
           name  = "GOOGLE_CLOUD_PROJECT"
           value = var.project_id
@@ -130,8 +143,9 @@ resource "google_cloud_run_v2_job" "evaluation" {
       max_retries     = 1
       timeout         = "3600s"
       containers {
-        image = var.api_image
-        args  = ["python", "-m", "app.evaluation.job"]
+        image   = var.api_image
+        command = ["python"]
+        args    = ["-m", "app.evaluation.job"]
       }
     }
   }

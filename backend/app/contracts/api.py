@@ -12,6 +12,17 @@ class ContractModel(BaseModel):
 
 Outcome = Literal["answer", "qualified", "refusal"]
 QuestionCategory = Literal["definitions", "explanations", "comparisons", "study", "scenarios"]
+ImportStatus = Literal["accepted", "rejected"]
+ReviewStatus = Literal["candidate", "approved", "rejected"]
+RunEligibility = Literal["exploratory", "release_evidence"]
+RunStatus = Literal["queued", "running", "completed", "failed"]
+
+# The upload contract is intentionally shared with the web client. Keep these
+# values in sync with documents/contracts/api-contract-fixture.json.
+MAX_EVALUATION_IMPORT_BYTES = 1_048_576
+MAX_EVALUATION_IMPORT_ITEMS = 500
+MIN_APPROVED_GOLD_ITEMS = 30
+MAX_APPROVED_GOLD_ITEMS = 50
 
 
 class ApiError(ContractModel):
@@ -113,6 +124,72 @@ class EvaluationMetric(AggregateMetric):
     passed: bool
 
 
+class ImportValidationError(ContractModel):
+    """One content-free validation result for an imported array element."""
+
+    index: int = Field(ge=0)
+    code: Literal["invalid_record", "missing_question", "missing_expected_answer_or_rubric", "missing_supporting_passage", "invalid_category"]
+    message: str = Field(min_length=1, max_length=500)
+
+
+class EvaluationImportResponse(ContractModel):
+    """The complete outcome of a bounded administrator JSON import."""
+
+    status: ImportStatus
+    generation_id: str | None = Field(default=None, min_length=1, max_length=128)
+    submitted_count: int = Field(ge=0, le=MAX_EVALUATION_IMPORT_ITEMS)
+    imported_count: int = Field(ge=0, le=MAX_EVALUATION_IMPORT_ITEMS)
+    skipped_count: int = Field(ge=0, le=MAX_EVALUATION_IMPORT_ITEMS)
+    validation_errors: list[ImportValidationError] = Field(default_factory=list, max_length=MAX_EVALUATION_IMPORT_ITEMS)
+
+    @model_validator(mode="after")
+    def validate_counts_and_generation(self) -> "EvaluationImportResponse":
+        if self.imported_count + self.skipped_count != self.submitted_count:
+            raise ValueError("imported_count plus skipped_count must equal submitted_count")
+        if self.status == "accepted" and (not self.generation_id or self.imported_count == 0):
+            raise ValueError("accepted imports require a generation_id and at least one imported item")
+        if self.status == "rejected" and self.generation_id is not None:
+            raise ValueError("rejected imports cannot activate a generation")
+        return self
+
+
+class ActiveEvaluationGeneration(ContractModel):
+    generation_id: str = Field(min_length=1, max_length=128)
+    item_count: int = Field(ge=1, le=MAX_EVALUATION_IMPORT_ITEMS)
+    approved_gold_count: int = Field(ge=0, le=MAX_EVALUATION_IMPORT_ITEMS)
+    status: Literal["active"] = "active"
+
+
+class ItemReview(ContractModel):
+    generation_id: str = Field(min_length=1, max_length=128)
+    item_id: str = Field(min_length=1, max_length=128)
+    review_status: ReviewStatus
+
+
+class EvaluationRunSelection(ContractModel):
+    """Launch input. The server resolves the active generation, never the client."""
+
+    item_ids: list[str] | None = Field(default=None, max_length=MAX_EVALUATION_IMPORT_ITEMS)
+
+
+class EvaluationReportEligibility(ContractModel):
+    generation_id: str = Field(min_length=1, max_length=128)
+    eligibility: RunEligibility
+    approved_gold_count: int = Field(ge=0, le=MAX_EVALUATION_IMPORT_ITEMS)
+    is_current_generation: bool
+    is_superseded: bool
+
+    @model_validator(mode="after")
+    def validate_visibility(self) -> "EvaluationReportEligibility":
+        if self.is_current_generation == self.is_superseded:
+            raise ValueError("current-generation and superseded flags must be opposites")
+        if self.eligibility == "release_evidence" and not (
+            self.is_current_generation and MIN_APPROVED_GOLD_ITEMS <= self.approved_gold_count <= MAX_APPROVED_GOLD_ITEMS
+        ):
+            raise ValueError("release evidence requires the current generation and 30–50 approved gold items")
+        return self
+
+
 class CorpusVersion(ContractModel):
     version_id: str = Field(min_length=1, max_length=128)
     source_uri: str = Field(min_length=1, max_length=2048)
@@ -169,13 +246,14 @@ class EvaluationRun(ContractModel):
     run_id: str = Field(min_length=1, max_length=128)
     dataset_version_id: str = Field(min_length=1, max_length=128)
     corpus_version_id: str = Field(min_length=1, max_length=128)
-    status: Literal["queued", "running", "completed", "failed"]
+    status: RunStatus
     metrics: list[EvaluationMetric] = Field(default_factory=list)
     item_results: list[EvaluationItemResult] = Field(default_factory=list, max_length=10000)
     selected_item_ids: list[str] = Field(default_factory=list, max_length=10000)
     configuration_version_id: str = Field(min_length=1, max_length=128)
     model_version_id: str = Field(min_length=1, max_length=128)
     error: str | None = Field(default=None, max_length=500)
+    report_eligibility: EvaluationReportEligibility | None = None
 
 
 class ReleaseDecision(ContractModel):
@@ -209,7 +287,10 @@ API_ROUTES = {
     "answer": "/api/questions",
     "quota": "/api/quota",
     "evaluation_runs": "/api/evaluations",
+    "evaluation_import": "/api/admin/evaluation-datasets/import",
+    "active_evaluation_generation": "/api/admin/evaluation-datasets/active",
     "release_decisions": "/api/releases",
+    "evaluation_datasets": "/api/admin/evaluation-datasets",
 }
 
 ADMIN_ROUTES = {

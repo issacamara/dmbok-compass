@@ -6,7 +6,17 @@ import pytest
 from pydantic import ValidationError
 
 from app.contracts import AnswerResponse, DocumentChunk, TelemetryEvent, validate_telemetry_payload
-from app.contracts.api import Citation, QuotaStatus, RetrievalTrace
+from app.contracts.api import (
+    MAX_EVALUATION_IMPORT_BYTES,
+    MAX_EVALUATION_IMPORT_ITEMS,
+    ActiveEvaluationGeneration,
+    Citation,
+    EvaluationImportResponse,
+    EvaluationReportEligibility,
+    ImportValidationError,
+    QuotaStatus,
+    RetrievalTrace,
+)
 from app.contracts.telemetry import TELEMETRY_FIELDS
 
 
@@ -98,3 +108,60 @@ def test_answer_response_cannot_be_forwarded_as_telemetry_payload() -> None:
 def test_cross_language_fixture_matches_backend_contract_values() -> None:
     assert list(TELEMETRY_FIELDS) == FIXTURE["telemetryFields"]
     assert set(FIXTURE["outcomes"]) == {"answer", "qualified", "refusal"}
+
+
+def test_evaluation_import_contract_handles_partial_and_zero_valid_results() -> None:
+    partial = EvaluationImportResponse(
+        status="accepted",
+        generation_id="generation-2",
+        submitted_count=3,
+        imported_count=2,
+        skipped_count=1,
+        validation_errors=[ImportValidationError(index=1, code="invalid_category", message="Unsupported category.")],
+    )
+    assert partial.generation_id == "generation-2"
+
+    rejected = EvaluationImportResponse(
+        status="rejected", submitted_count=2, imported_count=0, skipped_count=2
+    )
+    assert rejected.generation_id is None
+
+    with pytest.raises(ValidationError, match="imported_count plus skipped_count"):
+        EvaluationImportResponse(status="rejected", submitted_count=2, imported_count=1, skipped_count=0)
+
+
+def test_release_evidence_requires_current_generation_and_gold_gate() -> None:
+    current = EvaluationReportEligibility(
+        generation_id="generation-2",
+        eligibility="release_evidence",
+        approved_gold_count=30,
+        is_current_generation=True,
+        is_superseded=False,
+    )
+    assert current.eligibility == "release_evidence"
+
+    for count in (29, 51):
+        with pytest.raises(ValidationError, match="release evidence"):
+            EvaluationReportEligibility(
+                generation_id="generation-2",
+                eligibility="release_evidence",
+                approved_gold_count=count,
+                is_current_generation=True,
+                is_superseded=False,
+            )
+
+    superseded = EvaluationReportEligibility(
+        generation_id="generation-1",
+        eligibility="exploratory",
+        approved_gold_count=50,
+        is_current_generation=False,
+        is_superseded=True,
+    )
+    assert superseded.is_superseded
+
+
+def test_evaluation_bounds_and_categories_match_fixture() -> None:
+    evaluation = FIXTURE["evaluation"]
+    assert MAX_EVALUATION_IMPORT_BYTES == evaluation["maxImportBytes"]
+    assert MAX_EVALUATION_IMPORT_ITEMS == evaluation["maxImportItems"]
+    assert ActiveEvaluationGeneration.model_fields["approved_gold_count"].metadata

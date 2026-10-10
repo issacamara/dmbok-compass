@@ -44,6 +44,10 @@ resource "google_cloud_run_v2_service" "api" {
         value = var.region
       }
       env {
+        name  = "EVALUATION_JOB_NAME"
+        value = var.evaluation_job_name
+      }
+      env {
         name  = "ANSWER_PROVIDER"
         value = "openrouter"
       }
@@ -145,10 +149,47 @@ resource "google_cloud_run_v2_job" "evaluation" {
       containers {
         image   = var.api_image
         command = ["python"]
-        args    = ["-m", "app.evaluation.job"]
+        args    = ["-m", "app.evaluation.worker"]
+        env {
+          name  = "GOOGLE_CLOUD_PROJECT"
+          value = var.project_id
+        }
+        env {
+          name  = "GOOGLE_CLOUD_LOCATION"
+          value = var.region
+        }
+        env {
+          name  = "ANSWER_PROVIDER"
+          value = "openrouter"
+        }
+        env {
+          name  = "OPENROUTER_PRIMARY_MODEL"
+          value = "nvidia/nemotron-3.5-lightning:free"
+        }
+        env {
+          name  = "OPENROUTER_FALLBACK_MODEL"
+          value = "nvidia/nemotron-3-nano-omni-30b-a3-reasoning:free"
+        }
+        env {
+          name = "OPENROUTER_API_KEY"
+          value_source {
+            secret_key_ref {
+              secret  = google_secret_manager_secret.managed["answer-provider-api-key"].secret_id
+              version = "latest"
+            }
+          }
+        }
       }
     }
   }
 
   depends_on = [google_project_service.required]
+}
+
+resource "google_cloud_run_v2_job_iam_member" "runtime_evaluation_invoker" {
+  project  = var.project_id
+  location = var.region
+  name     = google_cloud_run_v2_job.evaluation.name
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${google_service_account.workload["runtime"].email}"
 }

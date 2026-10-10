@@ -144,6 +144,8 @@ class EvaluationWorker:
         running = run.model_copy(update={"status": "running"})
         self.runs.update(running)
         try:
+            if dataset.dataset_version_id != run.dataset_version_id:
+                raise EvaluationRunError("worker dataset does not match the run-pinned generation")
             item_ids = set(run.selected_item_ids)
             if item_ids - {item.item_id for item in dataset.items}:
                 raise EvaluationRunError("run contains items outside its dataset version")
@@ -169,7 +171,11 @@ class EvaluationWorker:
                 running.model_copy(update={"status": "completed", "metrics": metrics, "item_results": item_results})
             )
         except Exception as exc:
-            return self.runs.update(running.model_copy(update={"status": "failed", "error": str(exc)[:500]}))
+            # Provider and evaluator errors can include question or answer text;
+            # keep durable run state content-free.
+            return self.runs.update(
+                running.model_copy(update={"status": "failed", "error": f"{type(exc).__name__}: evaluation failed"})
+            )
 
 
 def select_items(dataset: EvaluationDataset, item_ids: list[str] | None) -> tuple[str, ...]:

@@ -10,7 +10,8 @@
     "quota_utilization",
     "corpus_version",
     "configuration_version",
-    "error_class"
+    "error_class",
+    "model_attempts"
   ],
   "ephemeralInteractionFields": [
     "question",

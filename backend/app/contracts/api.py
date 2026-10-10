@@ -222,6 +222,10 @@ class GoldAnnotation(ContractModel):
     expected_answer_or_rubric: str = Field(min_length=1, max_length=10000)
     relevant_chunk_ids: list[str] = Field(min_length=1)
     review_status: Literal["candidate", "approved", "rejected"]
+    # Imported evaluator-authored passages are durable evaluation evidence, not
+    # production interaction data. Existing generated candidates may not have
+    # one until they are imported or reviewed, hence the compatibility default.
+    supporting_passage: str | None = Field(default=None, min_length=1, max_length=20000)
 
 
 class EvaluationDataset(ContractModel):

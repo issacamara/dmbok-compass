@@ -27,6 +27,7 @@ from .job import (
     select_items,
     stable_run_id,
 )
+from .dispatch import CloudRunEvaluationJobDispatcher, CloudRunJobExecutor, EvaluationDispatchClaimStore
 
 __all__ = [
     "EvaluationDatasetError",
@@ -50,4 +51,7 @@ __all__ = [
     "InMemoryEvaluationRunStore",
     "select_items",
     "stable_run_id",
+    "CloudRunEvaluationJobDispatcher",
+    "CloudRunJobExecutor",
+    "EvaluationDispatchClaimStore",
 ]

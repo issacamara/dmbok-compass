@@ -149,6 +149,7 @@ export interface ActiveEvaluationGeneration {
   item_count: number;
   approved_gold_count: number;
   status: "active";
+  item_reviews: ItemReview[];
 }
 
 export interface ItemReview {

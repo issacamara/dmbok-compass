@@ -6,6 +6,9 @@ import { EvaluationPanel } from "./EvaluationPanel";
 const api = vi.hoisted(() => ({
   launchEvaluation: vi.fn(),
   getEvaluationRun: vi.fn(),
+  importEvaluationDataset: vi.fn(),
+  getActiveEvaluationGeneration: vi.fn(),
+  reviewEvaluationItem: vi.fn(),
   recordReleaseDecision: vi.fn(),
 }));
 
@@ -22,6 +25,13 @@ describe("EvaluationPanel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     api.launchEvaluation.mockResolvedValue(completedRun);
+    api.getActiveEvaluationGeneration.mockResolvedValue({
+      generation_id: "generation-v1", item_count: 2, approved_gold_count: 0, status: "active",
+      item_reviews: [
+        { generation_id: "generation-v1", item_id: "item-1", review_status: "candidate" },
+        { generation_id: "generation-v1", item_id: "item-2", review_status: "candidate" },
+      ],
+    });
     api.recordReleaseDecision.mockResolvedValue({ ...completedRun, decision: "approved" });
   });
 
@@ -43,10 +53,26 @@ describe("EvaluationPanel", () => {
     const user = userEvent.setup();
     render(<EvaluationPanel token="admin-token" />);
     await user.click(screen.getByLabelText("Selected subset"));
-    await user.type(screen.getByLabelText("Item IDs"), "item-1, item-2");
+    await user.click(await screen.findByRole("checkbox", { name: /item-1/ }));
+    await user.click(screen.getByRole("checkbox", { name: /item-2/ }));
     await user.click(screen.getByRole("button", { name: "Run subset evaluation" }));
 
     await waitFor(() => expect(api.launchEvaluation).toHaveBeenCalledWith("admin-token", expect.objectContaining({ item_ids: ["item-1", "item-2"] })));
+  });
+
+  it("imports mixed records, refreshes the active generation, and reviews a candidate", async () => {
+    const user = userEvent.setup();
+    api.importEvaluationDataset.mockResolvedValue({
+      status: "accepted", generation_id: "generation-v2", submitted_count: 2, imported_count: 1,
+      skipped_count: 1, validation_errors: [{ index: 1, code: "missing_question", message: "Record requires a question." }],
+    });
+    render(<EvaluationPanel token="admin-token" />);
+    const file = new File([JSON.stringify([{ question: "What is governance?" }])], "evaluation.json", { type: "application/json" });
+    await user.upload(screen.getByLabelText("Evaluation JSON"), file);
+    await waitFor(() => expect(api.importEvaluationDataset).toHaveBeenCalledWith("admin-token", [{ question: "What is governance?" }]));
+    expect(await screen.findByRole("status")).toHaveTextContent("Imported 1 of 2 records; 1 skipped.");
+    await user.click(screen.getAllByRole("button", { name: "Approve gold" })[0]);
+    await waitFor(() => expect(api.reviewEvaluationItem).toHaveBeenCalledWith("admin-token", "generation-v1", "item-1", "approved"));
   });
 
   it("requires explicit confirmation before recording a sponsor decision", async () => {

@@ -14,6 +14,8 @@ from math import isfinite
 from time import perf_counter
 from typing import Any, Iterable, Literal, Protocol
 
+from langchain_core.runnables import Runnable, RunnableConfig
+
 from app.contracts import (
     AnswerResponse,
     ApiError,
@@ -21,6 +23,7 @@ from app.contracts import (
     RetrievedPassage,
     RetrievalTrace,
 )
+from model.langchain import LangChainGenerationRunnable, as_langchain_runnable
 from model.protocol import (
     GenerationError,
     GenerationRequest,
@@ -116,7 +119,10 @@ class GroundedAnswerPolicy:
     ) -> None:
         if not model_name.strip():
             raise ValueError("model_name must be non-empty")
-        self._adapter = adapter
+        # The provider boundary is always invoked through the constrained
+        # runnable.  This prevents LangChain callbacks from receiving prompts,
+        # evidence, or generated answers.
+        self._generator: LangChainGenerationRunnable = as_langchain_runnable(adapter)
         self._model_name = model_name
         self._timeout_ms = timeout_ms
 
@@ -169,7 +175,7 @@ class GroundedAnswerPolicy:
         )
         generation_started = perf_counter()
         try:
-            result = await self._adapter.generate(
+            result = await self._generator.ainvoke(
                 request.model_copy(update={"timeout": TimeoutBudget(total_ms=self._timeout_ms)})
             )
         except GenerationError as exc:
@@ -307,8 +313,22 @@ class ActiveCorpusStore(Protocol):
         """Return the active corpus version, if one exists."""
 
 
-class RetrievedAnswerService:
-    """Bind active-corpus retrieval to the pure grounded answer policy."""
+@dataclass(frozen=True)
+class AnswerInvocation:
+    """Bounded, ephemeral input to the LangChain RAG composition boundary."""
+
+    question: str
+    quota: QuotaStatus
+
+
+class LangChainRagPipeline(Runnable[AnswerInvocation, AnswerResponse]):
+    """Compose active-corpus retrieval and grounded answering as one runnable.
+
+    The pipeline intentionally owns no authorization, quota reservation, or
+    persistence.  Its input and output are request-scoped application types;
+    callbacks are rejected because they could retain content outside that
+    boundary.
+    """
 
     def __init__(
         self,
@@ -320,23 +340,70 @@ class RetrievedAnswerService:
         self._corpus_versions = corpus_versions
         self._policy = policy
 
-    async def answer(self, question: str, quota: QuotaStatus) -> AnswerResponse:
+    def invoke(
+        self,
+        input: AnswerInvocation,
+        config: RunnableConfig | None = None,
+        **kwargs: Any,
+    ) -> AnswerResponse:
+        self._reject_callbacks(config, kwargs)
+        import asyncio
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.ainvoke(input, config, **kwargs))
+        raise RuntimeError("Use ainvoke() when already running an event loop.")
+
+    async def ainvoke(
+        self,
+        input: AnswerInvocation,
+        config: RunnableConfig | None = None,
+        **kwargs: Any,
+    ) -> AnswerResponse:
+        self._reject_callbacks(config, kwargs)
+        if not isinstance(input, AnswerInvocation):
+            raise TypeError("input must be an AnswerInvocation")
         active = self._corpus_versions.active()
         if active is None:
             return self._policy.service_refusal(
-                quota,
+                input.quota,
                 code="active_corpus_unavailable",
                 message="No active DMBOK corpus is available.",
             )
         retrieval_started = perf_counter()
         passages = self._retriever.retrieve(
-            question,
+            input.question,
             active_corpus_version_id=active.version_id,
             limit=MAX_EVIDENCE_PASSAGES,
         )
         return await self._policy.answer(
-            question,
+            input.question,
             passages,
-            quota,
+            input.quota,
             retrieval_ms=_elapsed_ms(retrieval_started),
         )
+
+    @staticmethod
+    def _reject_callbacks(config: RunnableConfig | None, kwargs: dict[str, Any]) -> None:
+        if (config and config.get("callbacks")) or kwargs.get("callbacks"):
+            raise ValueError("Content-bearing LangChain callbacks are not supported.")
+
+
+class RetrievedAnswerService:
+    """Bind active-corpus retrieval to the pure grounded answer policy."""
+
+    def __init__(
+        self,
+        retriever: PassageRetriever,
+        corpus_versions: ActiveCorpusStore,
+        policy: GroundedAnswerPolicy,
+    ) -> None:
+        self._pipeline = LangChainRagPipeline(retriever, corpus_versions, policy)
+
+    async def answer(self, question: str, quota: QuotaStatus) -> AnswerResponse:
+        return await self._pipeline.ainvoke(AnswerInvocation(question=question, quota=quota))
+
+    def as_langchain_runnable(self) -> LangChainRagPipeline:
+        """Expose the complete ephemeral RAG path for bounded composition."""
+        return self._pipeline

@@ -2,6 +2,8 @@
 
 from .pipeline import (
     GroundedAnswerPolicy,
+    AnswerInvocation,
+    LangChainRagPipeline,
     RetrievedAnswerService,
     QuestionAnswerer,
     PARTIAL_EVIDENCE_THRESHOLD,
@@ -11,6 +13,8 @@ from .pipeline import (
 
 __all__ = [
     "GroundedAnswerPolicy",
+    "AnswerInvocation",
+    "LangChainRagPipeline",
     "RetrievedAnswerService",
     "QuestionAnswerer",
     "PARTIAL_EVIDENCE_THRESHOLD",

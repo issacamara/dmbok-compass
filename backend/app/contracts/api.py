@@ -166,6 +166,16 @@ class ItemReview(ContractModel):
     review_status: ReviewStatus
 
 
+class ActiveEvaluationDataset(ActiveEvaluationGeneration):
+    """The current generation's safe per-item review state."""
+
+    item_reviews: list[ItemReview] = Field(default_factory=list, max_length=MAX_EVALUATION_IMPORT_ITEMS)
+
+
+class ReviewDecision(ContractModel):
+    review_status: Literal["approved", "rejected"]
+
+
 class EvaluationRunSelection(ContractModel):
     """Launch input. The server resolves the active generation, never the client."""
 

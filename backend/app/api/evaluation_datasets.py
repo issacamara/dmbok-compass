@@ -13,13 +13,16 @@ from app.contracts import (
     EvaluationDataset,
     EvaluationImportResponse,
     EvaluationItem,
+    ActiveEvaluationDataset,
     GoldAnnotation,
     ImportValidationError,
+    ItemReview,
     MAX_EVALUATION_IMPORT_BYTES,
     MAX_EVALUATION_IMPORT_ITEMS,
     UserProfile,
+    ReviewDecision,
 )
-from app.evaluation import ConcurrentActivationError, EvaluationGenerationError
+from app.evaluation import ConcurrentActivationError, EvaluationGenerationError, ReviewStateError
 from app.identity import get_admin_user
 
 router = APIRouter(prefix="/api/admin/evaluation-datasets", tags=["evaluation datasets"])
@@ -33,6 +36,10 @@ class EvaluationGenerationStore(Protocol):
     def stage(self, dataset: EvaluationDataset) -> str: ...
 
     def activate(self, generation_id: str, *, expected_active_generation_id: str | None) -> Any: ...
+
+    def active_dataset(self) -> EvaluationDataset | None: ...
+
+    def review(self, generation_id: str, item_id: str, review_status: str) -> GoldAnnotation: ...
 
 
 def evaluation_generation_store() -> EvaluationGenerationStore:
@@ -118,6 +125,67 @@ async def import_evaluation_dataset(
         skipped_count=len(errors),
         validation_errors=errors,
     )
+
+
+@router.get("/active", response_model=ActiveEvaluationDataset)
+def get_active_evaluation_dataset(
+    _: UserProfile = Depends(get_admin_user),
+    store: EvaluationGenerationStore = Depends(evaluation_generation_store),
+) -> ActiveEvaluationDataset:
+    """Expose only active-generation IDs, categories, and review state."""
+
+    try:
+        dataset = store.active_dataset()
+    except (EvaluationGenerationError, RuntimeError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "evaluation_generation_store_failed", "message": "The active evaluation dataset is unavailable."},
+        ) from exc
+    if dataset is None:
+        _reject(status.HTTP_404_NOT_FOUND, "no_active_evaluation_generation", "No active evaluation dataset exists.")
+
+    reviews = [
+        ItemReview(generation_id=dataset.dataset_version_id, item_id=item.item_id, review_status=annotation.review_status)
+        for item in dataset.items
+        for annotation in dataset.gold_annotations
+        if annotation.item_id == item.item_id
+    ]
+    return ActiveEvaluationDataset(
+        generation_id=dataset.dataset_version_id,
+        item_count=len(dataset.items),
+        approved_gold_count=sum(review.review_status == "approved" for review in reviews),
+        item_reviews=reviews,
+    )
+
+
+@router.patch("/{generation_id}/items/{item_id}/review", response_model=ItemReview)
+def review_active_evaluation_item(
+    generation_id: str,
+    item_id: str,
+    decision: ReviewDecision,
+    _: UserProfile = Depends(get_admin_user),
+    store: EvaluationGenerationStore = Depends(evaluation_generation_store),
+) -> ItemReview:
+    """Make the single permitted candidate-to-final review transition."""
+
+    try:
+        annotation = store.review(generation_id, item_id, decision.review_status)
+    except ReviewStateError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "invalid_evaluation_review_transition", "message": str(exc)},
+        ) from exc
+    except EvaluationGenerationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "unknown_evaluation_review_target", "message": "The evaluation generation or item does not exist."},
+        ) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "evaluation_generation_store_failed", "message": "The review could not be stored."},
+        ) from exc
+    return ItemReview(generation_id=generation_id, item_id=item_id, review_status=annotation.review_status)
 
 
 def _validate_record(

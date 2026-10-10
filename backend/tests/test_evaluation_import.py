@@ -122,3 +122,61 @@ def test_import_error_messages_and_logs_do_not_expose_evaluator_text(caplog) -> 
     assert response.status_code == status.HTTP_200_OK
     assert secret_question not in rendered
     assert secret_passage not in rendered
+
+
+def test_active_dataset_exposes_only_ids_and_review_state() -> None:
+    firestore = FakeFirestore()
+    app.dependency_overrides[get_admin_user] = _admin
+    app.dependency_overrides[evaluation_generation_store] = lambda: _store(firestore)
+    try:
+        client = TestClient(app)
+        imported = _post(client, [_record(question="Sensitive evaluator question", supporting_passage="Sensitive evidence")])
+        response = client.get("/api/admin/evaluation-datasets/active")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == status.HTTP_200_OK
+    body = response.json()
+    assert body["generation_id"] == imported.json()["generation_id"]
+    assert body["item_count"] == 1
+    assert body["approved_gold_count"] == 0
+    assert body["item_reviews"][0]["review_status"] == "candidate"
+    assert "Sensitive evaluator question" not in response.text
+    assert "Sensitive evidence" not in response.text
+
+
+def test_active_dataset_and_review_require_admin_and_active_candidate() -> None:
+    firestore = FakeFirestore()
+    repository = _store(firestore)
+    app.dependency_overrides[get_admin_user] = _admin
+    app.dependency_overrides[evaluation_generation_store] = lambda: repository
+    try:
+        client = TestClient(app)
+        assert client.get("/api/admin/evaluation-datasets/active").status_code == status.HTTP_404_NOT_FOUND
+        imported = _post(client, [_record()]).json()
+        generation_id = imported["generation_id"]
+        active = client.get("/api/admin/evaluation-datasets/active").json()
+        item_id = active["item_reviews"][0]["item_id"]
+        approved = client.patch(
+            f"/api/admin/evaluation-datasets/{generation_id}/items/{item_id}/review",
+            json={"review_status": "approved"},
+        )
+        repeated = client.patch(
+            f"/api/admin/evaluation-datasets/{generation_id}/items/{item_id}/review",
+            json={"review_status": "rejected"},
+        )
+        active_after_review = client.get("/api/admin/evaluation-datasets/active")
+        replacement = _post(client, [_record(question="A later generation")]).json()
+        inactive = client.patch(
+            f"/api/admin/evaluation-datasets/{generation_id}/items/{item_id}/review",
+            json={"review_status": "rejected"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert approved.status_code == status.HTTP_200_OK
+    assert approved.json()["review_status"] == "approved"
+    assert repeated.status_code == status.HTTP_409_CONFLICT
+    assert active_after_review.json()["approved_gold_count"] == 1
+    assert replacement["generation_id"] != generation_id
+    assert inactive.status_code == status.HTTP_409_CONFLICT

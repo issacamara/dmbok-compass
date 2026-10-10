@@ -113,7 +113,11 @@ def get_release_decision_service() -> ReleaseDecisionService:
     service = configured_evaluation_service()
     from app.release import InMemoryReleaseDecisionStore
 
-    return ReleaseDecisionService(service.runs, InMemoryReleaseDecisionStore())
+    return ReleaseDecisionService(
+        service.runs,
+        InMemoryReleaseDecisionStore(),
+        configured_evaluation_generation_store(),
+    )
 
 
 def release_decision_service() -> ReleaseDecisionService:

@@ -216,23 +216,29 @@ class FirestoreEvaluationGenerationStore:
         return self.get(active.generation_id) if active is not None else None
 
     def report_eligibility(self, generation_id: str) -> EvaluationReportEligibility:
-        """Classify evidence against the pointer visible at report-read time."""
+        """Classify evidence from one consistent active-pointer snapshot."""
 
-        snapshot = self.generations.document(generation_id).get()
-        if not snapshot.exists:
-            raise EvaluationGenerationError(f"unknown evaluation generation: {generation_id}")
-        generation = snapshot.to_dict()
-        active = self.active()
-        is_current = active is not None and active.generation_id == generation_id
-        approved_gold_count = int(generation.get("approved_gold_count", 0))
-        release_eligible = is_current and 30 <= approved_gold_count <= 50
-        return EvaluationReportEligibility(
-            generation_id=generation_id,
-            eligibility="release_evidence" if release_eligible else "exploratory",
-            approved_gold_count=approved_gold_count,
-            is_current_generation=is_current,
-            is_superseded=not is_current,
-        )
+        generation_ref = self.generations.document(generation_id)
+
+        def apply(transaction: Any) -> EvaluationReportEligibility:
+            snapshot = generation_ref.get(transaction=transaction)
+            if not snapshot.exists:
+                raise EvaluationGenerationError(f"unknown evaluation generation: {generation_id}")
+            pointer_snapshot = self.pointer.get(transaction=transaction)
+            active_id = pointer_snapshot.to_dict().get("generation_id") if pointer_snapshot.exists else None
+            generation = snapshot.to_dict()
+            is_current = active_id == generation_id
+            approved_gold_count = int(generation.get("approved_gold_count", 0))
+            release_eligible = is_current and 30 <= approved_gold_count <= 50
+            return EvaluationReportEligibility(
+                generation_id=generation_id,
+                eligibility="release_evidence" if release_eligible else "exploratory",
+                approved_gold_count=approved_gold_count,
+                is_current_generation=is_current,
+                is_superseded=not is_current,
+            )
+
+        return self._transaction_runner(self.client.transaction(), apply)
 
     def generation_status(self, generation_id: str) -> str | None:
         """Return a persisted lifecycle status for audit and reproduction queries."""

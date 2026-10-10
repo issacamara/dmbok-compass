@@ -3,11 +3,28 @@ from fastapi import status
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from app.contracts import EvaluationMetric, EvaluationRun, UserProfile
+from app.contracts import EvaluationMetric, EvaluationReportEligibility, EvaluationRun, UserProfile
 from app.evaluation import InMemoryEvaluationRunStore
 from app.identity import IdentityError, get_admin_user
 from app.main import app, release_decision_service
 from app.release import InMemoryReleaseDecisionStore, ReleaseDecisionRequest, ReleaseDecisionService
+
+
+REQUIRED_METRICS = (
+    "retrieval_success", "grounded_claims", "citation_correctness",
+    "answer_quality", "refusal_correctness", "response_time",
+)
+
+
+class EvidenceStore:
+    def __init__(self, eligibility: EvaluationReportEligibility | None = None) -> None:
+        self.eligibility = eligibility or EvaluationReportEligibility(
+            generation_id="dataset-v1", eligibility="release_evidence", approved_gold_count=30,
+            is_current_generation=True, is_superseded=False,
+        )
+
+    def report_eligibility(self, generation_id: str) -> EvaluationReportEligibility:
+        return self.eligibility
 
 
 def completed_run(*, passed: bool = True) -> EvaluationRun:
@@ -20,9 +37,9 @@ def completed_run(*, passed: bool = True) -> EvaluationRun:
         status="completed",
         selected_item_ids=["item-1"],
         metrics=[EvaluationMetric(
-            metric_name="retrieval_success", numerator=1 if passed else 0, denominator=1,
+            metric_name=name, numerator=1 if passed else 0, denominator=1,
             percentage=100 if passed else 0, threshold=90, passed=passed,
-        )],
+        ) for name in REQUIRED_METRICS],
     )
 
 
@@ -38,10 +55,10 @@ def request(**overrides: object) -> dict[str, object]:
     return payload
 
 
-def service(run: EvaluationRun) -> ReleaseDecisionService:
+def service(run: EvaluationRun, evidence: EvidenceStore | None = None) -> ReleaseDecisionService:
     runs = InMemoryEvaluationRunStore()
     runs.create_or_get(run)
-    return ReleaseDecisionService(runs, InMemoryReleaseDecisionStore())
+    return ReleaseDecisionService(runs, InMemoryReleaseDecisionStore(), evidence or EvidenceStore())
 
 
 def test_decision_binds_exact_evidence_and_retry_is_idempotent() -> None:
@@ -68,19 +85,44 @@ def test_release_id_cannot_be_reused_for_different_evidence() -> None:
         release_service.record(ReleaseDecisionRequest(**request(rationale="Changed after approval.")))
 
 
-def test_failed_gate_requires_explicit_approved_exception() -> None:
+def test_failed_gate_requires_an_explicit_approved_exception() -> None:
     release_service = service(completed_run(passed=False))
 
-    try:
+    with pytest.raises(ValueError, match="gate"):
         release_service.record(ReleaseDecisionRequest(**request()))
-    except ValueError as exc:
-        assert "gate" in str(exc)
-    else:
-        raise AssertionError("failed evidence must block approval")
     result = release_service.record(ReleaseDecisionRequest(**request(
         exception_approved=True, exception_rationale="Sponsor accepted the documented risk.",
     )))
     assert result.exception_approved is True
+
+
+def test_approval_rechecks_active_generation_and_gold_subset_at_commit_time() -> None:
+    stale = EvidenceStore(EvaluationReportEligibility(
+        generation_id="dataset-v1", eligibility="exploratory", approved_gold_count=30,
+        is_current_generation=False, is_superseded=True,
+    ))
+    with pytest.raises(ValueError, match="superseded"):
+        service(completed_run(), stale).record(ReleaseDecisionRequest(**request()))
+
+    too_many_gold = EvidenceStore(EvaluationReportEligibility(
+        generation_id="dataset-v1", eligibility="exploratory", approved_gold_count=51,
+        is_current_generation=True, is_superseded=False,
+    ))
+    with pytest.raises(ValueError, match="30–50"):
+        service(completed_run(), too_many_gold).record(ReleaseDecisionRequest(**request()))
+
+    too_few_gold = EvidenceStore(EvaluationReportEligibility(
+        generation_id="dataset-v1", eligibility="exploratory", approved_gold_count=29,
+        is_current_generation=True, is_superseded=False,
+    ))
+    with pytest.raises(ValueError, match="30–50"):
+        service(completed_run(), too_few_gold).record(ReleaseDecisionRequest(**request()))
+
+
+def test_approval_requires_exactly_the_six_release_metrics() -> None:
+    incomplete = completed_run().model_copy(update={"metrics": completed_run().metrics[:-1]})
+    with pytest.raises(ValueError, match="six required"):
+        service(incomplete).record(ReleaseDecisionRequest(**request()))
 
 
 def test_release_api_requires_admin_and_persists_decision() -> None:

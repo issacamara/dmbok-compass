@@ -37,21 +37,45 @@ def service() -> tuple[EvaluationJobService, InMemoryEvaluationJobDispatcher]:
 def test_full_and_subset_runs_are_version_bound_and_retry_idempotent() -> None:
     job, dispatcher = service()
     full = job.launch(
-        dataset_version_id="dataset-v1", corpus_version_id="corpus-v2",
+        corpus_version_id="corpus-v2",
         configuration_version_id="config-v3", model_version_id="model-v4", item_ids=None,
     )
     retry = job.launch(
-        dataset_version_id="dataset-v1", corpus_version_id="corpus-v2",
+        corpus_version_id="corpus-v2",
         configuration_version_id="config-v3", model_version_id="model-v4", item_ids=None,
     )
     subset = job.launch(
-        dataset_version_id="dataset-v1", corpus_version_id="corpus-v2",
+        corpus_version_id="corpus-v2",
         configuration_version_id="config-v3", model_version_id="model-v4", item_ids=["item-2"],
     )
     assert full == retry
     assert full.selected_item_ids == ["item-0", "item-1", "item-2"]
     assert subset.selected_item_ids == ["item-2"]
     assert set(dispatcher.dispatched) == {full.run_id, subset.run_id}
+    assert full.report_eligibility is not None
+    assert full.report_eligibility.eligibility == "exploratory"
+
+
+def test_run_status_reclassifies_a_superseded_generation_as_exploratory() -> None:
+    datasets = InMemoryEvaluationDatasetStore()
+    datasets.create(dataset())
+    job = EvaluationJobService(datasets, InMemoryEvaluationRunStore(), InMemoryEvaluationJobDispatcher())
+    run = job.launch(
+        corpus_version_id="corpus-v2", configuration_version_id="config-v3", model_version_id="model-v4", item_ids=None,
+    )
+    datasets.create(
+        EvaluationDataset(
+            dataset_version_id="dataset-v2",
+            items=[EvaluationItem(item_id="item-new", question="New question", dataset_version_id="dataset-v2")],
+        )
+    )
+
+    status_result = job.status(run.run_id)
+
+    assert status_result.report_eligibility is not None
+    assert status_result.report_eligibility.eligibility == "exploratory"
+    assert status_result.report_eligibility.is_current_generation is False
+    assert status_result.report_eligibility.is_superseded is True
 
 
 def test_admin_api_launch_and_status_require_admin_and_dispatch_once() -> None:
@@ -65,7 +89,7 @@ def test_admin_api_launch_and_status_require_admin_and_dispatch_once() -> None:
     try:
         client = TestClient(app)
         payload = {
-            "dataset_version_id": "dataset-v1", "corpus_version_id": "corpus-v2",
+            "corpus_version_id": "corpus-v2",
             "configuration_version_id": "config-v3", "model_version_id": "model-v4",
             "item_ids": ["item-1"],
         }
@@ -92,7 +116,7 @@ def test_evaluation_api_rejects_non_admin_callers() -> None:
         response = TestClient(app).post(
             "/api/evaluations",
             json={
-                "dataset_version_id": "dataset-v1", "corpus_version_id": "corpus-v2",
+                "corpus_version_id": "corpus-v2",
                 "configuration_version_id": "config-v3", "model_version_id": "model-v4",
             },
         )
@@ -104,7 +128,7 @@ def test_evaluation_api_rejects_non_admin_callers() -> None:
 def test_worker_completes_with_six_aggregate_metrics_and_is_idempotent() -> None:
     job, _ = service()
     run = job.launch(
-        dataset_version_id="dataset-v1", corpus_version_id="corpus-v2",
+        corpus_version_id="corpus-v2",
         configuration_version_id="config-v3", model_version_id="model-v4", item_ids=["item-0", "item-1"],
     )
     worker = EvaluationWorker(job.runs)
@@ -128,7 +152,7 @@ def test_worker_completes_with_six_aggregate_metrics_and_is_idempotent() -> None
 def test_worker_marks_each_release_gate_from_gold_evidence_scores() -> None:
     job, _ = service()
     run = job.launch(
-        dataset_version_id="dataset-v1", corpus_version_id="corpus-v2",
+        corpus_version_id="corpus-v2",
         configuration_version_id="config-v3", model_version_id="model-v4", item_ids=None,
     )
     result = EvaluationWorker(job.runs).execute(

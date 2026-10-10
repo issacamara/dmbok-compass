@@ -31,7 +31,7 @@ describe("EvaluationPanel", () => {
 
     await user.click(screen.getByRole("button", { name: "Run full evaluation" }));
     await waitFor(() => expect(api.launchEvaluation).toHaveBeenCalledWith("admin-token", {
-      dataset_version_id: "dataset-v1", corpus_version_id: "corpus-v1",
+      corpus_version_id: "corpus-v1",
       configuration_version_id: "config-v1", model_version_id: "model-v1",
     }));
     expect(await screen.findByText("Top-5 retrieval success")).toBeInTheDocument();

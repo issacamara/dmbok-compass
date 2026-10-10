@@ -6,12 +6,13 @@ from dataclasses import dataclass, field
 import pytest
 from google.api_core.exceptions import AlreadyExists
 
-from app.contracts import EvaluationDataset, EvaluationItem, GoldAnnotation
+from app.contracts import EvaluationDataset, EvaluationItem, EvaluationRun, GoldAnnotation
 from app.evaluation.generations import (
     ConcurrentActivationError,
     FirestoreEvaluationGenerationStore,
     GenerationIntegrityError,
 )
+from app.evaluation.job import EvaluationRunError, FirestoreEvaluationRunStore
 
 
 @dataclass
@@ -57,6 +58,14 @@ class FakeCollection:
 
     def document(self, document_id: str) -> FakeDocument:
         return FakeDocument(self.client, f"{self.path}/{document_id}")
+
+    def stream(self) -> list[FakeSnapshot]:
+        depth = self.path.count("/") + 1
+        return [
+            FakeSnapshot(data)
+            for path, data in self.client.data.items()
+            if path.startswith(f"{self.path}/") and path.count("/") == depth
+        ]
 
 
 @dataclass
@@ -184,6 +193,21 @@ def test_active_generation_survives_a_new_repository_instance() -> None:
     assert restarted.active().generation_id == "generation-1"  # type: ignore[union-attr]
 
 
+def test_active_dataset_load_and_eligibility_use_persisted_generation_state() -> None:
+    client = FakeFirestore()
+    repository = store(client)
+    repository.stage(dataset("generation-1", approved=True))
+    repository.activate("generation-1", expected_active_generation_id=None)
+
+    active_dataset = repository.active_dataset()
+    eligibility = repository.report_eligibility("generation-1")
+
+    assert active_dataset is not None
+    assert [item.item_id for item in active_dataset.items] == ["item-1"]
+    assert eligibility.eligibility == "exploratory"
+    assert eligibility.is_current_generation is True
+
+
 def test_generation_ids_are_immutable_and_retrying_identical_stage_is_safe() -> None:
     client = FakeFirestore()
     repository = store(client)
@@ -194,3 +218,25 @@ def test_generation_ids_are_immutable_and_retrying_identical_stage_is_safe() -> 
     changed = original.model_copy(update={"items": [original.items[0].model_copy(update={"question": "Changed"})]})
     with pytest.raises(GenerationIntegrityError, match="already bound"):
         repository.stage(changed)
+
+
+def test_run_records_survive_a_new_firestore_store_and_reject_hash_collisions() -> None:
+    client = FakeFirestore()
+    run = EvaluationRun(
+        run_id="run-1",
+        dataset_version_id="generation-1",
+        corpus_version_id="corpus-1",
+        status="queued",
+        selected_item_ids=["item-1"],
+        configuration_version_id="config-1",
+        model_version_id="model-1",
+    )
+
+    first = FirestoreEvaluationRunStore(client)
+    assert first.create_or_get(run) == run
+    restarted = FirestoreEvaluationRunStore(client)
+    assert restarted.get("run-1") == run
+    assert restarted.create_or_get(run) == run
+
+    with pytest.raises(EvaluationRunError, match="already bound"):
+        restarted.create_or_get(run.model_copy(update={"model_version_id": "model-2"}))

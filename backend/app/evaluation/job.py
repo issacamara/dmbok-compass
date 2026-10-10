@@ -5,11 +5,13 @@ from __future__ import annotations
 from copy import deepcopy
 from hashlib import sha256
 from threading import RLock
-from typing import Protocol
+from typing import Any, Protocol
 from dataclasses import dataclass
 from collections.abc import Callable
 
-from app.contracts import EvaluationDataset, EvaluationItemResult, EvaluationMetric, EvaluationRun
+from google.api_core.exceptions import AlreadyExists
+
+from app.contracts import EvaluationDataset, EvaluationItemResult, EvaluationMetric, EvaluationReportEligibility, EvaluationRun
 from app.evaluation.dataset import EvaluationDatasetStore
 
 
@@ -21,6 +23,14 @@ class EvaluationRunStore(Protocol):
     def create_or_get(self, run: EvaluationRun) -> EvaluationRun: ...
     def get(self, run_id: str) -> EvaluationRun | None: ...
     def update(self, run: EvaluationRun) -> EvaluationRun: ...
+
+
+class ActiveEvaluationDatasetStore(EvaluationDatasetStore, Protocol):
+    """Dataset storage that can resolve the sole generation visible to launches."""
+
+    def active_dataset(self) -> EvaluationDataset | None: ...
+
+    def report_eligibility(self, generation_id: str) -> EvaluationReportEligibility: ...
 
 
 class EvaluationJobDispatcher(Protocol):
@@ -53,6 +63,48 @@ class InMemoryEvaluationRunStore:
             self._runs[run.run_id] = run.model_copy(deep=True)
             return deepcopy(run)
 
+
+class FirestoreEvaluationRunStore:
+    """Durable immutable run records, separated from evaluator-authored data."""
+
+    collection_id = "evaluation_runs"
+
+    def __init__(self, client: Any) -> None:
+        self.runs = client.collection(self.collection_id)
+
+    def create_or_get(self, run: EvaluationRun) -> EvaluationRun:
+        reference = self.runs.document(run.run_id)
+        snapshot = reference.get()
+        if snapshot.exists:
+            return self._same_or_conflict(snapshot, run)
+        try:
+            reference.create(run.model_dump(mode="json"))
+            return run.model_copy(deep=True)
+        except AlreadyExists:
+            # A concurrent create may have won. Re-read to preserve idempotency
+            # while still rejecting a hash collision with different bindings.
+            snapshot = reference.get()
+            if snapshot.exists:
+                return self._same_or_conflict(snapshot, run)
+            raise
+
+    def get(self, run_id: str) -> EvaluationRun | None:
+        snapshot = self.runs.document(run_id).get()
+        return EvaluationRun.model_validate(snapshot.to_dict()) if snapshot.exists else None
+
+    def update(self, run: EvaluationRun) -> EvaluationRun:
+        reference = self.runs.document(run.run_id)
+        if not reference.get().exists:
+            raise EvaluationRunError("unknown evaluation run")
+        reference.set(run.model_dump(mode="json"))
+        return run.model_copy(deep=True)
+
+    @staticmethod
+    def _same_or_conflict(snapshot: Any, run: EvaluationRun) -> EvaluationRun:
+        stored = EvaluationRun.model_validate(snapshot.to_dict())
+        if stored.model_dump() != run.model_dump():
+            raise EvaluationRunError("run_id is already bound to another configuration")
+        return stored
 
 class InMemoryEvaluationJobDispatcher:
     """Dispatch seam for Cloud Run Jobs; records each unique job submission."""
@@ -145,7 +197,7 @@ def stable_run_id(
 
 
 class EvaluationJobService:
-    def __init__(self, datasets: EvaluationDatasetStore, runs: EvaluationRunStore, dispatcher: EvaluationJobDispatcher) -> None:
+    def __init__(self, datasets: ActiveEvaluationDatasetStore, runs: EvaluationRunStore, dispatcher: EvaluationJobDispatcher) -> None:
         self.datasets = datasets
         self.runs = runs
         self.dispatcher = dispatcher
@@ -153,15 +205,15 @@ class EvaluationJobService:
     def launch(
         self,
         *,
-        dataset_version_id: str,
         corpus_version_id: str,
         configuration_version_id: str,
         model_version_id: str,
         item_ids: list[str] | None,
     ) -> EvaluationRun:
-        dataset = self.datasets.get(dataset_version_id)
+        dataset = self.datasets.active_dataset()
         if dataset is None:
-            raise EvaluationRunError("unknown dataset version")
+            raise EvaluationRunError("no active evaluation dataset")
+        dataset_version_id = dataset.dataset_version_id
         selected = select_items(dataset, item_ids)
         run = EvaluationRun(
             run_id=stable_run_id(dataset_version_id, corpus_version_id, configuration_version_id, model_version_id, selected),
@@ -171,6 +223,7 @@ class EvaluationJobService:
             selected_item_ids=list(selected),
             configuration_version_id=configuration_version_id,
             model_version_id=model_version_id,
+            report_eligibility=self.datasets.report_eligibility(dataset_version_id),
         )
         stored = self.runs.create_or_get(run)
         if stored.status == "queued":
@@ -181,7 +234,7 @@ class EvaluationJobService:
         run = self.runs.get(run_id)
         if run is None:
             raise EvaluationRunError("unknown evaluation run")
-        return run
+        return run.model_copy(update={"report_eligibility": self.datasets.report_eligibility(run.dataset_version_id)})
 
 
 def _metric(

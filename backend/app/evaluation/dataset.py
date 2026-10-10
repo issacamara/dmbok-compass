@@ -12,7 +12,7 @@ from copy import deepcopy
 from threading import RLock
 from typing import Protocol
 
-from app.contracts import EvaluationDataset, GoldAnnotation
+from app.contracts import EvaluationDataset, EvaluationReportEligibility, GoldAnnotation
 
 
 class EvaluationDatasetError(ValueError):
@@ -57,6 +57,7 @@ class InMemoryEvaluationDatasetStore:
     def __init__(self) -> None:
         self._datasets: dict[str, EvaluationDataset] = {}
         self._gold_approved: set[str] = set()
+        self._active_dataset_version_id: str | None = None
         self._lock = RLock()
 
     def create(self, dataset: EvaluationDataset) -> EvaluationDataset:
@@ -70,12 +71,34 @@ class InMemoryEvaluationDatasetStore:
                     )
                 return deepcopy(existing)
             self._datasets[dataset.dataset_version_id] = dataset.model_copy(deep=True)
+            self._active_dataset_version_id = dataset.dataset_version_id
             return deepcopy(dataset)
 
     def get(self, dataset_version_id: str) -> EvaluationDataset | None:
         with self._lock:
             dataset = self._datasets.get(dataset_version_id)
             return deepcopy(dataset) if dataset is not None else None
+
+    def active_dataset(self) -> EvaluationDataset | None:
+        with self._lock:
+            if self._active_dataset_version_id is None:
+                return None
+            return deepcopy(self._datasets[self._active_dataset_version_id])
+
+    def report_eligibility(self, dataset_version_id: str) -> EvaluationReportEligibility:
+        with self._lock:
+            dataset = self._require(dataset_version_id)
+            approved_gold_count = sum(
+                annotation.review_status == "approved" for annotation in dataset.gold_annotations
+            )
+            is_current = dataset_version_id == self._active_dataset_version_id
+            return EvaluationReportEligibility(
+                generation_id=dataset_version_id,
+                eligibility="release_evidence" if is_current and self.MIN_GOLD_ITEMS <= approved_gold_count <= self.MAX_GOLD_ITEMS else "exploratory",
+                approved_gold_count=approved_gold_count,
+                is_current_generation=is_current,
+                is_superseded=not is_current,
+            )
 
     def review_annotation(
         self, dataset_version_id: str, item_id: str, review_status: str

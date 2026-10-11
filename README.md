@@ -4,6 +4,27 @@ DMBOK Compass is a grounded data-management question-answering workspace. The re
 
 ## Local development
 
+### Production-shaped development stack
+
+Copy `.env.example` to `.env`, fill in the Firebase client settings and
+backend provider credentials, then run:
+
+```bash
+docker compose up --build
+```
+
+The web app is available at `http://localhost:8080` and the API health check at
+`http://localhost:8000/health`. The frontend container proxies `/api/*` to the
+same backend container boundary used by Firebase Hosting and Cloud Run. The
+Compose stack does not contain credentials; Google Application Default
+Credentials must be available to the container when Firestore or Vertex AI is
+used.
+
+This setup keeps development and production aligned on container images,
+runtime configuration names, health checks, port binding, and frontend-to-API
+routing. The direct workspace commands below remain useful for fast tests and
+frontend iteration.
+
 ### Backend API
 
 From `backend/`, create a virtual environment and install the test extra:
@@ -23,7 +44,7 @@ The API is available at `http://127.0.0.1:8000`; its readiness endpoint is `GET 
 From `web/`, install dependencies and run the checks or development server:
 
 ```bash
-npm install
+npm ci
 npm test
 npm run build
 npm run dev

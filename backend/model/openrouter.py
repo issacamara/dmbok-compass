@@ -140,8 +140,9 @@ class OpenRouterAdapter(ModelAdapter):
                 {
                     "role": "system",
                     "content": (
-                        "Return only one JSON object matching this schema: "
-                        '{"outcome":"answer|qualified|refusal",'
+                        "Return only one JSON object matching this schema. "
+                        'The outcome value must be one of "answer", "qualified", or "refusal": '
+                        '{"outcome":"answer",'
                         '"answer_text":string|null,"synthesis":boolean,'
                         '"citations":[{"citation_id":string,"page":integer,'
                         '"section":string,"excerpt":string}]}.'
@@ -149,6 +150,11 @@ class OpenRouterAdapter(ModelAdapter):
                 },
                 {"role": "user", "content": self._user_content(request)},
             ],
+            # JSON mode prevents reasoning/preamble text from making the
+            # provider response unparsable. Field validation still happens
+            # below through parse_candidate().
+            "response_format": {"type": "json_object"},
+            "reasoning": {"exclude": True},
             "temperature": 0,
             "response_format": self._response_format(),
         }
@@ -256,7 +262,8 @@ class OpenRouterAdapter(ModelAdapter):
                 output_tokens=output_tokens,
                 total_tokens=self._token_value(usage, "total_tokens"),
             ),
-            raw_output=content,
+            # Keep the optional trace free of provider reasoning/preamble.
+            raw_output=extracted,
         )
 
     @staticmethod

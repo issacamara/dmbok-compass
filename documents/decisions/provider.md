@@ -11,8 +11,8 @@ provider-neutral adapter with these model identifiers:
 
 | Role | Model ID | Rationale |
 | --- | --- | --- |
-| Primary | `google/gemma-4-26b-a4b-it:free` | Free OpenRouter model for the normal answer path. |
-| Fallback | `google/gemma-4-31b-it:free` | A distinct free OpenRouter model for fallback. |
+| Primary | `mistralai/mistral-nemo` | OpenRouter chat model for the normal answer path. |
+| Fallback | `meta-llama/llama-3.1-8b-instruct` | A distinct OpenRouter chat model for fallback. |
 
 The fallback is only for configured model-level unavailability, timeout,
 capacity, or rate-limit failures. It is not a gateway-failure fallback: an

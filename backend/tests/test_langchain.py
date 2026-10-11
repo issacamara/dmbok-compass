@@ -26,9 +26,9 @@ def test_runnable_preserves_primary_result_and_safe_usage() -> None:
     result = asyncio.run(adapter.as_langchain_runnable().ainvoke(request()))
 
     assert result.candidate.answer_text == "Grounded answer."
-    assert result.usage.model == "google/gemma-4-26b-a4b-it:free"
+    assert result.usage.model == "mistralai/mistral-nemo"
     assert result.usage.model_dump(exclude={"attempts"}) == {
-        "provider": "openrouter", "model": "google/gemma-4-26b-a4b-it:free",
+        "provider": "openrouter", "model": "mistralai/mistral-nemo",
         "input_tokens": 3, "output_tokens": 2, "total_tokens": 5,
     }
 

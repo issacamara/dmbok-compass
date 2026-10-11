@@ -26,8 +26,8 @@ from .protocol import (
 )
 
 OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
-OPENROUTER_PRIMARY_MODEL = "google/gemma-4-26b-a4b-it:free"
-OPENROUTER_FALLBACK_MODEL = "google/gemma-4-31b-it:free"
+OPENROUTER_PRIMARY_MODEL = "mistralai/mistral-nemo"
+OPENROUTER_FALLBACK_MODEL = "meta-llama/llama-3.1-8b-instruct"
 logger = logging.getLogger("dmbok_compass.model")
 
 

@@ -30,7 +30,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--daily-requests", type=int, default=100)
     parser.add_argument("--input-tokens-per-request", type=int, default=800)
     parser.add_argument("--output-tokens-per-request", type=int, default=300)
-    parser.add_argument("--fallback-model", default="google/gemma-4-31b-it:free")
+    parser.add_argument("--fallback-model", default="meta-llama/llama-3.1-8b-instruct")
     parser.add_argument("--primary-input-eur-per-million", type=float, default=0.0)
     parser.add_argument("--primary-output-eur-per-million", type=float, default=0.0)
     parser.add_argument("--fallback-input-eur-per-million", type=float, default=0.0)

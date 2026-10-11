@@ -228,6 +228,23 @@ def test_openrouter_trace_output_excludes_reasoning_wrapper() -> None:
     assert "Reasoning that must not be shown" not in (result.raw_output or "")
 
 
+def test_openrouter_removes_think_block_from_answer_text() -> None:
+    payload = response_payload()
+    payload["choices"][0]["message"]["content"] = json.dumps({
+        "outcome": "answer",
+        "answer_text": "<think>private reasoning</think>\nGrounded answer.",
+        "synthesis": False,
+        "citations": [],
+    })
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=payload)
+
+    result = asyncio.run(OpenRouterAdapter("test-key", transport=httpx.MockTransport(handler)).generate(request()))
+
+    assert result.candidate.answer_text == "Grounded answer."
+
+
 def test_openrouter_uses_free_fallback_when_primary_model_is_missing() -> None:
     models: list[str] = []
 

@@ -7,6 +7,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 from typing import Any
 
 import httpx
@@ -232,7 +233,15 @@ class OpenRouterAdapter(ModelAdapter):
                 "json_length": len(content),
                 "json_sha256": hashlib.sha256(content.encode()).hexdigest(),
             }, sort_keys=True))
-            candidate = parse_candidate(json.loads(content))
+            extracted = self._extract_json(content)
+            candidate = parse_candidate(json.loads(extracted))
+            if candidate.answer_text:
+                candidate = candidate.model_copy(update={
+                    "answer_text": re.sub(
+                        r"<think>.*?</think>\s*", "", candidate.answer_text,
+                        flags=re.DOTALL | re.IGNORECASE,
+                    ).strip()
+                })
             supplied_ids = {passage.passage_id for passage in request.passages}
             if any(citation.citation_id not in supplied_ids for citation in candidate.citations):
                 raise GenerationError(

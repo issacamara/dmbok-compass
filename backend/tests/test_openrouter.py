@@ -36,7 +36,7 @@ def test_openrouter_parses_candidate_and_usage() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["authorization"] == "Bearer test-key"
         body = json.loads(request.content)
-        assert body["model"] == "openai/gpt-oss-20b:free"
+        assert body["model"] == "google/gemma-4-26b-a4b-it:free"
         return httpx.Response(200, json=response_payload())
 
     adapter = OpenRouterAdapter("test-key", transport=httpx.MockTransport(handler))
@@ -45,11 +45,11 @@ def test_openrouter_parses_candidate_and_usage() -> None:
     assert result.candidate.answer_text == "Grounded answer."
     assert result.usage.model_dump() == {
         "provider": "openrouter",
-        "model": "openai/gpt-oss-20b:free",
+        "model": "google/gemma-4-26b-a4b-it:free",
         "input_tokens": 10,
         "output_tokens": 6,
         "total_tokens": 16,
-        "attempts": [{"model": "openai/gpt-oss-20b:free", "outcome": "success", "status_code": 200}],
+        "attempts": [{"model": "google/gemma-4-26b-a4b-it:free", "outcome": "success", "status_code": 200}],
     }
 
 
@@ -174,9 +174,9 @@ def test_openrouter_uses_free_fallback_for_rate_limit() -> None:
     adapter = OpenRouterAdapter("test-key", transport=httpx.MockTransport(handler))
     result = asyncio.run(adapter.generate(request()))
 
-    assert models == ["openai/gpt-oss-20b:free", "meta-llama/llama-3.3-70b-instruct:free"]
+    assert models == ["google/gemma-4-26b-a4b-it:free", "nvidia/nemotron-3-ultra-550b-a55b:free"]
     assert result.candidate.answer_text == "Fallback answer."
-    assert result.usage.model == "meta-llama/llama-3.3-70b-instruct:free"
+    assert result.usage.model == "nvidia/nemotron-3-ultra-550b-a55b:free"
     assert [attempt.outcome for attempt in result.usage.attempts] == ["rate_limited", "success"]
 
 
@@ -192,8 +192,8 @@ def test_openrouter_reports_both_failed_routes_without_request_content() -> None
         asyncio.run(adapter.generate(request()))
 
     assert [(attempt.model, attempt.outcome, attempt.status_code) for attempt in raised.value.attempts] == [
-        ("openai/gpt-oss-20b:free", "unavailable", 404),
-        ("meta-llama/llama-3.3-70b-instruct:free", "unavailable", 503),
+        ("google/gemma-4-26b-a4b-it:free", "unavailable", 404),
+        ("nvidia/nemotron-3-ultra-550b-a55b:free", "unavailable", 503),
     ]
     assert "Answer from supplied evidence" not in str(raised.value.attempts)
 
@@ -258,7 +258,7 @@ def test_openrouter_uses_free_fallback_when_primary_model_is_missing() -> None:
     adapter = OpenRouterAdapter("test-key", transport=httpx.MockTransport(handler))
     result = asyncio.run(adapter.generate(request()))
 
-    assert models == ["openai/gpt-oss-20b:free", "meta-llama/llama-3.3-70b-instruct:free"]
+    assert models == ["google/gemma-4-26b-a4b-it:free", "nvidia/nemotron-3-ultra-550b-a55b:free"]
     assert result.candidate.answer_text == "Fallback answer."
 
 
@@ -305,6 +305,6 @@ def test_openrouter_allows_fallback_after_primary_timeout() -> None:
     adapter = OpenRouterAdapter("test-key", transport=httpx.MockTransport(handler))
     result = asyncio.run(adapter.generate(request(timeout=TimeoutBudget(total_ms=30))))
 
-    assert models == ["openai/gpt-oss-20b:free", "meta-llama/llama-3.3-70b-instruct:free"]
+    assert models == ["google/gemma-4-26b-a4b-it:free", "nvidia/nemotron-3-ultra-550b-a55b:free"]
     assert result.candidate.answer_text == "Fallback answer."
     assert [attempt.outcome for attempt in result.usage.attempts] == ["timeout", "success"]

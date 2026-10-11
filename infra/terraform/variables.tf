@@ -21,7 +21,7 @@ variable "billing_account_id" {
 variable "fallback_model" {
   description = "Configured fallback model identifier used by the content-free fallback log counter."
   type        = string
-  default     = "meta-llama/llama-3.3-70b-instruct:free"
+  default     = "nvidia/nemotron-3-ultra-550b-a55b:free"
 
   validation {
     condition     = length(trimspace(var.fallback_model)) > 0

@@ -11,8 +11,8 @@ provider-neutral adapter with these model identifiers:
 
 | Role | Model ID | Rationale |
 | --- | --- | --- |
-| Primary | `openai/gpt-oss-20b:free` | Free OpenRouter model for the normal answer path. |
-| Fallback | `meta-llama/llama-3.3-70b-instruct:free` | A distinct free OpenRouter model for fallback. |
+| Primary | `google/gemma-4-26b-a4b-it:free` | Free OpenRouter model for the normal answer path. |
+| Fallback | `nvidia/nemotron-3-ultra-550b-a55b:free` | A distinct free OpenRouter model for fallback. |
 
 The fallback is only for configured model-level unavailability, timeout,
 capacity, or rate-limit failures. It is not a gateway-failure fallback: an
@@ -33,10 +33,11 @@ provider terms must be reviewed for no-training and minimal retention. Users
 must still be warned not to submit confidential or personal information
 because gateway and upstream handling is outside the application’s control.
 
-The free fallback is permitted for this version to meet the cost constraint,
-but it remains release-gated on the selected upstream provider’s data terms,
-availability, and rate limits. No production corpus or user data may be sent
-until that review is recorded.
+Free models are preferred for both primary and fallback answers, but are not
+mandatory. A paid OpenRouter route may replace either model if it stays within
+the sponsor-approved provider budget and passes the same privacy, availability,
+quality, latency, and cost gates. No production corpus or user data may be sent
+until the selected route review is recorded.
 
 ## Cost and release gates
 

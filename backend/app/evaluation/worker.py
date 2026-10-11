@@ -127,7 +127,7 @@ def _pinned_answerer(project: str, location: str, corpus_version_id: str) -> Ret
         GroundedAnswerPolicy(
             adapter,
             model_name=model_name,
-            timeout_ms=int(os.environ.get("ANSWER_GENERATION_TIMEOUT_MS", "150000")),
+            timeout_ms=int(os.environ.get("ANSWER_GENERATION_TIMEOUT_MS", "60000")),
         ),
     )
 

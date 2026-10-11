@@ -53,7 +53,7 @@ resource "google_cloud_run_v2_service" "api" {
       }
       env {
         name  = "ANSWER_GENERATION_TIMEOUT_MS"
-        value = "150000"
+        value = "60000"
       }
       env {
         name  = "OPENROUTER_PRIMARY_MODEL"
@@ -168,7 +168,7 @@ resource "google_cloud_run_v2_job" "evaluation" {
         }
         env {
           name  = "ANSWER_GENERATION_TIMEOUT_MS"
-          value = "150000"
+          value = "60000"
         }
         env {
           name  = "OPENROUTER_PRIMARY_MODEL"

@@ -11,8 +11,8 @@ provider-neutral adapter with these model identifiers:
 
 | Role | Model ID | Rationale |
 | --- | --- | --- |
-| Primary | `google/gemma-2-27b-it` | The requested Gemma 2 model for the normal answer path. |
-| Fallback | `nvidia/nemotron-3.5-lightning:free` | A distinct free OpenRouter model for cost-controlled fallback. |
+| Primary | `openai/gpt-oss-20b:free` | Free OpenRouter model for the normal answer path. |
+| Fallback | `meta-llama/llama-3.3-70b-instruct:free` | A distinct free OpenRouter model for fallback. |
 
 The fallback is only for configured model-level unavailability, timeout,
 capacity, or rate-limit failures. It is not a gateway-failure fallback: an

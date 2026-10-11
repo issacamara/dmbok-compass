@@ -53,11 +53,11 @@ resource "google_cloud_run_v2_service" "api" {
       }
       env {
         name  = "OPENROUTER_PRIMARY_MODEL"
-        value = "nvidia/nemotron-3.5-lightning:free"
+        value = "openai/gpt-oss-20b:free"
       }
       env {
         name  = "OPENROUTER_FALLBACK_MODEL"
-        value = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
+        value = "meta-llama/llama-3.3-70b-instruct:free"
       }
       env {
         name = "OPENROUTER_API_KEY"
@@ -164,11 +164,11 @@ resource "google_cloud_run_v2_job" "evaluation" {
         }
         env {
           name  = "OPENROUTER_PRIMARY_MODEL"
-          value = "nvidia/nemotron-3.5-lightning:free"
+          value = "openai/gpt-oss-20b:free"
         }
         env {
           name  = "OPENROUTER_FALLBACK_MODEL"
-          value = "nvidia/nemotron-3-nano-omni-30b-a3-reasoning:free"
+          value = "meta-llama/llama-3.3-70b-instruct:free"
         }
         env {
           name = "OPENROUTER_API_KEY"

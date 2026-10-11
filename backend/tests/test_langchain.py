@@ -26,9 +26,9 @@ def test_runnable_preserves_primary_result_and_safe_usage() -> None:
     result = asyncio.run(adapter.as_langchain_runnable().ainvoke(request()))
 
     assert result.candidate.answer_text == "Grounded answer."
-    assert result.usage.model == "nvidia/nemotron-3.5-lightning:free"
+    assert result.usage.model == "openai/gpt-oss-20b:free"
     assert result.usage.model_dump(exclude={"attempts"}) == {
-        "provider": "openrouter", "model": "nvidia/nemotron-3.5-lightning:free",
+        "provider": "openrouter", "model": "openai/gpt-oss-20b:free",
         "input_tokens": 3, "output_tokens": 2, "total_tokens": 5,
     }
 

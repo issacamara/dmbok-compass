@@ -14,6 +14,7 @@ from app.contracts.api import ModelAttempt
 
 from .langchain import LangChainGenerationRunnable, as_langchain_runnable
 from .protocol import (
+    GenerationCandidate,
     GenerationError,
     GenerationErrorCode,
     GenerationRequest,
@@ -29,6 +30,16 @@ OPENROUTER_FALLBACK_MODEL = "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free"
 logger = logging.getLogger("dmbok_compass.model")
 
 
+def _env_bool(value: str) -> bool:
+    """Parse an explicit boolean runtime setting without accepting surprises."""
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError("OPENROUTER_JSON_SCHEMA_SUPPORTED must be a boolean")
+
+
 class OpenRouterAdapter(ModelAdapter):
     """Call OpenRouter while keeping provider details behind ModelAdapter."""
 
@@ -40,6 +51,7 @@ class OpenRouterAdapter(ModelAdapter):
         fallback_model: str = OPENROUTER_FALLBACK_MODEL,
         endpoint: str = OPENROUTER_ENDPOINT,
         transport: httpx.AsyncBaseTransport | None = None,
+        json_schema_supported: bool = True,
     ) -> None:
         if not api_key.strip():
             raise ValueError("OPENROUTER_API_KEY must not be empty.")
@@ -48,6 +60,7 @@ class OpenRouterAdapter(ModelAdapter):
         self._fallback_model = fallback_model
         self._endpoint = endpoint
         self._transport = transport
+        self._json_schema_supported = json_schema_supported
 
     @classmethod
     def from_environment(cls) -> "OpenRouterAdapter":
@@ -58,6 +71,9 @@ class OpenRouterAdapter(ModelAdapter):
             api_key,
             primary_model=os.environ.get("OPENROUTER_PRIMARY_MODEL", OPENROUTER_PRIMARY_MODEL),
             fallback_model=os.environ.get("OPENROUTER_FALLBACK_MODEL", OPENROUTER_FALLBACK_MODEL),
+            json_schema_supported=_env_bool(
+                os.environ.get("OPENROUTER_JSON_SCHEMA_SUPPORTED", "true")
+            ),
         )
 
     def as_langchain_runnable(self) -> LangChainGenerationRunnable:
@@ -134,6 +150,7 @@ class OpenRouterAdapter(ModelAdapter):
                 {"role": "user", "content": self._user_content(request)},
             ],
             "temperature": 0,
+            "response_format": self._response_format(),
         }
         headers = {
             "Authorization": f"Bearer {self._api_key}",
@@ -148,6 +165,13 @@ class OpenRouterAdapter(ModelAdapter):
                 timeout=request.timeout.total_ms / 1000,
             ) as client:
                 response = await client.post(self._endpoint, headers=headers, json=payload)
+                if response.status_code == 400 and self._json_schema_supported:
+                    error_text = response.text.lower()
+                    if "response_format" in error_text or "json_schema" in error_text:
+                        payload["response_format"] = {"type": "json_object"}
+                        response = await client.post(
+                            self._endpoint, headers=headers, json=payload
+                        )
         except httpx.TimeoutException as exc:
             raise GenerationError(
                 GenerationErrorCode.TIMEOUT,
@@ -195,15 +219,20 @@ class OpenRouterAdapter(ModelAdapter):
             body = response.json()
             raw_content = body["choices"][0]["message"]["content"]
             content = self._content_text(raw_content)
-            extracted = self._extract_json(content)
             logger.info("openrouter_response %s", json.dumps({
                 "model": model,
                 "content_type": type(raw_content).__name__,
                 "content_length": len(content),
-                "json_length": len(extracted),
-                "json_sha256": hashlib.sha256(extracted.encode()).hexdigest(),
+                "json_length": len(content),
+                "json_sha256": hashlib.sha256(content.encode()).hexdigest(),
             }, sort_keys=True))
-            candidate = parse_candidate(json.loads(extracted))
+            candidate = parse_candidate(json.loads(content))
+            supplied_ids = {passage.passage_id for passage in request.passages}
+            if any(citation.citation_id not in supplied_ids for citation in candidate.citations):
+                raise GenerationError(
+                    GenerationErrorCode.INVALID_OUTPUT,
+                    "The model returned a citation outside the supplied evidence.",
+                )
             usage = body.get("usage", {})
         except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
             logger.info("openrouter_response_invalid %s", json.dumps({
@@ -254,18 +283,17 @@ class OpenRouterAdapter(ModelAdapter):
                 return "".join(parts)
         raise TypeError("OpenRouter returned no text content")
 
-    @staticmethod
-    def _extract_json(content: str) -> str:
-        """Extract the structured object when reasoning surrounds JSON."""
-        value = content.strip()
-        if value.startswith("```") and value.endswith("```"):
-            value = value[3:-3].strip()
-            if value.startswith("json"):
-                value = value[4:].strip()
-        start, end = value.find("{"), value.rfind("}")
-        if start < 0 or end < start:
-            raise ValueError("OpenRouter response contained no JSON object")
-        return value[start:end + 1]
+    def _response_format(self) -> dict[str, object]:
+        if not self._json_schema_supported:
+            return {"type": "json_object"}
+        return {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "generation_candidate",
+                "strict": True,
+                "schema": GenerationCandidate.model_json_schema(),
+            },
+        }
 
     @staticmethod
     def _token_value(usage: dict[str, Any], key: str) -> int | None:

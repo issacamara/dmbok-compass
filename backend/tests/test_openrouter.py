@@ -53,17 +53,112 @@ def test_openrouter_parses_candidate_and_usage() -> None:
     }
 
 
-@pytest.mark.parametrize("content", [
-    "Reasoning...\n```json\n" + json.dumps({"outcome": "answer", "answer_text": "Grounded answer.", "synthesis": False, "citations": []}) + "\n```",
-    [{"type": "text", "text": json.dumps({"outcome": "answer", "answer_text": "Grounded answer.", "synthesis": False, "citations": []})}],
+def test_openrouter_requests_strict_candidate_schema() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        assert body["response_format"]["type"] == "json_schema"
+        assert body["response_format"]["json_schema"]["strict"] is True
+        return httpx.Response(200, json=response_payload())
+
+    asyncio.run(OpenRouterAdapter("test-key", transport=httpx.MockTransport(handler)).generate(request()))
+
+
+@pytest.mark.parametrize("outcome,answer_text,citations", [
+    ("answer", "Grounded answer.", []),
+    ("qualified", "Partially grounded answer.", []),
+    ("refusal", None, []),
 ])
-def test_openrouter_extracts_json_from_reasoning_and_content_blocks(content: object) -> None:
+def test_openrouter_accepts_each_candidate_outcome(
+    outcome: str, answer_text: str | None, citations: list[object]
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = response_payload()
+        payload["choices"][0]["message"]["content"] = json.dumps({
+            "outcome": outcome,
+            "answer_text": answer_text,
+            "synthesis": False,
+            "citations": citations,
+        })
+        return httpx.Response(200, json=payload)
+
+    result = asyncio.run(OpenRouterAdapter("test-key", transport=httpx.MockTransport(handler)).generate(request()))
+    assert result.candidate.outcome == outcome
+    assert result.candidate.answer_text == answer_text
+
+
+@pytest.mark.parametrize("content", [
+    "Reasoning only; no candidate JSON.",
+    "prefix " + json.dumps({"outcome": "answer", "answer_text": "Grounded answer.", "synthesis": False, "citations": []}),
+    "```json\n" + json.dumps({"outcome": "answer", "answer_text": "Grounded answer.", "synthesis": False, "citations": []}) + "\n```",
+])
+def test_openrouter_rejects_reasoning_or_non_object_json(content: str) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         payload = response_payload()
         payload["choices"][0]["message"]["content"] = content
         return httpx.Response(200, json=payload)
 
+    with pytest.raises(GenerationError) as raised:
+        asyncio.run(OpenRouterAdapter("test-key", transport=httpx.MockTransport(handler)).generate(request()))
+    assert raised.value.code is GenerationErrorCode.INVALID_OUTPUT
+
+
+def test_openrouter_accepts_text_content_block_with_exact_json() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = response_payload()
+        payload["choices"][0]["message"]["content"] = [{
+            "type": "text",
+            "text": payload["choices"][0]["message"]["content"],
+        }]
+        return httpx.Response(200, json=payload)
+
     result = asyncio.run(OpenRouterAdapter("test-key", transport=httpx.MockTransport(handler)).generate(request()))
+    assert result.candidate.answer_text == "Grounded answer."
+
+
+def test_openrouter_rejects_unknown_citation() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = response_payload()
+        payload["choices"][0]["message"]["content"] = json.dumps({
+            "outcome": "answer", "answer_text": "Grounded answer.", "synthesis": False,
+            "citations": [{"citation_id": "missing", "page": 1, "section": "S", "excerpt": "E"}],
+        })
+        return httpx.Response(200, json=payload)
+
+    with pytest.raises(GenerationError) as raised:
+        asyncio.run(OpenRouterAdapter("test-key", transport=httpx.MockTransport(handler)).generate(
+            request(passages=[{"passage_id": "p1", "page": 1, "section": "S", "text": "E"}])
+        ))
+    assert raised.value.code is GenerationErrorCode.INVALID_OUTPUT
+
+
+def test_openrouter_uses_json_mode_when_route_does_not_support_schema() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content)["response_format"] == {"type": "json_object"}
+        return httpx.Response(200, json=response_payload())
+
+    result = asyncio.run(OpenRouterAdapter(
+        "test-key", json_schema_supported=False, transport=httpx.MockTransport(handler)
+    ).generate(request()))
+    assert result.candidate.answer_text == "Grounded answer."
+
+
+def test_openrouter_retries_json_object_when_schema_is_rejected() -> None:
+    formats: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        response_format = json.loads(request.content)["response_format"]
+        formats.append(response_format)
+        if len(formats) == 1:
+            return httpx.Response(400, json={"error": {"message": "json_schema unsupported"}})
+        return httpx.Response(200, json=response_payload())
+
+    result = asyncio.run(OpenRouterAdapter(
+        "test-key", transport=httpx.MockTransport(handler)
+    ).generate(request()))
+    assert formats == [
+        {"type": "json_schema", "json_schema": formats[0]["json_schema"]},
+        {"type": "json_object"},
+    ]
     assert result.candidate.answer_text == "Grounded answer."
 
 

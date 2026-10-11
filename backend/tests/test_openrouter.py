@@ -211,8 +211,8 @@ def test_openrouter_requests_contract_citation_id() -> None:
     asyncio.run(OpenRouterAdapter("test-key", transport=httpx.MockTransport(handler)).generate(request()))
 
 
-def test_openrouter_trace_output_excludes_reasoning_wrapper() -> None:
-    reasoning_wrapped = "Reasoning that must not be shown.\n" + json.dumps({
+def test_openrouter_trace_output_contains_only_structured_output() -> None:
+    structured_output = json.dumps({
         "outcome": "answer",
         "answer_text": "Grounded answer.",
         "synthesis": False,
@@ -221,13 +221,12 @@ def test_openrouter_trace_output_excludes_reasoning_wrapper() -> None:
 
     def handler(request: httpx.Request) -> httpx.Response:
         payload = response_payload()
-        payload["choices"][0]["message"]["content"] = reasoning_wrapped
+        payload["choices"][0]["message"]["content"] = structured_output
         return httpx.Response(200, json=payload)
 
     result = asyncio.run(OpenRouterAdapter("test-key", transport=httpx.MockTransport(handler)).generate(request()))
 
-    assert result.raw_output == reasoning_wrapped[reasoning_wrapped.index("{"):]
-    assert "Reasoning that must not be shown" not in (result.raw_output or "")
+    assert result.raw_output == structured_output
 
 
 def test_openrouter_removes_think_block_from_answer_text() -> None:

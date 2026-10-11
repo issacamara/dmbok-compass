@@ -231,8 +231,7 @@ class OpenRouterAdapter(ModelAdapter):
                 "json_length": len(content),
                 "json_sha256": hashlib.sha256(content.encode()).hexdigest(),
             }, sort_keys=True))
-            extracted = self._extract_json(content)
-            candidate = parse_candidate(json.loads(extracted))
+            candidate = parse_candidate(json.loads(content))
             if candidate.answer_text:
                 candidate = candidate.model_copy(update={
                     "answer_text": re.sub(
@@ -270,7 +269,7 @@ class OpenRouterAdapter(ModelAdapter):
                 total_tokens=self._token_value(usage, "total_tokens"),
             ),
             # Keep the optional trace free of provider reasoning/preamble.
-            raw_output=extracted,
+            raw_output=content,
         )
 
     @staticmethod
@@ -296,19 +295,6 @@ class OpenRouterAdapter(ModelAdapter):
             if parts:
                 return "".join(parts)
         raise TypeError("OpenRouter returned no text content")
-
-    @staticmethod
-    def _extract_json(content: str) -> str:
-        """Extract the structured object when a provider adds a preamble."""
-        value = content.strip()
-        if value.startswith("```") and value.endswith("```"):
-            value = value[3:-3].strip()
-            if value.startswith("json"):
-                value = value[4:].strip()
-        start, end = value.find("{"), value.rfind("}")
-        if start < 0 or end < start:
-            raise ValueError("OpenRouter response contained no JSON object")
-        return value[start:end + 1]
 
     def _response_format(self) -> dict[str, object]:
         if not self._json_schema_supported:

@@ -190,6 +190,16 @@ class OpenRouterAdapter(ModelAdapter):
                 retryable=True,
             ) from exc
 
+        logger.info(
+            "openrouter_response_body %s",
+            json.dumps({
+                "model": model,
+                "status_code": response.status_code,
+                "body": response.text[:20_000],
+                "truncated": len(response.text) > 20_000,
+            }, ensure_ascii=False, sort_keys=True),
+        )
+
         if response.status_code in {401, 403}:
             raise GenerationError(
                 GenerationErrorCode.AUTHENTICATION_FAILED,

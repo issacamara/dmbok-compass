@@ -153,10 +153,6 @@ class OpenRouterAdapter(ModelAdapter):
                 },
                 {"role": "user", "content": self._user_content(request)},
             ],
-            # JSON mode prevents reasoning/preamble text from making the
-            # provider response unparsable. Field validation still happens
-            # below through parse_candidate().
-            "response_format": {"type": "json_object"},
             "reasoning": {"exclude": True},
             "temperature": 0,
             "response_format": self._response_format(),
@@ -300,6 +296,19 @@ class OpenRouterAdapter(ModelAdapter):
             if parts:
                 return "".join(parts)
         raise TypeError("OpenRouter returned no text content")
+
+    @staticmethod
+    def _extract_json(content: str) -> str:
+        """Extract the structured object when a provider adds a preamble."""
+        value = content.strip()
+        if value.startswith("```") and value.endswith("```"):
+            value = value[3:-3].strip()
+            if value.startswith("json"):
+                value = value[4:].strip()
+        start, end = value.find("{"), value.rfind("}")
+        if start < 0 or end < start:
+            raise ValueError("OpenRouter response contained no JSON object")
+        return value[start:end + 1]
 
     def _response_format(self) -> dict[str, object]:
         if not self._json_schema_supported:

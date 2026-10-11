@@ -142,6 +142,8 @@ class OpenRouterAdapter(ModelAdapter):
                     "role": "system",
                     "content": (
                         "Return only one JSON object matching this schema. "
+                        "Do not include reasoning, analysis, or hidden thoughts in any field; "
+                        "return only the final grounded answer. "
                         'The outcome value must be one of "answer", "qualified", or "refusal": '
                         '{"outcome":"answer",'
                         '"answer_text":string|null,"synthesis":boolean,'

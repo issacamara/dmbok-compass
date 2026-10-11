@@ -202,6 +202,7 @@ def test_openrouter_requests_contract_citation_id() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
         assert '"citation_id":string' in body["messages"][0]["content"]
+        assert "Do not include reasoning, analysis, or hidden thoughts" in body["messages"][0]["content"]
         assert body["response_format"] == {"type": "json_object"}
         assert body["reasoning"] == {"exclude": True}
         return httpx.Response(200, json=response_payload())

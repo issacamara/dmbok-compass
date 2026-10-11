@@ -21,7 +21,7 @@ variable "billing_account_id" {
 variable "fallback_model" {
   description = "Configured fallback model identifier used by the content-free fallback log counter."
   type        = string
-  default     = "apodex/apodex-1.1-mini:free"
+  default     = "google/gemma-4-31b-it:free"
 
   validation {
     condition     = length(trimspace(var.fallback_model)) > 0

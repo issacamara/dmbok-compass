@@ -174,9 +174,9 @@ def test_openrouter_uses_free_fallback_for_rate_limit() -> None:
     adapter = OpenRouterAdapter("test-key", transport=httpx.MockTransport(handler))
     result = asyncio.run(adapter.generate(request()))
 
-    assert models == ["google/gemma-4-26b-a4b-it:free", "apodex/apodex-1.1-mini:free"]
+    assert models == ["google/gemma-4-26b-a4b-it:free", "google/gemma-4-31b-it:free"]
     assert result.candidate.answer_text == "Fallback answer."
-    assert result.usage.model == "apodex/apodex-1.1-mini:free"
+    assert result.usage.model == "google/gemma-4-31b-it:free"
     assert [attempt.outcome for attempt in result.usage.attempts] == ["rate_limited", "success"]
 
 
@@ -193,7 +193,7 @@ def test_openrouter_reports_both_failed_routes_without_request_content() -> None
 
     assert [(attempt.model, attempt.outcome, attempt.status_code) for attempt in raised.value.attempts] == [
         ("google/gemma-4-26b-a4b-it:free", "unavailable", 404),
-        ("apodex/apodex-1.1-mini:free", "unavailable", 503),
+        ("google/gemma-4-31b-it:free", "unavailable", 503),
     ]
     assert "Answer from supplied evidence" not in str(raised.value.attempts)
 
@@ -258,7 +258,7 @@ def test_openrouter_uses_free_fallback_when_primary_model_is_missing() -> None:
     adapter = OpenRouterAdapter("test-key", transport=httpx.MockTransport(handler))
     result = asyncio.run(adapter.generate(request()))
 
-    assert models == ["google/gemma-4-26b-a4b-it:free", "apodex/apodex-1.1-mini:free"]
+    assert models == ["google/gemma-4-26b-a4b-it:free", "google/gemma-4-31b-it:free"]
     assert result.candidate.answer_text == "Fallback answer."
 
 
@@ -305,6 +305,6 @@ def test_openrouter_allows_fallback_after_primary_timeout() -> None:
     adapter = OpenRouterAdapter("test-key", transport=httpx.MockTransport(handler))
     result = asyncio.run(adapter.generate(request(timeout=TimeoutBudget(total_ms=30))))
 
-    assert models == ["google/gemma-4-26b-a4b-it:free", "apodex/apodex-1.1-mini:free"]
+    assert models == ["google/gemma-4-26b-a4b-it:free", "google/gemma-4-31b-it:free"]
     assert result.candidate.answer_text == "Fallback answer."
     assert [attempt.outcome for attempt in result.usage.attempts] == ["timeout", "success"]

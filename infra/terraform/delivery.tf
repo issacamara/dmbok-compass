@@ -61,7 +61,7 @@ resource "google_cloud_run_v2_service" "api" {
       }
       env {
         name  = "OPENROUTER_FALLBACK_MODEL"
-        value = "apodex/apodex-1.1-mini:free"
+        value = "google/gemma-4-31b-it:free"
       }
       env {
         name = "OPENROUTER_API_KEY"
@@ -176,7 +176,7 @@ resource "google_cloud_run_v2_job" "evaluation" {
         }
         env {
           name  = "OPENROUTER_FALLBACK_MODEL"
-        value = "apodex/apodex-1.1-mini:free"
+        value = "google/gemma-4-31b-it:free"
         }
         env {
           name = "OPENROUTER_API_KEY"

@@ -261,7 +261,7 @@ def configured_question_answerer() -> RetrievedAnswerService:
     policy = GroundedAnswerPolicy(
         adapter,
         model_name=model_name,
-        timeout_ms=int(os.environ.get("ANSWER_GENERATION_TIMEOUT_MS", "30000")),
+        timeout_ms=int(os.environ.get("ANSWER_GENERATION_TIMEOUT_MS", "60000")),
     )
     return RetrievedAnswerService(retriever, FirestoreCorpusVersionStore(client), policy)
 

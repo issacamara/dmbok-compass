@@ -21,7 +21,7 @@ variable "billing_account_id" {
 variable "fallback_model" {
   description = "Configured fallback model identifier used by the content-free fallback log counter."
   type        = string
-  default     = "nvidia/nemotron-3-ultra-550b-a55b:free"
+  default     = "apodex/apodex-1.1-mini:free"
 
   validation {
     condition     = length(trimspace(var.fallback_model)) > 0

@@ -52,12 +52,16 @@ resource "google_cloud_run_v2_service" "api" {
         value = "openrouter"
       }
       env {
+        name  = "ANSWER_GENERATION_TIMEOUT_MS"
+        value = "60000"
+      }
+      env {
         name  = "OPENROUTER_PRIMARY_MODEL"
         value = "google/gemma-4-26b-a4b-it:free"
       }
       env {
         name  = "OPENROUTER_FALLBACK_MODEL"
-        value = "nvidia/nemotron-3-ultra-550b-a55b:free"
+        value = "apodex/apodex-1.1-mini:free"
       }
       env {
         name = "OPENROUTER_API_KEY"
@@ -163,12 +167,16 @@ resource "google_cloud_run_v2_job" "evaluation" {
           value = "openrouter"
         }
         env {
+          name  = "ANSWER_GENERATION_TIMEOUT_MS"
+          value = "60000"
+        }
+        env {
           name  = "OPENROUTER_PRIMARY_MODEL"
         value = "google/gemma-4-26b-a4b-it:free"
         }
         env {
           name  = "OPENROUTER_FALLBACK_MODEL"
-        value = "nvidia/nemotron-3-ultra-550b-a55b:free"
+        value = "apodex/apodex-1.1-mini:free"
         }
         env {
           name = "OPENROUTER_API_KEY"

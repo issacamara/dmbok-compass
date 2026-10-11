@@ -12,7 +12,7 @@ provider-neutral adapter with these model identifiers:
 | Role | Model ID | Rationale |
 | --- | --- | --- |
 | Primary | `google/gemma-4-26b-a4b-it:free` | Free OpenRouter model for the normal answer path. |
-| Fallback | `nvidia/nemotron-3-ultra-550b-a55b:free` | A distinct free OpenRouter model for fallback. |
+| Fallback | `apodex/apodex-1.1-mini:free` | A distinct free OpenRouter model for fallback. |
 
 The fallback is only for configured model-level unavailability, timeout,
 capacity, or rate-limit failures. It is not a gateway-failure fallback: an

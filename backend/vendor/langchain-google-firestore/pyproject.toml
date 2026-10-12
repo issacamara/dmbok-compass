@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=70", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "langchain-google-firestore"
+version = "0.5.0.post2"
+description = "DMBOK Compass compatibility patch of LangChain Google Firestore 0.5.0"
+license = "Apache-2.0"
+requires-python = ">=3.11"
+dependencies = [
+  "langchain-core>=1.6.9,<2",
+  "langchain-community>=0.4,<1",
+  "google-cloud-firestore>=2.32,<3",
+  "google-cloud-storage>=3.15,<4",
+  "more-itertools>=10.2,<11",
+  "requests>=2.32.3,<3",
+]
+
+[tool.setuptools.packages.find]
+include = ["langchain_google_firestore*"]
+
+[tool.setuptools.package-data]
+langchain_google_firestore = ["py.typed"]

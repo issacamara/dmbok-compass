@@ -1,257 +1,321 @@
 # Gate 2 - Architecture Design
 
-**Status:** FINAL  
-**Version:** 1.5
-**Date:** 2026-10-10
-**Input reference:** DMBOK Compass — Business Requirements Document, Version 0.1  
+**Status:** FINAL
+
+**Version:** 1.9
+
+**Date:** 2026-10-12
+
+**Input reference:** DMBOK Compass — Business Requirements Document, Version 0.1 working copy; sponsor-approved complete LangChain migration and architectural impact assessment, 2026-10-12
+
 **Author:** Software Architect Agent
+
+**Implementation readiness:** The maintained candidate passes a clean Python 3.11 install and local/live development compatibility checks. The Linux target-image build remains required before dependent implementation (sections 5.5, 13 and 14).
 
 ## 1. Executive Summary
 
-DMBOK Compass is a small, access-controlled retrieval-augmented generation application hosted primarily on Google Cloud. Its React and TypeScript browser application calls a Python FastAPI modular monolith on Cloud Run, with Firebase Authentication enforcing verified identity and administrator approval. Firestore Native mode holds application records, evaluation data, corpus chunks, and a 768-dimensional native vector index; production interaction content remains ephemeral. LangChain composes retrieval and answer generation through an OpenRouter adapter; Vertex AI generates corpus and query embeddings. Administrators import JSON evaluation datasets, review gold annotations, and run exploratory or release-eligible evaluations. A successful import atomically activates the new dataset and supersedes the prior evaluation history as release evidence. Cloud Run Jobs ingest the searchable DMBOK PDF and run evaluations. Release depends on the 30–50 approved gold-item gate, provider and cost terms, quality and latency evidence, and the sponsor’s publisher-rights decision.
+DMBOK Compass remains an access-controlled, corpus-grounded React/TypeScript application backed by a FastAPI modular monolith on Cloud Run.
+LangChain replaces custom document loading, chunking, embedding, vector storage, retrieval, and generation inside the existing API and batch jobs.
+Firebase Authentication, Firestore, Cloud Storage, Cloud Run Jobs, and the configured hosted providers remain the backing services.
+Application code retains authorization, quotas, provenance enrichment, corpus lifecycle, evidence/refusal policy, citation validation, and privacy-safe response mapping.
+A shared LangChain configuration/chain factory serves production requests and corpus-pinned evaluations without changing public workflows or contracts.
+A new derived corpus identity, staged vector collection/index, reviewed gold annotations, and coupled revision/corpus rollback protect the data migration.
+The target design is approved; a maintained patched package candidate passes local contracts and live development Firestore, Vertex and OpenRouter checks. The Linux target-image build remains unproven before dependent implementation or production promotion.
+Release still requires the existing quality, latency, cost, privacy, provider, publisher-risk, backup, and recovery evidence.
 
 ## 2. Business Context & Drivers
 
-DMBOK Compass replaces manual searching of *DAMA-DMBOK, Second Edition* with evidence-backed lookup, comparison, synthesis, study support, and scenario guidance. The sponsor, product owner, administrator, evaluator, corpus owner, support owner, and release approver are currently the same person. Other actors are registration applicants, approved users, and the hosted answer-model provider.
+DMBOK Compass replaces manual searching of *DAMA-DMBOK, Second Edition* with evidence-backed lookup, comparison, synthesis, study support, and scenario guidance. The sponsor, product owner, administrator, evaluator, corpus owner, support owner, and release approver are currently the same person. Other actors are registration applicants, approved users, and hosted model providers.
 
-In scope are public registration requests, verified email and password authentication, administrator approval, a responsive English browser interface, corpus-only answers, page and section citations, request-scoped retrieval traces, configurable quotas, aggregate administration, offline ingestion of one searchable PDF, administrator JSON evaluation import, record-level validation, gold-annotation review, exploratory and release-eligible evaluation, daily backup, and documented recovery. The first release excludes anonymous access, more than 10 approved users, multiple corpora, saved conversations, feedback, MFA, native mobile applications, an admin PDF-upload interface, contractual uptime, and high-availability infrastructure.
+In scope are public registration requests, verified email/password identity and administrator approval, a responsive English browser interface, corpus-only answers, page/section citations, request-scoped retrieval traces, configurable quotas, aggregate administration, offline ingestion of one searchable PDF, administrator JSON evaluation import, record validation, gold review, exploratory/release-eligible evaluation, daily backup, and documented recovery. The first release excludes anonymous access, more than 10 approved users, multiple corpora, saved conversations, feedback, MFA, native mobile applications, an admin PDF-upload interface, contractual uptime, and high-availability infrastructure.
 
-The principal drivers are grounding and citation quality, reproducible release decisions, strict non-retention of production interactions, cost control, and maintainability by one sponsor. The most significant external constraints are publisher rights, OpenRouter and upstream data terms and capacity, and reliable extraction of citation provenance. The repository now contains a FastAPI backend, evaluation contracts and in-memory reference stores, an OpenRouter adapter, Terraform, and a provider decision; these are reused as the implementation baseline, with durable import and run storage still to build.
+The sponsor approved replacing all six RAG mechanisms with LangChain while preserving functionality. Functional equivalence means the same public schemas, workflows, evidence outcomes, citation authority, quotas, fallback rules, and privacy behavior; nondeterministic model answers need not be byte-identical. LangChain supplies library integrations rather than another deployed service. It does not assume ownership of product policy, identity, domain repositories, or release decisions.
+
+The architecture reuses the current FastAPI/React codebase, ingestion/evaluation job entrypoints, domain contracts, Firebase, Firestore, Cloud Storage, infrastructure, and delivery workflows. Graphify's 2026-10-10 report/maps guided navigation; source and the current BRD working copy take precedence over older graph/document descriptions. The existing custom runnable wrappers do not implement the requested replacement. Sections 5–13 incorporate the architectural impact findings and supersede the separate proposal.
+
+The principal drivers remain grounding/citation quality, reproducible release decisions, non-retention of production interactions, the €5 GCP infrastructure constraint plus approved provider budget, and maintainability by one sponsor. Provider terms/capacity, publisher rights, PDF provenance, and LangChain/Firestore compatibility remain explicit validation gates. No infrastructure expansion or relaxation of acceptance thresholds is authorized by this migration.
 
 ## 3. Requirements Traceability
 
+Existing BRD identifiers are preserved. `MIG-01`–`MIG-04` identify the sponsor migration instruction and supplied engineering standards, without changing BRD acceptance thresholds. Component classifications refer to the existing codebase; new work is library integration and migration inside reused components.
+
 | Req ID | Requirement | Design decision | Component(s) | Reused/New |
 |--------|-------------|-----------------|--------------|------------|
-| BPR-001 | Registration and approval | Firebase handles registration and verification; backend approval state gates answering. | Firebase Authentication; Backend API; Web Application | Reused + New |
-| BPR-002 | Grounded question answering | LangChain-based retrieval/generation pipeline permits answer, qualified answer, or refusal and validates citations. | Backend API; LangChain RAG Pipeline; Firestore Data and Vector Store; External Model Adapter | New + Reused |
-| BPR-003 | Corpus maintenance | Administrator-only, idempotent Cloud Run Job rebuilds a staged corpus version from Cloud Storage. | Corpus Ingestion and Evaluation Worker; Cloud Storage; Vertex AI; Firestore | New + Reused |
-| BPR-004 | Pre-release evaluation | Versioned evaluation runs report every release metric and block promotion on failure. | Corpus Ingestion and Evaluation Worker; Backend API; Firestore | New + Reused |
-| BPR-005 | Release decision | Sponsor approval is persisted against immutable configuration and evaluation identifiers. | Backend API; Firestore; Web Application | New + Reused |
-| BPR-006 | Backup and recovery | Daily Firestore backups retain no more than 30 copies; corpus index is reproducible from source. | Firestore; Cloud Storage; Operations and Delivery Platform | Reused |
-| BPR-007 | Evaluation dataset import and replacement | Admin import validates per record, stages valid items, atomically switches the active dataset, then permits exploratory runs and gold review. | Web Application; Backend API; Corpus Ingestion and Evaluation Worker; Firestore | New + Reused |
-| SM-01–SM-05 | Retrieval, grounding, citation, answer, and refusal gates | Active-dataset gold evaluation reports each metric against its approved threshold. | Corpus Ingestion and Evaluation Worker; Backend API; Firestore | New + Reused |
-| SM-06 | At least 95% within 15 seconds | Measure complete responses under three-user normal load. | Backend API; Operations and Delivery Platform | New + Reused |
-| SM-07 | Approved-user ceiling | Transactional approval enforces 10 active users. | Backend API; Firestore | New + Reused |
-| SM-08 | GCP and provider cost | Track €5 monthly GCP infrastructure and separately capped OpenRouter usage, including configured fallback. | Operations and Delivery Platform; External Model Adapter | Reused + New |
-| FR-001 | Submit registration request | Firebase sign-up plus a pending Firestore profile records email and username after validation. | Web Application; Firebase Authentication; Backend API; Firestore | New + Reused |
-| FR-002 | Verify submitted email | Firebase email verification is mandatory before approval. | Firebase Authentication; Backend API | Reused + New |
-| FR-003 | Approve, reject, or deactivate users | Administrator endpoints and UI update authorization state immediately. | Web Application; Backend API; Firestore | New + Reused |
-| FR-004 | Maximum 10 approved users | Approval uses a Firestore transaction that rejects an eleventh active user. | Backend API; Firestore | New + Reused |
-| FR-005 | Sign-in, sign-out, and password reset | Firebase Authentication provides credential and recovery flows; backend checks approval on every request. | Firebase Authentication; Web Application; Backend API | Reused + New |
-| FR-006 | Submit an English DMBOK question | Responsive chat UI sends an authenticated request and presents processing, result, or operational error. | Web Application; Backend API | New |
-| FR-007 | Corpus-only answers | LangChain prompt and runnable contract prohibits external knowledge; evidence and claim checks enforce grounding. | Backend API; LangChain RAG Pipeline; External Model Adapter; Firestore | New + Reused |
-| FR-008 | Required question categories | Versioned evaluation dataset covers definitions, explanations, comparisons, study, and scenarios. | Corpus Ingestion and Evaluation Worker; Firestore | New + Reused |
-| FR-009 | Label supported synthesis | Response schema marks synthesis and maps material claims to retrieved citations. | Backend API; External Model Adapter; Web Application | New |
-| FR-010 | Page, section, and excerpt citations | Immutable chunk provenance is rendered by the application, not invented by the model. | Firestore; Backend API; Web Application | Reused + New |
-| FR-011 | Strong, partial, and absent evidence outcomes | Retrieval thresholds and response policy select normal, qualified, or refusal behavior. | Backend API; External Model Adapter | New |
-| FR-012 | Request-scoped retrieval trace | API returns retrieved passages, available scores, model, and timing in the live response only. | Backend API; Web Application | New |
-| FR-013 | No retained interaction content | Questions, retrieved passages, answers, and traces stay in request memory and are excluded from storage and logs. | Backend API; Operations and Delivery Platform | New + Reused |
-| FR-014 | Automatic fallback model | LangChain model interface plus provider adapter routes eligible primary-model failures to a second model from the same provider. | LangChain RAG Pipeline; External Model Adapter; External Hosted Answer Models | New + Reused |
-| FR-015 | Configurable per-user daily limit, default 100 | Firestore transactions enforce per-user counters and administrator-editable configuration. | Backend API; Firestore; Web Application | New + Reused |
-| FR-016 | Configurable global daily limit | A transactional global counter defaults to 100 requests per UTC day and is editable without deployment. | Backend API; Firestore; Web Application | New + Reused |
-| FR-017 | Explain quota block and reset | API returns the applicable limit and UTC reset time without exposing other users. | Backend API; Web Application | New |
-| FR-018 | Anonymous aggregate administration | Content-free counters, provider failures, and cost indicators feed the admin view. | Backend API; Web Application; Firestore; Operations and Delivery Platform | New + Reused |
-| FR-019 | Run full or subset evaluation | Administrator starts a uniquely identified evaluation job for selected dataset items. | Web Application; Backend API; Corpus Ingestion and Evaluation Worker | New |
-| FR-020 | Calculate all release metrics | Evaluation worker reports numerator, denominator, percentage, threshold, and pass/fail for each gate. | Corpus Ingestion and Evaluation Worker; Firestore | New + Reused |
-| FR-021 | Generated annotations and human-approved gold subset | Evaluation entities preserve generated candidates, review status, rubric, passages, and dataset version. | Corpus Ingestion and Evaluation Worker; Firestore; Web Application | New + Reused |
-| FR-022 | Persist reproducible evaluation evidence | Current-dataset questions, annotations, run inputs/results, and decisions are durable and version-bound; superseded runs are excluded from available release evidence. | Firestore; Corpus Ingestion and Evaluation Worker; Operations and Delivery Platform | Reused + New |
-| FR-023 | Admin JSON import | Authenticated admin API accepts a bounded JSON file from the administration UI. | Web Application; Backend API | New |
-| FR-024 | Required evaluation fields | Per-record schema requires question, one category, expected answer or rubric, and supporting passage. | Backend API; Firestore | New + Reused |
-| FR-025 | Allowed categories | Validate against definitions, explanations, comparisons, study, and scenarios; report unknown values. | Backend API; Web Application | New |
-| FR-026 | Partial import | Validate independently, stage every valid record, and skip invalid records from the same file. | Backend API; Firestore | New + Reused |
-| FR-027 | Reject empty valid import | If no valid records remain, reject before any active-dataset mutation. | Backend API; Firestore | New + Reused |
-| FR-028 | Import report | Return submitted/imported/skipped counts and each skipped record's index and reason for display in Admin. | Backend API; Web Application | New |
-| FR-029 | Replace active dataset and prior history | Atomically activate a new dataset generation; mark earlier runs superseded and exclude them from available release evidence. | Backend API; Firestore; Web Application | New + Reused |
-| FR-030 | Use active dataset automatically | Full-run launch resolves the active dataset server-side; subset launch accepts only item IDs from it. | Backend API; Web Application; Firestore | New + Reused |
-| FR-031 | Immediate exploratory run | Any non-empty active import can start a full exploratory run before gold approval. | Backend API; Corpus Ingestion and Evaluation Worker | New |
-| FR-032 | Gold-item review | Admin review action approves or rejects records, persists status, and refreshes the dataset view. | Backend API; Web Application; Firestore | New + Reused |
-| FR-033 | Gold-count release gate | Server rejects release approval unless the active dataset has 30–50 approved gold items and eligible passing evidence. | Backend API; Firestore | New + Reused |
-| NFR-001 | 95% within 15 seconds | Stage budgets, bounded model timeouts, scale settings, and performance gates enforce the target. | Backend API; External Model Adapter; Operations and Delivery Platform | New + Reused |
-| NFR-002 | Three simultaneous users | Cloud Run starts at concurrency 8, maximum two instances, and is load-tested with three users. | Operations and Delivery Platform; Backend API | Reused + New |
-| NFR-003 | No more than €5 monthly GCP infrastructure plus approved provider budget | Scale-to-zero services, quotas, monitored GCP budget, and separately enforced OpenRouter spend policy. | Operations and Delivery Platform; Backend API; External Model Adapter | Reused + New |
-| NFR-004 | HTTPS for protected traffic | Firebase Hosting, Cloud Run, Firebase Auth, and provider APIs use HTTPS only. | Operations and Delivery Platform; Firebase Authentication; External Hosted Answer Models | Reused |
+| OBJ-01 | Reduce corpus lookup effort | Preserve authenticated English lookup and complete cited responses. | Web Application; Backend API; LangChain RAG Pipeline | Reused + New |
+| OBJ-02 | Evidence-backed comparison and synthesis | Compose retrieved passages and preserve explicit synthesis labels. | LangChain RAG Pipeline; LangChain Chat Model Integration | Reused + New |
+| OBJ-03 | Grounding and verifiable citations | Evidence policy plus provenance-derived citations and claim review. | Backend API; Corpus Ingestion and Evaluation Worker | Reused |
+| OBJ-04 | Evidence-gated release | New corpus/chain requires reviewed, version-bound passing evidence. | Backend API; Corpus Ingestion and Evaluation Worker | Reused |
+| OBJ-05 | Secure, recoverable, affordable service | Keep ten-user ceiling, budgets, access controls, backups, and 24-hour recovery. | Backend API; Google Cloud Operations and Delivery Platform | Reused |
+| BPR-001 | Registration and approval | Firebase handles registration and verification; backend approval state gates answering. | Firebase Authentication; Backend API; Web Application | Reused |
+| BPR-002 | Grounded question answering | Native LangChain score-preserving retrieval/generation permits answer, qualified answer, or refusal and validates citations. | Backend API; LangChain RAG Pipeline; Firestore Data and Vector Store; LangChain Chat Model Integration | Reused + New |
+| BPR-003 | Corpus maintenance | Administrator-only Cloud Run Job uses LangChain loading/splitting/embedding/writes and stages a new derived corpus version. | Corpus Ingestion and Evaluation Worker; LangChain RAG Pipeline; Cloud Storage Corpus Repository; Vertex AI Embedding Service; Firestore Data and Vector Store | Reused + New |
+| BPR-004 | Pre-release evaluation | Versioned evaluation runs report every release metric and block promotion on failure. | Corpus Ingestion and Evaluation Worker; Backend API; Firestore Data and Vector Store | Reused |
+| BPR-005 | Release decision | Sponsor approval is persisted against immutable configuration and evaluation identifiers. | Backend API; Firestore Data and Vector Store; Web Application | Reused |
+| BPR-006 | Backup and recovery | Daily Firestore backups retain no more than 30 copies; corpus index is reproducible from source. | Firestore Data and Vector Store; Cloud Storage Corpus Repository; Google Cloud Operations and Delivery Platform | Reused |
+| BPR-007 | Evaluation dataset import and replacement | Admin import validates per record, stages valid items, atomically switches the active dataset, then permits exploratory runs and gold review. | Web Application; Backend API; Corpus Ingestion and Evaluation Worker; Firestore Data and Vector Store | Reused |
+| SM-01 | Top-five retrieval success ≥90% | Reviewed gold passage appears in the five retrieved results; preserve corpus filter and cosine score semantics. | LangChain RAG Pipeline; Corpus Ingestion and Evaluation Worker | Reused + New |
+| SM-02 | Grounded factual claims ≥95% | Claim-level review checks evidence support; citation presence alone is insufficient. | Corpus Ingestion and Evaluation Worker; Backend API | Reused |
+| SM-03 | Citation correctness ≥95% | Stored provenance and reviewed claim/citation support are required. | Backend API; Corpus Ingestion and Evaluation Worker | Reused |
+| SM-04 | Answer quality ≥85% | Approved correctness/usefulness rubric evaluates the migrated chain against the legacy baseline. | Corpus Ingestion and Evaluation Worker | Reused |
+| SM-05 | Correct refusal ≥95% | Gold unanswerable cases exercise absent-evidence refusal without generation. | LangChain RAG Pipeline; Corpus Ingestion and Evaluation Worker | Reused + New |
+| SM-06 | At least 95% within 15 seconds | Measure complete responses under three-user normal load. | Backend API; Google Cloud Operations and Delivery Platform | Reused |
+| SM-07 | Approved-user ceiling | Transactional approval enforces 10 active users. | Backend API; Firestore Data and Vector Store | Reused |
+| SM-08 | GCP and provider cost | Track €5 monthly GCP infrastructure and separately capped OpenRouter usage, including configured fallback. | Google Cloud Operations and Delivery Platform; LangChain Chat Model Integration | Reused + New |
+| FR-001 | Submit registration request | Firebase sign-up plus a pending Firestore profile records email and username after validation. | Web Application; Firebase Authentication; Backend API; Firestore Data and Vector Store | Reused |
+| FR-002 | Verify submitted email | Firebase email verification is mandatory before approval. | Firebase Authentication; Backend API | Reused |
+| FR-003 | Approve, reject, or deactivate users | Administrator endpoints and UI update authorization state immediately. | Web Application; Backend API; Firestore Data and Vector Store | Reused |
+| FR-004 | Maximum 10 approved users | Approval uses a Firestore transaction that rejects an eleventh active user. | Backend API; Firestore Data and Vector Store | Reused |
+| FR-005 | Sign-in, sign-out, and password reset | Firebase Authentication provides credential and recovery flows; backend checks approval on every request. | Firebase Authentication; Web Application; Backend API | Reused |
+| FR-006 | Submit an English DMBOK question | Responsive chat UI sends an authenticated request and presents processing, result, or operational error. | Web Application; Backend API | Reused |
+| FR-007 | Corpus-only answers | LangChain prompt restricts generation to retrieved evidence; application evidence/citation policy and claim-level evaluation validate grounding. | Backend API; LangChain RAG Pipeline; LangChain Chat Model Integration; Firestore Data and Vector Store | Reused + New |
+| FR-008 | Required question categories | Versioned evaluation dataset covers definitions, explanations, comparisons, study, and scenarios. | Corpus Ingestion and Evaluation Worker; Firestore Data and Vector Store | Reused |
+| FR-009 | Label supported synthesis | Response schema marks synthesis and maps material claims to retrieved citations. | Backend API; LangChain Chat Model Integration; Web Application | Reused + New |
+| FR-010 | Page, section, and excerpt citations | Immutable chunk provenance is rendered by the application, not invented by the model. | Firestore Data and Vector Store; Backend API; Web Application | Reused |
+| FR-011 | Strong, partial, and absent evidence outcomes | Retrieval thresholds and response policy select normal, qualified, or refusal behavior. | Backend API; LangChain Chat Model Integration | Reused + New |
+| FR-012 | Request-scoped retrieval trace | API returns retrieved passages and preserved scores, model/attempts, raw-output and timing fields in the live response only. | Backend API; Web Application | Reused |
+| FR-013 | No retained interaction content | Questions, retrieved passages, answers, and traces stay in request memory and are excluded from storage and logs. | Backend API; Google Cloud Operations and Delivery Platform | Reused |
+| FR-014 | Automatic fallback model | Native LangChain chat models route eligible failures according to effective configuration; approved production uses OpenRouter primary/fallback models. | LangChain RAG Pipeline; LangChain Chat Model Integration; External Hosted Answer Models | Reused + New |
+| FR-015 | Configurable per-user daily limit, default 100 | Firestore transactions enforce per-user counters and administrator-editable configuration. | Backend API; Firestore Data and Vector Store; Web Application | Reused |
+| FR-016 | Configurable global daily limit | A transactional global counter defaults to 100 requests per UTC day and is editable without deployment. | Backend API; Firestore Data and Vector Store; Web Application | Reused |
+| FR-017 | Explain quota block and reset | API returns the applicable limit and UTC reset time without exposing other users. | Backend API; Web Application | Reused |
+| FR-018 | Anonymous aggregate administration | Content-free counters, provider failures, and cost indicators feed the admin view. | Backend API; Web Application; Firestore Data and Vector Store; Google Cloud Operations and Delivery Platform | Reused |
+| FR-019 | Run full or subset evaluation | Administrator starts a uniquely identified evaluation job for selected dataset items. | Web Application; Backend API; Corpus Ingestion and Evaluation Worker | Reused |
+| FR-020 | Calculate all release metrics | Evaluation worker reports numerator, denominator, percentage, threshold, and pass/fail for each gate. | Corpus Ingestion and Evaluation Worker; Firestore Data and Vector Store | Reused |
+| FR-021 | Generated annotations and human-approved gold subset | Evaluation entities preserve generated candidates, review status, rubric, passages, and dataset version. | Corpus Ingestion and Evaluation Worker; Firestore Data and Vector Store; Web Application | Reused |
+| FR-022 | Persist reproducible evaluation evidence | Current-dataset questions, annotations, run inputs/results, and decisions are durable and version-bound; superseded runs are excluded from available release evidence. | Firestore Data and Vector Store; Corpus Ingestion and Evaluation Worker; Google Cloud Operations and Delivery Platform | Reused |
+| FR-023 | Admin JSON import | Authenticated admin API accepts a bounded JSON file from the administration UI. | Web Application; Backend API | Reused |
+| FR-024 | Required evaluation fields | Per-record schema requires question, one category, expected answer or rubric, and supporting passage. | Backend API; Firestore Data and Vector Store | Reused |
+| FR-025 | Allowed categories | Validate against definitions, explanations, comparisons, study, and scenarios; report unknown values. | Backend API; Web Application | Reused |
+| FR-026 | Partial import | Validate independently, stage every valid record, and skip invalid records from the same file. | Backend API; Firestore Data and Vector Store | Reused |
+| FR-027 | Reject empty valid import | If no valid records remain, reject before any active-dataset mutation. | Backend API; Firestore Data and Vector Store | Reused |
+| FR-028 | Import report | Return submitted/imported/skipped counts and each skipped record's index and reason for display in Admin. | Backend API; Web Application | Reused |
+| FR-029 | Replace active dataset and prior history | Atomically activate a new dataset generation; mark earlier runs superseded and exclude them from available release evidence. | Backend API; Firestore Data and Vector Store; Web Application | Reused |
+| FR-030 | Use active dataset automatically | Full-run launch resolves the active dataset server-side; subset launch accepts only item IDs from it. | Backend API; Web Application; Firestore Data and Vector Store | Reused |
+| FR-031 | Immediate exploratory run | Any non-empty active import can start a full exploratory run before gold approval. | Backend API; Corpus Ingestion and Evaluation Worker | Reused |
+| FR-032 | Gold-item review | Admin review action approves or rejects records, persists status, and refreshes the dataset view. | Backend API; Web Application; Firestore Data and Vector Store | Reused |
+| FR-033 | Gold-count release gate | Server rejects release approval unless the active dataset has 30–50 approved gold items and eligible passing evidence. | Backend API; Firestore Data and Vector Store | Reused |
+| NFR-001 | 95% within 15 seconds | Stage budgets, bounded model timeouts, scale settings, and performance gates enforce the target. | Backend API; LangChain Chat Model Integration; Google Cloud Operations and Delivery Platform | Reused + New |
+| NFR-002 | Three simultaneous users | Cloud Run starts at concurrency 8, maximum two instances, and is load-tested with three users. | Google Cloud Operations and Delivery Platform; Backend API | Reused |
+| NFR-003 | No more than €5 monthly GCP infrastructure plus approved provider budget | Scale-to-zero services, quotas, monitored GCP budget, and separately enforced OpenRouter spend policy. | Google Cloud Operations and Delivery Platform; Backend API; LangChain Chat Model Integration | Reused + New |
+| NFR-004 | HTTPS for protected traffic | Firebase Hosting, Cloud Run, Firebase Auth, and provider APIs use HTTPS only. | Google Cloud Operations and Delivery Platform; Firebase Authentication; External Hosted Answer Models | Reused |
 | NFR-005 | Safe password storage | Firebase Authentication owns salted password hashing; passwords never enter application storage or logs. | Firebase Authentication | Reused |
 | NFR-006 | Login throttling and secure reset | Firebase Authentication supplies throttling and expiring recovery flows; tests verify behavior. | Firebase Authentication | Reused |
-| NFR-007 | Current desktop and mobile browsers | Responsive React UI receives automated viewport and browser-flow testing. | Web Application | New |
-| NFR-008 | Basic WCAG 2.1 AA | Semantic UI, keyboard operation, focus management, contrast, and automated/manual checks are release gates. | Web Application | New |
-| NFR-009 | Daily backups, maximum 30 copies | Firestore managed backup schedule and retention are infrastructure-as-code controls. | Firestore; Operations and Delivery Platform | Reused |
-| NFR-010 | Restore within 24 hours | Restore runbook, periodic exercise, versioned source PDF, and deterministic rebuild meet recovery target. | Firestore; Cloud Storage; Corpus Ingestion and Evaluation Worker | Reused + New |
-| NFR-011 | Ephemeral interactions excluded from persistence | Allowlisted telemetry and storage tests prove production request content is absent. | Backend API; Operations and Delivery Platform | New + Reused |
-| NFR-012 | Reproducible evaluation | Reports bind dataset, corpus, retrieval, prompt, provider, model, and scorer versions. | Corpus Ingestion and Evaluation Worker; Firestore | New + Reused |
-| NFR-013 | Best-effort availability and clear failures | Bounded retries, fallback, circuit breaking, and honest operational errors avoid ungrounded output. | Backend API; External Model Adapter; Web Application | New |
-| NFR-014 | User isolation and admin authorization | Role checks are enforced server-side and covered by negative authorization tests. | Backend API; Firebase Authentication; Firestore | New + Reused |
-| NFR-015 | Failed import preserves active state | Stage and validate first; on validation or storage failure the active pointer and visible run history remain unchanged. | Backend API; Firestore | New + Reused |
-| NFR-016 | Evaluation state survives restart | Store active dataset, annotations, and runs in Firestore rather than process memory. | Backend API; Corpus Ingestion and Evaluation Worker; Firestore | New + Reused |
-| NFR-017 | Exploratory versus release evidence | Persist and display explicit report eligibility; only active-dataset gold-eligible reports can support release. | Backend API; Web Application; Firestore | New + Reused |
-| INT-01 | Primary and fallback hosted answer models | LangChain-compatible OpenRouter adapter calls two configured models through OpenRouter; model IDs remain release-gated. | LangChain RAG Pipeline; External Model Adapter; External Hosted Answer Models | New + Reused |
-| INT-02 | Embedding service | Vertex AI `gemini-embedding-001` produces 768-dimensional document and query embeddings. | Vertex AI Embedding Service | Reused |
+| NFR-007 | Current desktop and mobile browsers | Responsive React UI receives automated viewport and browser-flow testing. | Web Application | Reused |
+| NFR-008 | Basic WCAG 2.1 AA | Semantic UI, keyboard operation, focus management, contrast, and automated/manual checks are release gates. | Web Application | Reused |
+| NFR-009 | Daily backups, maximum 30 copies | Firestore managed backup schedule and retention are infrastructure-as-code controls. | Firestore Data and Vector Store; Google Cloud Operations and Delivery Platform | Reused |
+| NFR-010 | Restore within 24 hours | Restore runbook, periodic exercise, versioned source PDF, and deterministic rebuild meet recovery target. | Firestore Data and Vector Store; Cloud Storage Corpus Repository; Corpus Ingestion and Evaluation Worker | Reused |
+| NFR-011 | Ephemeral interactions excluded from persistence | Allowlisted telemetry and storage tests prove production request content is absent. | Backend API; Google Cloud Operations and Delivery Platform | Reused |
+| NFR-012 | Reproducible evaluation | Reports bind dataset, corpus, retrieval, prompt, provider, model, and scorer versions. | Corpus Ingestion and Evaluation Worker; Firestore Data and Vector Store | Reused |
+| NFR-013 | Best-effort availability and clear failures | Bounded retries, fallback, circuit breaking, and honest operational errors avoid ungrounded output. | Backend API; LangChain Chat Model Integration; Web Application | Reused + New |
+| NFR-014 | User isolation and admin authorization | Role checks are enforced server-side and covered by negative authorization tests. | Backend API; Firebase Authentication; Firestore Data and Vector Store | Reused |
+| NFR-015 | Failed import preserves active state | Stage and validate first; on validation or storage failure the active pointer and visible run history remain unchanged. | Backend API; Firestore Data and Vector Store | Reused |
+| NFR-016 | Evaluation state survives restart | Store active dataset, annotations, and runs in Firestore rather than process memory. | Backend API; Corpus Ingestion and Evaluation Worker; Firestore Data and Vector Store | Reused |
+| NFR-017 | Exploratory versus release evidence | Persist and display explicit report eligibility; only active-dataset gold-eligible reports can support release. | Backend API; Web Application; Firestore Data and Vector Store | Reused |
+| INT-01 | Primary and fallback hosted answer models | Native LangChain OpenRouter chat integration calls two configured models through OpenRouter; model IDs remain release-gated. | LangChain RAG Pipeline; LangChain Chat Model Integration; External Hosted Answer Models | Reused + New |
+| INT-02 | Embedding service | LangChain Vertex-configured embeddings call `gemini-embedding-001` to produce 768-dimensional document and query embeddings. | Vertex AI Embedding Service; LangChain RAG Pipeline | Reused + New |
 | INT-03 | Email verification and recovery delivery | Firebase Authentication provides managed verification and reset email workflows. | Firebase Authentication | Reused |
-| CON-01 | GCP-first hosting | All application hosting, storage, identity, ingestion, observability, and delivery use GCP/Firebase except answer generation. | Operations and Delivery Platform; all managed stores | Reused |
-| CON-02 | Python backend and TypeScript frontend | FastAPI/Pydantic and React/Vite/TypeScript are the implementation standards. | Backend API; Web Application | New |
+| CON-01 | GCP-first hosting | All application hosting, storage, identity, ingestion, observability, and delivery use GCP/Firebase except answer generation. | Google Cloud Operations and Delivery Platform; all managed stores | Reused |
+| CON-02 | Python backend and TypeScript frontend | FastAPI/Pydantic and React/Vite/TypeScript are the implementation standards. | Backend API; Web Application | Reused |
 | CON-03 | Firestore application and vector data | Firestore Native mode consolidates application records and native vector search. | Firestore Data and Vector Store | Reused |
-| CON-04 | One searchable DMBOK PDF | Ingestion accepts one versioned source corpus and rejects unapproved source types. | Cloud Storage; Corpus Ingestion and Evaluation Worker | Reused + New |
-| CON-05 | Maximum 10 approved users | Transactional approval ceiling and tests prevent excess activation. | Backend API; Firestore | New + Reused |
-| CON-06 | No saved production conversations | No chat-history entity or analytics payload is designed. | Backend API; Firestore; Operations and Delivery Platform | New + Reused |
-| CON-07 | No fixed deadline; readiness-gated release | Delivery follows evidence and approval gates rather than calendar release. | Operations and Delivery Platform; evaluation workflow | Reused + New |
+| CON-04 | One searchable DMBOK PDF | Ingestion accepts one versioned source corpus and rejects unapproved source types. | Cloud Storage Corpus Repository; Corpus Ingestion and Evaluation Worker | Reused |
+| CON-05 | Maximum 10 approved users | Transactional approval ceiling and tests prevent excess activation. | Backend API; Firestore Data and Vector Store | Reused |
+| CON-06 | No saved production conversations | No chat-history entity or analytics payload is designed. | Backend API; Firestore Data and Vector Store; Google Cloud Operations and Delivery Platform | Reused |
+| CON-07 | No fixed deadline; readiness-gated release | Delivery follows evidence and approval gates rather than calendar release. | Google Cloud Operations and Delivery Platform; evaluation workflow | Reused |
+| MIG-01 | Replace all six custom RAG mechanisms with LangChain | Native page loader, word-counted splitter, Embeddings, FirestoreVectorStore, score-preserving search, and native chat-model/structured-output composition; wrapper-only substitution is rejected. | LangChain RAG Pipeline; LangChain Chat Model Integration; Corpus Ingestion and Evaluation Worker | Reused + New |
+| MIG-02 | Functionally unchanged app | Freeze public contracts, provider configuration, provenance, evidence thresholds, fallback, quotas, admin/evaluation workflows, and ephemeral traces; validate parity. | Web Application; Backend API; LangChain RAG Pipeline | Reused + New |
+| MIG-03 | Analyze before updating architecture | Impact assessment completed and approved; this version incorporates its decisions, assumptions, and implementation gates. | Architecture and delivery process | Reused |
+| MIG-04 | Twelve-Factor engineering | Locked declared dependencies, external configuration/backing services, reproducible build/release/run, stateless processes, own HTTP port, external scaling, graceful termination, environment parity, structured stdout, and same-image admin jobs. | Google Cloud Operations and Delivery Platform; Backend API; Corpus Ingestion and Evaluation Worker | Reused |
+
 
 ## 4. Architecture Overview
 
-At context level, applicants and approved users interact only with the browser application; the administrator additionally manages users, quotas, JSON evaluation imports, gold review, corpus maintenance, evaluations, and release decisions. The GCP-hosted system integrates with Firebase Authentication, Vertex AI embeddings, and OpenRouter for answers. At container level, a Firebase-hosted web application calls a Cloud Run FastAPI modular monolith. The API owns authorization, quotas, retrieval orchestration, response policy, citations, administration, dataset activation, and evaluation control. Firestore holds durable application, evaluation, and corpus-vector data; Cloud Storage holds source and versioned ingestion artifacts; Cloud Run Jobs perform corpus ingestion and evaluation. Production interaction content exists only within request memory and the live browser response.
+At context level, applicants and approved users use the browser application; the administrator additionally manages users, quotas, evaluation imports/gold review, corpus maintenance, evaluations, and release decisions. At container level, Firebase Hosting serves the React SPA, the Cloud Run FastAPI monolith serves authenticated JSON APIs, and Cloud Run Jobs perform ingestion/evaluation. Firestore remains the application and vector store; Cloud Storage remains the immutable source/artifact repository. No new service, database product, agent runtime, or persistent interaction store is introduced.
+
+Inside the existing Python processes, a shared validated factory creates native LangChain loading/splitting/embedding/vector and retrieval/generation compositions. Production resolves the active corpus/configuration once; evaluation supplies an explicitly pinned corpus/configuration. Application policies surround and participate in these chains, while LangChain integrations own the six RAG mechanisms.
 
 ```mermaid
-flowchart LR
-    User[Approved User] --> Web[Firebase Hosting<br/>React + TypeScript]
-    Admin[Administrator] --> Web
+flowchart TB
+    User[Applicant / Approved User / Administrator] --> Web[Firebase Hosting: React + TypeScript]
     Web --> Auth[Firebase Authentication]
-    Web --> API[Cloud Run<br/>FastAPI Modular Monolith]
-
-    subgraph GCP[Google Cloud - europe-west1]
-        API --> AppData[Firestore Application Data]
-        API --> Vector[Firestore Vector Search]
-        API --> Embed[Vertex AI Embeddings]
-        Storage[Cloud Storage<br/>Source PDF and Artifacts] --> Job[Cloud Run Jobs<br/>Ingestion and Evaluation]
-        Scheduler[Cloud Scheduler] --> Job
-        Job --> Storage
-        Job --> Vector
-        Job --> AppData
-        Job --> Embed
-        Secrets[Secret Manager] -. credentials .-> API
-        API -. safe metadata .-> Ops[Cloud Logging and Monitoring]
-        Job -. safe metadata .-> Ops
-        AppData --> Backup[Firestore Daily Backups]
-        Vector --> Backup
-    end
-
-    Admin --> Import[JSON Import + Gold Review]
-    Import --> API
-    API --> RAG[LangChain RAG Pipeline]
-    RAG --> Adapter[OpenRouter Adapter]
-    Adapter --> Primary[OpenRouter Primary Model]
-    Adapter -. eligible failure .-> Fallback[OpenRouter Fallback Model]
-    Primary --> Adapter
-    Fallback --> Adapter
-    API --> Active[Active Evaluation Generation]
-    Active --> AppData
-
-    Build[GitHub Actions + Artifact Registry + Terraform] -. deploys .-> Web
-    Build -. deploys .-> API
-    Build -. deploys .-> Job
-
-    Privacy[No production questions, answers,<br/>passages, or traces persisted] -. constrains .-> API
-    Privacy -. constrains .-> Ops
+    Web --> API[Cloud Run: FastAPI API]
+    API --> Guard[Identity, approval, quotas and corpus resolution]
+    Guard --> Chain[Shared LangChain RAG factory]
+    Chain --> Query[LangChain query Embeddings]
+    Query --> Retrieval[LangChain Firestore search with scores]
+    Retrieval --> Evidence[Application evidence policy]
+    Evidence -->|absent| Refusal[Refusal: no model call]
+    Evidence -->|strong / partial| Prompt[LangChain prompt and native chat models]
+    Prompt --> Output[LangChain structured output]
+    Output --> Citations[Application citation / response validation]
+    Citations --> API
+    Refusal --> API
+    Prompt --> Models[Configured hosted primary / fallback models]
+    Query --> Vertex[Vertex AI: 768-dimensional embeddings]
+    Retrieval --> Vectors[Firestore: staged / serving vector collection]
+    API --> Data[Firestore: application / evaluation state]
+    Source[Cloud Storage: immutable source PDF] --> Job[Cloud Run ingestion job]
+    Job --> Loader[LangChain page loader]
+    Loader --> Provenance[Application source / page / section enrichment]
+    Provenance --> Splitter[LangChain page-bounded word-counted splitter]
+    Splitter --> Writes[LangChain vector-store writes + document Embeddings]
+    Writes --> Vertex
+    Writes --> Vectors
+    Writes --> Lifecycle[Persisted completeness, activation and rollback]
+    Lifecycle --> Data
+    Eval[Cloud Run evaluation job: pinned corpus / config] --> Chain
+    Eval --> Data
+    Platform[Terraform, CI, Secret Manager, Logging / Monitoring] -. deploys and configures .-> API
+    Platform -. deploys and configures .-> Job
+    Platform -. deploys and configures .-> Eval
+    Data --> Backup[Daily Firestore backup: at most 30 copies]
+    Vectors --> Backup
 ```
+
+OpenRouter remains the approved production answer gateway. The diagram's configured-model boundary also accommodates the existing explicit Vertex answer mode where currently enabled; migration preserves effective per-environment settings and does not authorize changing the production provider decision. Production question/prompt/passage/answer/trace content exists only in request memory and the live browser response.
 
 ## 5. Component Design
 
 ### 5.1 Web Application
 
-- **Purpose and responsibilities:** Registration, email-verification guidance, sign-in and recovery, question entry, answer/citation/trace rendering, quota messages, and administrator screens including JSON dataset upload, validation summary, automatic active-dataset display, gold review, and exploratory/release report labels.
-- **Classification:** **New.** Extend the existing frontend application with the new evaluation management flows; no reusable import interface exists yet.
-- **Interfaces and data owned:** Calls Firebase Authentication and the backend HTTPS API. It owns no durable authoritative data and stores no conversation history.
-- **Technology:** React, Vite, and TypeScript on Firebase Hosting provide a small static SPA, responsive delivery, preview channels, and low operating cost without unnecessary SSR infrastructure.
+- **Purpose and responsibilities:** Existing registration/authentication, question entry, answer/citation/trace rendering, quota messages, administrator users/configuration, JSON import/reporting, gold review, and exploratory/release labels remain unchanged.
+- **Classification:** **Reused.** Existing React screens and TypeScript contracts meet the UI boundary; no migration-specific user workflow is required.
+- **Interfaces and data owned:** Firebase browser identity SDK and existing backend HTTPS JSON contracts; no authoritative durable state or saved conversations.
+- **Technology:** React/Vite/TypeScript on Firebase Hosting. Validate core flows, mobile/desktop responsiveness, and basic WCAG 2.1 AA after the backend swap.
 
 ### 5.2 Backend API
 
-- **Purpose and responsibilities:** FastAPI modular monolith for token validation, approval and role authorization, quotas, retrieval and citation policy, administration, aggregate reporting, import validation and activation, gold review, evaluation control, and release decisions.
-- **Classification:** **New.** Extend the existing FastAPI application and evaluation contracts. The new admin import, durable storage, and release-gate behavior are product-specific work.
-- **Interfaces and data owned:** HTTPS JSON API; Firebase token verification; Firestore and Storage clients; Vertex embedding client; external model adapter. Owns application rules but not passwords or answer-model implementation.
-- **Technology:** Python, FastAPI, and Pydantic on Cloud Run support typed contracts, AI ecosystem integration, scale to zero, and straightforward testing.
+- **Purpose and responsibilities:** Preserve token/approval/role validation, quota reservation, evidence/refusal and citation policies, administration, evaluation dataset lifecycle, run control, release decisions, and content-free aggregates.
+- **Classification:** **Reused.** Extend existing FastAPI modules and domain contracts; keep RAG library objects behind internal mappings.
+- **Interfaces and data owned:** Existing request/response/error contracts and domain repositories. Resolve serving collection/schema/corpus/configuration once per request, then invoke the shared chain. Reserve accepted-question quota once before billable operations; fallback does not recharge it.
+- **Technology:** Python/FastAPI/Pydantic on Cloud Run. Library `Document`/message types never replace public API entities directly.
 
 ### 5.3 Corpus Ingestion and Evaluation Worker
 
-- **Purpose and responsibilities:** Administrator-triggered PDF extraction, page and section recovery, deterministic chunking, embeddings, staged vector indexing, corpus validation, full/subset evaluation, metric calculation, and report eligibility labeling.
-- **Classification:** **New.** Extend the existing evaluation job seam and ingestion code with durable dispatch and active-dataset generation checks; current reference evaluation stores are process-local.
-- **Interfaces and data owned:** Reads source and manifests from Cloud Storage; calls Vertex AI and, during evaluation, the backend/model interface; writes immutable corpus versions, chunks, annotations, and evaluation results to Firestore.
-- **Technology:** Python Cloud Run Jobs invoked manually or by authenticated Cloud Scheduler. Deterministic identifiers and idempotent writes make retries safe.
+- **Purpose and responsibilities:** Reuse maintenance/job dispatch and source controls; perform native LangChain ingestion, persisted corpus validation/activation/rollback, and corpus/configuration-pinned evaluation. Preserve imports, gold review, report eligibility, and release workflows.
+- **Classification:** **Reused.** Existing job entrypoints, source manifests, corpus/evaluation stores, and release services are the baseline. Replace their RAG mechanisms and strengthen lifecycle/evaluation checks where required for migration safety.
+- **Interfaces and data owned:** Read immutable generation-bound source/artifacts from Cloud Storage; invoke the shared factory; write derived corpus metadata, native vector documents, authored annotations and version-bound reports. Production interaction data is never supplied as evaluation input.
+- **Technology:** Same Python application image and external configuration as the API, executed through Cloud Run Jobs. Bounded batches, explicit IDs, idempotent retries, nonzero failure exit, and graceful interruption are mandatory.
 
-### 5.4 External Model Adapter
+### 5.4 LangChain Chat Model Integration
 
-- **Purpose and responsibilities:** Stable internal generation contract; provider-specific authentication, payload mapping, timeouts, normalized errors, primary/fallback routing, token and cost metadata, and privacy-safe handling.
-- **Classification:** **New.** OpenRouter coupling remains isolated in one adapter so model routing and provider payload details do not leak into application contracts.
-- **Interfaces and data owned:** Accepts ephemeral prompt, retrieved passages, output schema, and timeout; returns answer candidates and non-content operational metadata. Owns no persistent data.
-- **Technology:** Extend the existing Python OpenRouter adapter behind a LangChain-compatible chat-model protocol. Primary and fallback model IDs are configurable; the current provider decision lists `mistralai/mistral-nemo` and `meta-llama/llama-3.1-8b-instruct`, subject to production tier and route approval.
+- **Purpose and responsibilities:** Native chat-model calls, prompt composition, structured output, eligible primary/fallback routing, deadline handling, and safe mapping of model attempts, usage and errors into the existing generation contract.
+- **Classification:** **New.** Current `model/openrouter.py`, `gemini.py`, and `fallback.py` implement custom HTTP/SDK generation. Their transports cannot satisfy the full LangChain replacement; retain policy/protocol mappings while replacing inference and composition with native integrations.
+- **Interfaces and data owned:** Ephemeral prompt/evidence plus pinned provider/model/output configuration in; validated candidate and existing live-response attempt/model/usage/raw-output fields out. No durable data, history, model cache, or content callbacks.
+- **Technology:** `langchain-openrouter.ChatOpenRouter` for configured OpenRouter mode; native Google chat integration explicitly configured for Vertex where that existing mode is enabled. Use LangChain structured-output or JSON/Pydantic parser composition according to actual route capability. JSON/schema output validates shape, not grounding.
+- **Fallback contract:** Normalize safe error classes before an explicitly restricted LangChain fallback composition. Only the existing eligible timeout, capacity/rate-limit, and unavailability failures may trigger fallback. Authentication/policy/bad-request or malformed-output failures are not indiscriminately retried. At most the existing two model attempts share one deadline and one quota reservation; do not repeat embedding/retrieval. Disable implicit retries that would exceed that contract.
+- **Verified SDK constraint:** In the selected OpenRouter integration, `timeout` is milliseconds; `max_retries=0` alone leaves the underlying SDK's default one-hour retry configuration active. Construct and inject an SDK client with `retry_config=None` and explicit `timeout_ms`, then enforce the shared application deadline. The development route probe passed only after this configuration was corrected.
 
 ### 5.5 LangChain RAG Pipeline
 
-- **Purpose and responsibilities:** Compose query embedding, Firestore vector retrieval, evidence filtering, prompt construction, structured answer generation, citation validation, qualified/refusal policy, and model fallback as explicit runnable stages with bounded inputs and outputs.
-- **Classification:** **New.** Existing retrieval and answering modules provide reusable behavior; LangChain composition and its privacy-safe integration still require implementation.
-- **Interfaces and data owned:** Receives an authenticated ephemeral question and active corpus version; invokes the embedding service, Firestore retriever, and model adapter; returns the typed answer contract and request-scoped trace without persisting interaction content.
-- **Technology:** Python LangChain core/runnables, a custom Firestore vector-store/retriever integration, structured-output parsing, and explicit callbacks disabled or allowlisted so prompts, passages, and answers cannot enter telemetry. LangChain is used as a composition boundary, not as an authorization, quota, persistence, or privacy-policy authority.
+- **Purpose and responsibilities:** Own all six RAG mechanisms through native LangChain integrations; compose the application provenance, evidence, citation and response rules without replacing them.
+- **Classification:** **New.** Existing `LangChainRagPipeline` and generation runnable wrap custom implementations. A shared native integration factory and ingestion/answer compositions are required; simply putting those implementations behind more runnables fails MIG-01. This component is a module inside existing processes.
+- **Interfaces and data owned:** A validated configuration plus immutable source identity for ingestion, or question plus resolved/pinned corpus/configuration for answering. Map LangChain documents, scored results and messages to existing application records; no interaction persistence.
+- **Technology and six-stage contract:**
+
+| Stage | Selected capability | Required configuration and boundary |
+|---|---|---|
+| Document loading | `langchain-community` page-mode `PyPDFLoader` with `pypdf` | Read an approved immutable local download from Cloud Storage. Application validates source generation/digest, normalizes text, converts zero-based loader pages to authoritative one-based pages, and enriches section provenance. Replace direct custom PDF text extraction. |
+| Chunking | `langchain-text-splitters.CharacterTextSplitter` per page `Document` | Normalize whitespace; split on a space with word-counting length function, size 700 words and overlap 70 words. Configure actual word units, not characters/model tokens. Never cross PDF pages. Preserve section attribution and deterministic page/ordinal mapping; any boundary change creates a new derived corpus and reviewed evidence. Replace custom windowing. |
+| Embeddings | LangChain `Embeddings`, preferably `langchain-google-genai.GoogleGenerativeAIEmbeddings` explicitly using Vertex | Shared config: `gemini-embedding-001`, exactly 768 dimensions, `RETRIEVAL_DOCUMENT` for ingestion and `RETRIEVAL_QUERY` for live queries, workload identity, project/region. Verify both task paths and dimensions; no switch to the Developer API or direct SDK bypass. |
+| Vector storage | `langchain-google-firestore.FirestoreVectorStore.add_documents`/`add_texts` with explicit IDs | Configure content/vector/metadata fields and staged target collection. Native store invokes document embeddings and persists vectors/metadata. Application owns manifests, idempotent batches, completeness checks and corpus lifecycle; it does not retain a parallel custom vector-write engine. |
+| Retrieval | Score-returning LangChain Firestore vector search composed through runnables | Pre-filter the pinned corpus version, cosine distance, explicit `k=5`, retain distance and map similarity as `1-distance`. Resolve the integration score gap before use; plain document-only `as_retriever()` does not meet evidence policy. Application rejects non-finite scores, sorts ties deterministically and caps evidence at five. |
+| Generation | Native chat integration, LangChain prompt, structured output/parser, conditional branch and eligible fallback | Absent evidence returns application refusal without generation; partial evidence forces qualification; strong evidence permits a supported answer. Reconstruct citations from retrieved stored provenance; never trust model-supplied pages/sections. |
+
+- **Shared construction:** Build ingestion and answer chains from one validated factory/configuration. Production and the evaluation worker must not retain independent provider/retriever assembly in `app/main.py` and `app/evaluation/worker.py`. Pass filters per immutable request/evaluation binding rather than mutating a shared store filter during concurrent calls.
+- **Compatibility gate:** PyPI still lists Firestore 0.5.0 as the latest published release. It requires core `<1.0.0`, while OpenRouter 0.2.9 requires core `>=1.5.5,<2` and Google GenAI 4.4.1 requires core `>=1.6.9,<2` plus `google-genai>=2.20,<3`. The app still pins the legacy core, GenAI and auth versions until implementation. Published Firestore search omits distance scores and its `add_texts` repeats first-batch IDs/metadata after 500 documents. The maintained `0.5.0.post2` patch fixes those paths and uses a Firestore-valid distance field name; `post1` failed that live query. The candidate is resolved and tested but not yet installed by the Linux application image.
+- **Compatibility evidence (2026-10-12):** `backend/vendor/langchain-google-firestore/` holds attributed source, a maintainer/upgrade plan, license, build instructions and a twice-reproduced `0.5.0.post2` wheel (SHA-256 `9ced9b491908b453a31a4b2598c1ec5fbbddf106dff868adcfe36bd5e60124c2`). `backend/compat/requirements.in` resolves to the universal `backend/requirements-compat.lock`; a clean Python 3.11.17 installation installed 93 matching packages and passed dependency checks and all local contracts. Those contracts cover page-mode PDF loading, 700/70 word overlap, mocked Vertex task types/768 dimensions, 501 native writes with distinct IDs/metadata, filtered score mapping, structured-output construction, and eligible-only fallback. In `dev-dmbok-compass`, native LangChain document/query Vertex embeddings returned finite 768-dimensional vectors; the indexed `document_chunks_v2` collection passed temporary-document writes, nested metadata, corpus filtering, and exact `1-distance` score comparison with a direct Firestore query; both configured OpenRouter models returned structured output, and a simulated eligible primary failure invoked the live fallback route. Temporary Firestore documents were deleted. The OpenRouter probe also exposed that `timeout` is milliseconds and `max_retries=0` does not disable SDK default retries; an explicit no-retry SDK client and 8000 ms timeout passed. The development OpenRouter key was inadvertently emitted in a diagnostic exception and needs rotation. The Linux Python 3.11 image build, full corpus rebuild, application policy integration, quality/performance parity and production promotion remain untested.
+- **Resolution boundary:** Prefer a supported compatible release exposing scores. Under the approved recommendation, assume a narrowly maintained LangChain Firestore integration patch is an acceptable conditional fallback (A-14). It may update verified dependency/API compatibility and expose Firestore distances through a score-returning library method; it must reuse the library storage/search path and have pinned artifact/source, contract tests, maintenance ownership and an upstream contribution path. A permissive version-range edit alone is not proof of compatibility. Do not bypass the resolver with `--no-deps`, retain custom search/embedding engines behind wrappers, silently downgrade, or switch backing stores. If no viable set exists, stop dependent implementation and report the gate failure.
 
 ### 5.6 Firebase Authentication
 
-- **Purpose and responsibilities:** Email/password identity, verification email, sign-in, sign-out, secure password reset, token issuance, password hashing, and managed authentication throttling.
-- **Classification:** **Reused.** Managed Firebase capability satisfies identity requirements more safely and cheaply than building credential storage.
-- **Interfaces and data owned:** Browser SDK and backend token verification. Owns credentials and identity-provider state; approval, role, and quotas remain in Firestore.
+- **Purpose and responsibilities:** Email/password identity, verification, sign-in/out, secure reset, token issuance, password hashing and managed throttling.
+- **Classification:** **Reused.** Managed identity already supplies the required flows.
+- **Interfaces and data owned:** Browser SDK/backend token verification; credentials remain provider-owned while approval, roles and quotas stay in Firestore.
 - **Technology:** Firebase Authentication with email/password and email verification.
 
 ### 5.7 Firestore Data and Vector Store
 
-- **Purpose and responsibilities:** Durable application records, transactional user ceiling and quotas, configuration, aggregate usage, active-corpus pointer, immutable chunk metadata, 768-dimensional vectors, staged/active evaluation dataset generations, annotations, runs, release decisions, and daily backups.
-- **Classification:** **Reused.** Firestore Native mode consolidates low-volume document data and native vector search, avoiding a separate database and vector service.
-- **Interfaces and data owned:** Backend and worker service accounts only; no direct browser data access. Owns all durable application entities except identity credentials and source files.
-- **Technology:** Firestore Native mode with vector indexes, transactions, composite indexes as needed, and managed backups.
+- **Purpose and responsibilities:** Application records, transactional user ceiling/quotas/configuration, aggregates, corpus activation pointer, immutable native vector documents, evaluation generations/items/annotations/runs, release decisions, and backups.
+- **Classification:** **Reused.** Firestore Native mode remains the backing service; LangChain replaces vector access while application repositories retain domain ownership.
+- **Interfaces and data owned:** API/worker service accounts only. Explicit collection/schema/version binding and vector index; no direct browser data access. Source binaries and identity credentials remain elsewhere.
+- **Technology:** Native 768-dimensional cosine vector index, compound corpus filter, transactions, application composite indexes, and daily managed backups. Stage a separate v2 vector collection/index without modifying the legacy active collection.
 
 ### 5.8 Cloud Storage Corpus Repository
 
-- **Purpose and responsibilities:** Versioned source PDF, extraction manifests, reproducible intermediate artifacts, and index-rebuild inputs.
-- **Classification:** **Reused.** Managed object storage is the simplest durable source-of-truth for binary corpus files and versioned artifacts.
-- **Interfaces and data owned:** Administrator maintenance process and ingestion worker. Owns source binaries and generated non-interaction artifacts.
-- **Technology:** Regional Cloud Storage bucket with uniform access, object versioning where useful, encryption by default, and lifecycle rules.
+- **Purpose and responsibilities:** Immutable source generation, PDF digest, extraction/ingestion manifests, reproducible artifacts and recovery inputs.
+- **Classification:** **Reused.** Current object storage/source authorization meets the input boundary.
+- **Interfaces and data owned:** Administrator maintenance and ingestion jobs; local materialization is temporary, generation-bound, digest-checked and cleaned up.
+- **Technology:** Regional Cloud Storage with uniform access, versioning where useful, encryption and lifecycle rules. Never store production interactions.
 
 ### 5.9 Vertex AI Embedding Service
 
-- **Purpose and responsibilities:** Generate matching document and query embeddings for ingestion and live retrieval.
-- **Classification:** **Reused.** A managed GCP embedding service meets the GCP-first constraint and avoids hosting an embedding model.
-- **Interfaces and data owned:** Backend and worker call `gemini-embedding-001` with `RETRIEVAL_QUERY` or `RETRIEVAL_DOCUMENT` and output dimensionality 768. The service owns no application records.
-- **Technology:** Vertex AI through the Google Gen AI client library using workload identity.
+- **Purpose and responsibilities:** Matching document/query vectors for native LangChain storage and retrieval.
+- **Classification:** **Reused.** Managed GCP inference is unchanged.
+- **Interfaces and data owned:** Access only through the selected native LangChain embeddings integration; `gemini-embedding-001`, 768 dimensions, explicit retrieval tasks, workload identity and project/region. No application records owned.
+- **Technology:** Vertex AI; underlying SDK dependencies are resolved/locked with the integration. Model/dimension/task changes require a new derived corpus and evaluation.
 
 ### 5.10 External Hosted Answer Models
 
-- **Purpose and responsibilities:** Generate structured, corpus-grounded answer candidates from supplied ephemeral evidence; provide primary and fallback model capacity.
-- **Classification:** **Reused.** Hosted inference is required by the BRD and budget; self-hosting is disproportionate. OpenRouter is the exclusive answer-model gateway and is subject to privacy, model, availability, and budget validation before production use.
-- **Interfaces and data owned:** HTTPS provider API accessed only through the adapter. Data treatment must meet sponsor-approved no-training/minimal-retention terms; the application does not authorize provider-side persistence.
-- **Technology:** OpenRouter with configurable primary and fallback models. The recorded free model IDs are the preferred starting configuration; a paid route may be selected if it meets the sponsor-approved provider budget and release gates.
+- **Purpose and responsibilities:** Structured corpus-grounded candidates through configured primary/fallback capacity.
+- **Classification:** **Reused.** Keep existing hosted providers and effective environment-specific routes; model hosting is unchanged.
+- **Interfaces and data owned:** HTTPS via native LangChain chat integrations only; sponsor-approved no-training/minimal-retention terms apply to every gateway/upstream recipient.
+- **Technology:** OpenRouter is the approved production gateway, with externally configured primary/fallback IDs. Existing explicit Vertex answer mode is supported through its native integration where currently configured; it is not a new approved production fallback. Actual structured-output capabilities must be verified per route.
 
 ### 5.11 Google Cloud Operations and Delivery Platform
 
-- **Purpose and responsibilities:** Static hosting, serverless runtime, scheduling, secret delivery, builds, artifact storage, infrastructure-as-code deployment, content-free logs/metrics, alerts, budgets, and rollback.
-- **Classification:** **Reused.** Firebase Hosting, Cloud Run, Cloud Scheduler, Secret Manager, GitHub Actions, Artifact Registry, Cloud Logging, and Cloud Monitoring provide managed capabilities at the required scale.
-- **Interfaces and data owned:** CI/CD interacts with source control and Terraform; runtime emits allowlisted metadata only. Secret Manager owns provider credentials; Artifact Registry owns immutable images.
-- **Technology:** GCP managed services, Terraform, GitHub Actions, and two isolated projects in `europe-west1`: `dev-dmbok-compass` for development and `prod-dmbok-compass` for production. Each project uses its own preview revisions and Firebase Hosting environment.
+- **Purpose and responsibilities:** Hosting/runtime/jobs, scheduling, secret delivery, reproducible builds, immutable artifacts, infrastructure-as-code, content-free telemetry, budgets, backups and rollback.
+- **Classification:** **Reused.** Existing Firebase Hosting, Cloud Run, Scheduler, Secret Manager, GitHub Actions, Artifact Registry, Terraform, Logging and Monitoring remain adequate.
+- **Interfaces and data owned:** CI consumes the full dependency lock; releases bind image digest, configuration and vector collection/schema/corpus. Structured logs go to stdout. Secrets remain external; artifacts contain no secret values or production interactions.
+- **Technology:** Existing two-project GCP/Firebase deployment in `europe-west1`, subject to placement validation; scaling and resource limits are external configuration. Same image/configuration family supports API, ingestion, evaluation and maintenance.
 
 ## 6. Reuse Inventory
 
 | Existing asset | Used for | Why it fits |
 |----------------|----------|-------------|
-| Current BRD v0.1 working copy | Requirements baseline, including BPR-007, FR-023–FR-033, and NFR-015–NFR-017 | It states the latest requested evaluation import and release behavior. |
-| Searchable DMBOK PDF | Authoritative corpus and rebuild source | The product is explicitly limited to this edition and source. |
-| Existing FastAPI contracts and evaluation services | Extend dataset, review, run, and report contracts | Existing in-memory stores and admin launch endpoint provide a starting interface, but lack durable import and active-dataset switching. |
-| Existing retrieval, answering, and OpenRouter code | Wrap working application boundaries with LangChain and preserve answer contracts | Reuse prevents rewriting grounding, citation, and provider behavior. |
-| Existing Terraform and delivery configuration | Extend Firestore indexes, service permissions, and release checks | Infrastructure and CI foundations already exist in the repository. |
-| Firebase Authentication | Identity, verification, recovery, and password security | It meets required flows without custom credential handling. |
-| Firebase Hosting | SPA hosting and preview channels | Global static delivery and low operating overhead fit the scale. |
-| Cloud Run services and jobs | API and bounded batch execution | Scale-to-zero services meet cost and operational constraints. |
-| Firestore Native mode | Application records, transactions, vector search, and backups | One managed store avoids Cloud SQL and a separate vector database. |
-| Cloud Storage | Source corpus and reproducible artifacts | Durable object storage fits PDF and manifest retention. |
-| Vertex AI embeddings | Document and query vector generation | Managed GCP inference satisfies the GCP-first decision. |
-| Secret Manager | Provider credential storage | Prevents browser, source-control, and image exposure. |
-| GitHub Actions and Artifact Registry | Immutable build and image supply chain | Repository-native CI and regional artifact storage reduce operations. |
-| Cloud Logging and Monitoring | Safe aggregate telemetry and alerts | Managed operations support the single administrator when content is excluded. |
+| Current BRD v0.1 working copy and release gates | Functional, quality, latency, cost and recovery baseline | Migration does not change acceptance criteria. |
+| React screens and TypeScript API contracts | Existing user/admin workflows | Backend integration stays behind the public interface. |
+| FastAPI routes, dependencies and Pydantic domain contracts | Authorization, quota, administration, evaluation and typed responses | LangChain objects remain internal. |
+| Evidence/citation/protocol helpers | Finite-score classification, qualification/refusal, provenance validation, safe error/trace mappings | These are product rules, not interchangeable RAG engines. |
+| Custom extraction/chunking/embed/write/search/model code and tests | Behavioral baseline and parity fixtures | Preserve invariants/assertions; retire the custom mechanisms rather than wrap them. |
+| Source manifest, corpus records and lifecycle seams | Source authorization/digest, staged completeness, activation and rollback | Extend derived identity and verify durable/concurrent behavior instead of adding another lifecycle system. |
+| Ingestion/evaluation entrypoints and durable store wiring | Same-image jobs and pinned evaluation | Reuse existing wiring; check current implementation rather than assuming older runbook gaps. |
+| Searchable DMBOK PDF and reviewed authored data | Authoritative source, baseline and gold review | One corpus; no production conversation capture is needed. |
+| Firebase Authentication and Hosting | Managed identity and static responsive SPA | Already meet scope and low-operations goals. |
+| Cloud Run service/jobs and Scheduler | API, ingestion, evaluation and maintenance | Existing runtime boundaries remain unchanged. |
+| Firestore Native mode | Domain records, transactions, vector backing service and backups | Avoids another database/vector subscription; adapter compatibility must be proven. |
+| Cloud Storage and Vertex AI embeddings | Versioned source/artifacts and 768-dimensional inference | Existing GCP services meet corpus and embedding constraints. |
+| Terraform, GitHub Actions, Artifact Registry and Secret Manager | Index/configuration updates, locked builds, immutable releases and credentials | Extend the current delivery platform. |
+| Content-free telemetry contracts, Logging and Monitoring | Safe operational aggregates, alerts and cost tracking | Maintain privacy while measuring migration effects. |
 
-Section 5 uses “New” for initiative-specific component work, including extensions to existing modules. The existing source, contracts, and infrastructure listed above are the implementation baseline; do not replace them merely to introduce the new import workflow or LangChain.
+The two new components in section 5 are integration modules within existing processes: LangChain Chat Model Integration and LangChain RAG Pipeline. Existing product/application/platform components are reused and may need focused changes. The Firestore integration patch, if required, belongs to the latter integration boundary, not a separately deployed service.
 
 ## 7. Data Architecture
 
 The durable domain consists of `UserProfile`, `ApprovalState`, `Role`, `QuotaPolicy`, daily `UserQuotaCounter`, daily `GlobalQuotaCounter`, `ApplicationConfiguration`, `CorpusVersion`, `DocumentChunk`, `EvaluationDatasetGeneration`, `EvaluationItem`, `GoldAnnotation`, `EvaluationRun`, `ReleaseDecision`, and content-free `AggregateMetric`. Firebase Authentication separately owns credentials and identity-provider records. Cloud Storage owns the source PDF and versioned ingestion artifacts.
 
-Each `DocumentChunk` uses a deterministic identifier derived from corpus version and source position and contains text, 768-dimensional embedding, document version, page, chapter or section, chunk ordinal, and content hash. New corpus versions are written as inactive, validated, evaluated, and activated by a single transactional pointer. The previous valid version remains available for rollback. Query embeddings use the same model, dimensionality, and distance configuration as document embeddings.
+### 7.1 Corpus schema, identity and lifecycle
 
-Production questions, prompts, retrieved passages, generated answers, and request traces exist only in Cloud Run memory and the live HTTPS response. They are never written to Firestore, Cloud Storage, logs, analytics, traces, backups, or build artifacts. The request response contains the answer, evidence outcome, synthesis marker, citations, retrieved passages and available scores, selected model, and timing; the browser discards this state when the request/session lifecycle ends.
+The target native vector collection is `document_chunks_v2` (externally configured), with top-level `text`, `embedding` and `metadata`. The metadata map contains `corpus_version_id`, `chunk_id`, one-based `page`, `section`, `chunk_ordinal`, `content_hash`, source identity and schema version. Configure the native converter and validate the actual round trip: do not assume returned `Document.metadata` is automatically flattened. A small boundary mapping reconstructs application `DocumentChunk`/`RetrievedPassage`; internal vectors/library metadata do not leak into the API.
+
+The target Firestore index combines `metadata.corpus_version_id` filtering with 768-dimensional `embedding` cosine search. This replaces the target access path, not the existing flat-field index in `document_chunks`; retain that legacy collection/index for the legacy revision. Use explicit document IDs. Validate missing fields, page/section attribution, metadata nesting, vector length and persisted content hashes before activation.
+
+Keep source identity (bucket, object, immutable generation and digest) separate from the derived corpus identity. The derived fingerprint includes source identity, loader/parser version/configuration, normalization/provenance algorithm, splitter type/version/word units/700–70 settings, embedding model/dimensions/document/query tasks, and schema version. Derive chunk IDs from derived corpus version plus page/ordinal. Existing source-only manifest IDs and the already-active early exit are insufficient when the same PDF is parsed/split/indexed differently; change the idempotency key with the derived identity. Never overwrite an active legacy chunk ID with changed text/vectors.
+
+Create a staged corpus with expected page/chunk counts and manifest hashes. Library writes use bounded idempotent batches; retries resume against the same derived identity. After all batches persist, verify stored counts, provenance, hashes, 768 dimensions and index/filter/search readiness. The current production store's no-op chunk validation, status-query write-batch activation and missing rollback method must be replaced with executable persisted validation and a transactional compare-and-set active pointer. Concurrent jobs cannot supersede a newer activation without an expected prior version. Failed ingestion leaves serving state untouched; clean abandoned staging data through an authenticated maintenance job.
+
+Activation binds collection, schema, derived corpus and ingestion/configuration fingerprint. Production resolves the binding once; evaluations pin it explicitly. Keep the previous valid binding and its revision/index/data through rollback acceptance. Parser, splitting, normalization, vector or layout changes require a new staged rebuild; merely retaining the same embedding dimension does not prove data compatibility.
+
+### 7.2 Interaction and evaluation data
+
+Production questions, prompts, retrieved passages, generated answers, and request traces exist only in Cloud Run memory and the live HTTPS response. They are never written to Firestore, Cloud Storage, logs, analytics, traces, backups, or build artifacts. The request response contains the answer, evidence outcome, synthesis marker, citations, retrieved passages and preserved scores, selected model and attempts, optional raw model output, and retrieval/generation/total timing; the browser discards this state when the request/session lifecycle ends.
 
 Evaluation questions are separate, administrator-authored non-user data. JSON import accepts only records with a non-empty question, one allowed category (`definitions`, `explanations`, `comparisons`, `study`, `scenarios`), an expected answer or rubric, and a supporting passage. Validation returns submitted, imported, and skipped counts plus each skipped record's index and reason. Valid records are staged under a new generation ID; zero-valid imports are rejected. After all valid records are durable, a Firestore transaction compares and switches the active-generation pointer and marks prior runs superseded for release-evidence queries. If validation or writing fails, the pointer and visible history do not change; orphaned staged records can be cleaned up later. Run launch resolves the active generation on the server, pins that ID and selected item IDs for the job, and checks the generation again before exposing results as current evidence.
 
-Imported records can run immediately as `exploratory`. Administrator review approves or rejects gold annotations per record and persists the status. A report is labeled `release_evidence` only when its run is bound to the active generation with 30–50 approved gold items and the required evaluation coverage; the label does not imply that its metrics passed. The release-decision endpoint rechecks the active generation, gold count, coverage, and passing thresholds transactionally. Older generation runs remain version-bound for audit/reproduction of earlier decisions but are not presented as available evidence for the active dataset. This resolves FR-022's reproducibility requirement alongside FR-029's replacement requirement without confusing old results with current release readiness. Reports bind dataset, corpus, retrieval, embedding, prompt, OpenRouter route/model, scorer, and application versions where available. Evaluation datasets, annotations, and runs live in Firestore, not process memory, so restarts do not erase them.
+Imported records can run immediately as `exploratory`. Administrator review approves or rejects gold annotations per record and persists the status. A report is labeled `release_evidence` only when its run is bound to the active generation with 30–50 approved gold items and the required evaluation coverage; the label does not imply that its metrics passed. The release-decision endpoint rechecks the active generation, gold count, coverage, and passing thresholds transactionally. Older generation runs remain version-bound for audit/reproduction of earlier decisions but are not presented as available evidence for the active dataset. This resolves FR-022's reproducibility requirement alongside FR-029's replacement requirement without confusing old results with current release readiness. Reports bind dataset, derived corpus, collection/schema, loader/splitter/provenance fingerprint, dependency lock/integration artifact, retrieval/evidence settings, embedding, prompt, effective provider/route/model, scorer and application image/configuration versions. Evaluation datasets, annotations, and runs live in Firestore, not process memory, so restarts do not erase them.
+
+Gold annotations reference chunk IDs. A new derived corpus or changed boundaries requires remapping supporting passages, human review and new run bindings; mark old corpus-bound annotations/evidence superseded for migration acceptance rather than treating them as validated for the new chain. Preserve prior identifiers/results for audit and rollback. Report eligibility requires current dataset/gold review and the exact candidate corpus/configuration; old or incompatible results cannot authorize promotion. Existing cited/nonempty-answer evaluation proxies do not prove claim grounding or rubric quality; reviewed claim-level/citation/rubric assessments are required.
+
+### 7.3 Retention and recovery
 
 Firestore application and vector data is backed up daily with at most 30 retained copies. A restore exercise must recover accounts, configuration, aggregate usage, and evaluation records within 24 hours. The corpus index may instead be deterministically rebuilt from Cloud Storage. Account and evaluation retention is sponsor-controlled; safe operational metadata is provisionally retained for 30 days. Secrets remain in Secret Manager and secret values do not enter Terraform state.
 
@@ -259,127 +323,166 @@ Firestore application and vector data is backed up daily with at most 30 retaine
 
 The browser uses Firebase Authentication for registration, email verification, sign-in, sign-out, and password recovery. It calls the backend through same-origin Firebase Hosting routing to `/api/**`, sending a Firebase identity token. The infrastructure endpoint may accept requests at the Cloud Run edge, but every protected operation requires application-level token, approval, and role validation.
 
-The backend API exposes logical contracts for registration status, current user, question answering, quota status, user administration, configuration, aggregate metrics, JSON evaluation import, active dataset discovery and review, evaluation initiation/status/reports, and release decisions. Import accepts an administrator-authenticated JSON upload with bounded size and item count and returns the generation ID, submitted/imported/skipped counts, and indexed validation errors. Active-dataset lookup returns the current generation and review counts. Evaluation launch takes optional subset item IDs; the backend supplies the active dataset ID for a full run. Reports include `exploratory` or `release_evidence`, dataset generation, gold count, and versioned metrics. The answer response remains a typed JSON contract with outcome, answer text, synthesis flag, citations, ephemeral trace, quota status, and safe operational errors. Exact URI and size bounds are implementation contracts to freeze before parallel frontend/backend work.
+The backend API exposes logical contracts for registration status, current user, question answering, quota status, user administration, configuration, aggregate metrics, JSON evaluation import, active dataset discovery and review, evaluation initiation/status/reports, and release decisions. Import accepts an administrator-authenticated JSON upload with bounded size and item count and returns the generation ID, submitted/imported/skipped counts, and indexed validation errors. Active-dataset lookup returns the current generation and review counts. Evaluation launch takes optional subset item IDs; the backend supplies the active dataset ID for a full run. Reports include `exploratory` or `release_evidence`, dataset generation, gold count, and versioned metrics. The answer response remains a typed JSON contract with outcome, answer text, synthesis flag, citations, ephemeral trace, quota status, and safe operational errors. Preserve the existing routes, schemas, upload bounds, category validation and error shapes; freeze their current contracts before migration. Missing durable behavior, if any, remains an existing product gap rather than a reason to change the public interface.
 
-The backend and worker call Vertex AI for embeddings using workload identity. Ingestion sends document chunks with the document retrieval task type; live retrieval sends only the question for query embedding. Firestore nearest-neighbor search filters on the active corpus version, retrieves an initial candidate set, and supplies the best five evidence passages after deterministic filtering or scoring.
+The backend and worker use the same native LangChain Embeddings configuration for Vertex AI workload-identity calls. `embed_documents` uses the document retrieval task; `embed_query` uses the query task. Native vector-store writes own embedding/persistence. Retrieval calls a score-returning library path with the corpus filter applied before nearest-neighbor selection, cosine distance and explicit `k=5`. Preserve `similarity = 1 - distance`; do not substitute rank-derived scores or library relevance normalization. Do not increase candidate count silently or filter other versions only after top-k. Missing/non-finite scores cannot count as supporting evidence, and unexpected missing scores are an integration failure to catch before release.
 
-The external model adapter sends the minimum ephemeral prompt and passages over HTTPS. It validates structured output, normalizes errors, applies bounded timeouts, and invokes fallback only for configured model-level unavailability, timeout, capacity, or rate-limit conditions. Authentication or policy failures are not blindly retried. Since both models use one provider, provider-wide failure produces a clear service error rather than an unsupported answer.
+The native LangChain chat integration sends the minimum ephemeral prompt and passages over HTTPS. It validates structured output, normalizes errors, applies bounded timeouts, and invokes fallback only for configured model-level unavailability, timeout, capacity, or rate-limit conditions. Authentication or policy failures are not blindly retried. For the approved OpenRouter configuration, both models use the same gateway; gateway-wide failure produces the existing clear service error. Preserve effective provider/model settings per environment. Library errors/messages are mapped through safe existing public contracts; provider response bodies are not logged.
+
+Library contracts and package releases are validated in the compatibility spike; no direct SDK/HTTP RAG bypass is retained as a compatibility workaround. Supporting references: [Firestore 0.5.0 metadata](https://pypi.org/pypi/langchain-google-firestore/0.5.0/json), [OpenRouter 0.2.9 metadata](https://pypi.org/pypi/langchain-openrouter/0.2.9/json), [Google GenAI 4.4.1 metadata](https://pypi.org/pypi/langchain-google-genai/4.4.1/json), [Firestore search implementation](https://github.com/googleapis/langchain-google-firestore-python/blob/main/src/langchain_google_firestore/vectorstores.py), [Firestore converter](https://github.com/googleapis/langchain-google-firestore-python/blob/main/src/langchain_google_firestore/document_converter.py), [Google embeddings integration](https://reference.langchain.com/python/langchain-google-genai/embeddings/GoogleGenerativeAIEmbeddings), [OpenRouter chat integration](https://docs.langchain.com/oss/python/integrations/chat/openrouter), and [route-specific structured output](https://openrouter.ai/docs/guides/features/structured-outputs). Findings are dated 2026-10-12 and do not establish all historical or future release combinations.
 
 Cloud Scheduler invokes Cloud Run Jobs using a dedicated authenticated service account. Secret Manager supplies provider credentials only to the backend and evaluation job. GitHub Actions produces immutable frontend and container artifacts through repository-restricted Workload Identity Federation; Artifact Registry stores images by digest; Terraform defines infrastructure and IAM. No interface permits browser access to Firestore vectors, source files, service credentials, evaluation internals, or other users' records.
 
 ## 9. Cross-Cutting Concerns
 
-**Security and privacy.** HTTPS is mandatory. Firebase owns passwords and reset tokens. The backend performs server-side approval, role, and ownership checks on every protected operation, including dataset import, review, evaluation, and release. Upload size and record count are bounded; validation messages do not echo questions or passages into logs. Separate least-privilege service accounts are used for API, worker, scheduler, and build. Firestore browser access is default-deny. Secret values are never in source control, frontend bundles, images, Terraform state, or logs. Structured telemetry uses an allowlist of request count, outcome, duration, provider/model identifier, token estimate, quota utilization, corpus/configuration versions, and error class; production user-generated text is forbidden. Users receive a warning not to submit confidential or personal information.
+**Security and privacy (NFR-004–NFR-006, NFR-011, NFR-014).** HTTPS, Firebase credential ownership/throttling/reset, server-side approval/role/ownership checks, default-deny browser Firestore access, least-privilege API/worker/scheduler/build accounts, and external secret delivery remain mandatory. Quota and authorization run before billable RAG stages. Never persist production questions, prompts, passages, answers, model output or traces in databases, object storage, logs, analytics, backups or artifacts. Retain only allowlisted structured metadata on stdout: counts, outcome, duration, model/provider ID, usage/cost estimate, quota utilization, corpus/config versions and safe error class. Do not log exception representations or SDK/provider bodies containing content. The existing `model/openrouter.py:193` raw-response log (up to 20,000 characters) violates this intended boundary; remove it when replacing the transport and verify success/error paths.
 
-**Performance and scalability.** NFR-001 is tested at three concurrent users. Initial Cloud Run settings are zero minimum instances, two maximum instances, concurrency eight, one vCPU, and 512 MiB. Target stage budgets are 0.5 seconds for auth/quota, 2 seconds for query embedding, 1.5 seconds for retrieval/prompt construction, 8 seconds for primary generation, up to 4 seconds for conditional fallback, and 1 second for assembly. Because fallback follows primary failure, the fallback path can exceed 15 seconds and must be measured separately; 95% of the representative normal mix must still meet the end-to-end target.
+Disable environment-driven LangSmith/LangChain tracing, debug/verbose content logging, persistent model caches, history/checkpoints and content-bearing callbacks. Reject caller-supplied callbacks/configuration that bypass the privacy boundary. A transitive LangSmith dependency does not authorize external tracing or another downstream recipient. Existing warning against confidential/personal input and sponsor review of hosted-provider terms remain unchanged. Evaluator-authored datasets/results have the distinct durable treatment in section 7.
 
-**Retrieval and answer quality.** Document/query task types and 768 dimensions are fixed per corpus version. Initial chunks are approximately 500–800 tokens with 10–15% overlap while respecting page and section boundaries. The system retrieves more candidates than it presents and evaluates the top five against the gold subset. Citations can reference only supplied chunks and are rendered from stored provenance. Low evidence produces qualification; no relevant evidence produces refusal. Exploratory runs may start with any non-empty imported dataset but cannot authorize release. Release requires 30–50 approved gold items in the active generation, applicable SM-01 through SM-06 results meeting approved thresholds, and a current `release_evidence` report; threshold exceptions still require a recorded sponsor decision.
+**Performance and concurrency (SM-06, NFR-001–NFR-002).** At least 95% of complete browser responses with citations must finish within 15 seconds under three-user normal load. Initial external Cloud Run settings remain min instances zero, max two, concurrency eight, one vCPU and 512 MiB, subject to measurement and the cost ceiling. Use native async embedding/chat/store interfaces where verified; run unavoidable synchronous Firestore work in a bounded executor off the event loop, with underlying RPC timeouts. Cancelling a thread wait does not prove cancellation of its network work. Verify three-user isolation, no shared mutable corpus filters, cold starts and graceful shutdown.
 
-**Reliability and recovery.** Availability is best effort. Retries with exponential backoff and jitter apply only to idempotent reads, embedding, indexing, and deterministic writes. User POST requests are not automatically retried. An accepted question consumes quota even if a downstream dependency fails, which bounds abuse and spend. A circuit breaker avoids repeated calls to a failing model. Dataset imports stage durable data before a transactional pointer switch; failed imports leave the old active generation and visible run history intact. Application rollback uses Cloud Run revisions and Firebase releases; corpus rollback changes the active-version pointer; data-loss recovery uses Firestore backups. Restore and index-rebuild procedures must be tested within the 24-hour objective.
+Adopt a provisional 14-second backend request deadline leaving approximately one second for browser/network overhead (A-15); measure and adjust within the unchanged 15-second target. Initial stage ceilings are 0.5 seconds auth/quota, 2 seconds query embedding, 1.5 seconds retrieval/prompt, 8 seconds generation shared by primary and eligible fallback, and 1 second validation/serialization, leaving one second backend contingency. Reserve approximately five seconds primary and up to three seconds fallback within the shared generation ceiling; actual attempts receive only remaining time. Unused stage time does not expand the whole-request ceiling. Provider/RPC timeouts, retry counts, job timeouts and resource limits stay externally configured. These are proposed budgets, not measured results: reconcile current 60,000 ms generation settings in factories/Terraform/delivery before promotion, and prove the representative fallback mix meets the BRD. An operational timeout does not count as a successful complete answer.
 
-**Observability and operations.** Dashboards show content-free request volume, latency by stage, error classes, fallback rate, quota use, estimated provider usage, infrastructure indicators, ingestion status, active corpus/configuration versions, and evaluation results. Alerts cover repeated failures, approaching quota, latency regression, ingestion/backup failure, retrieval below 90%, and forecast cost above €5. Ephemeral interaction data limits retrospective diagnosis by design; issues are reproduced with explicit evaluation questions rather than recovered from user history.
+Trace retrieval/generation/total timing consistently. Existing policy `total_ms` begins after retrieval; migrated total timing must include the full backend path, with separate browser/network end-to-end measurement for the release gate. Preserve existing field names and document measurement semantics; no hidden LangChain tracing is needed.
 
-**Cost and sustainability.** Scale-to-zero compute, one Firestore database, native vector search, lifecycle-managed object storage, and no always-on staging environment minimize idle consumption. Quotas are enforced before billable AI operations. The sponsor reviews billing monthly, and production remains within €5 of GCP infrastructure charges unless an exception is approved. Free OpenRouter models are preferred for primary and fallback answers, but paid routes are permitted within the separately sponsor-approved provider budget. Free or paid status does not waive privacy, availability, quality, or latency gates.
+**Retrieval and answer quality (SM-01–SM-05, FR-007–FR-012).** Fix embedding dimensions/tasks and cosine distance per corpus version; use word-counted 700-word chunks/70-word overlap bounded to each PDF page. This corrects the older architecture's token-based description to the verified current word-based behavior. LangChain splitting may still change boundaries: compare real pages, preserve normalization/provenance, create a new derived corpus and review support changes. Preserve carried section recovery and the existing `Unclassified` fallback pending provenance review; do not silently tighten user-visible behavior.
 
-**Accessibility and user experience.** Core registration, authentication, question, citation, quota, and administration flows support current desktop/mobile viewports, keyboard navigation, visible focus, semantic labels, status announcements, and sufficient contrast. Automated accessibility checks and manual keyboard review are release gates. Operational errors never imply that an ungrounded answer was produced.
+Evidence accepts only finite scores within the current supported range up to 1. Rank descending score, then ascending chunk ID for ties, cap at five, and discard scores below 0.45. Top score ≥0.75 is strong; ≥0.45 and <0.75 is partial; no eligible score is absent. Partial forces qualified output; absent produces the existing refusal without any generation call. Use exact `1-cosine_distance` semantics, without clamping/renormalization or invented rank scores. Test below/at/above thresholds, missing/non-finite/out-of-range scores, ties and mixed corpus versions.
 
-**Deployment and supply chain.** Terraform is the infrastructure source of truth. Pull requests run Python/TypeScript quality checks, contract tests, privacy tests, retrieval/citation evaluations where fixtures are available, Terraform validation, and dependency/container scanning. Main builds produce immutable artifacts. Production deployment first creates a zero-traffic Cloud Run revision and Firebase preview; promotion uses the exact tested artifact. Infrastructure plans are reviewed before apply, and API enablement or IAM mutation requires explicit authorization.
+Citations are reconstructed from retrieved authoritative page/section/excerpt records; schema parsing and citation membership alone do not prove every claim's support. Require reviewed relevant-passage retrieval ≥90%, grounded factual claims ≥95%, citation correctness ≥95%, answer rubric quality ≥85%, and correct refusal ≥95% on applicable gold cases. Release requires 30–50 approved gold items with current candidate bindings and explicit report eligibility. Compare with the legacy baseline as well as minimum gates; changed outputs/support receive human adjudication, not an invented regression tolerance. Existing cited-answer/nonempty-answer evaluator proxies cannot by themselves establish semantic BRD gates.
+
+**Reliability and recovery (BPR-006, NFR-009–NFR-010, NFR-013, NFR-015–NFR-017).** Availability remains best effort. Bound retries with backoff/jitter for safe reads/embeddings and idempotent explicit-ID indexing; user POSTs and quota reservation are not blindly retried. Accepted requests consume quota even on downstream failure. Model fallback is restricted to the existing eligible normalized errors and shared deadline; gateway failure yields a safe operational response. Do not imply unsupported content was successfully answered. Preserve any circuit-breaker policy and avoid adding implicit library retries.
+
+Dataset import retains staged durable writes, transactional generation switching and failure isolation. Corpus ingestion separately requires persisted completeness and compare-and-set activation, tested concurrent jobs and executable rollback. Roll back the serving image/configuration, collection/schema/index and corpus binding together; a pointer to v2 data is not a valid rollback for a v1 reader. Retain previous valid resources until promotion and rollback checks pass. Daily backups retain at most 30 copies; restore accounts/configuration/usage/evaluation within 24 hours and prove corpus rebuild from immutable source.
+
+**Observability and cost (SM-08, NFR-003, NFR-011).** Dashboards retain safe counts, stage/end-to-end latency, normalized errors, fallback rate, quota use, provider usage/cost, active corpus/configuration, ingestion/evaluation/backup status and infrastructure indicators. Alerts cover repeated failures, quota/cost forecasts, latency regression, backup/ingestion failure and retrieval below 90%. Diagnose content-dependent issues using authored test questions and live request traces. Forecast re-embedding, temporary duplicate vectors/indexes, artifact storage and larger dependency cold-start/memory cost before promotion. GCP infrastructure stays ≤€5/month plus separately approved provider hard cap; free/paid routes both require quality/privacy/capacity evidence.
+
+**Accessibility and UI parity (NFR-007–NFR-008).** Preserve responsive desktop/mobile flows, keyboard operation, focus, labels, status announcements, contrast, quota/reset explanations and safe errors. Existing user/admin core-flow and accessibility checks run against the unchanged response schemas. LangChain internals do not enter product screens.
+
+**Deployment and Twelve-Factor standards (MIG-04).** Keep one canonical repository and explicit environment/release branches or tags. Declare and lock the entire Python integration stack, transitive dependencies and any patched artifact/source/hash; use the same lock in CI and the image, rather than the current floating/pyproject-only image installation. Do not depend on global packages. Existing frontend lock remains required. Separate immutable build, release configuration and runtime; promote the exact tested image digest and Firebase artifact after preview/zero-traffic validation. Externalize provider/model/endpoint, project/region, credentials, collection/schema, splitter/task/dimension settings, deadlines and batch/scaling limits; document validated defaults in `.env.example` and secret names without values. Backing services remain externally configured and replaceable behind native integration contracts.
+
+Requests stay stateless; durable state is service-owned. API binds its HTTP port, terminates gracefully and honors Cloud Run signals; jobs stop safely between idempotent batches and exit nonzero on failure. Development and production use structurally similar container/dependency/schema configurations. Maintenance/migration/evaluation use the application image and configuration family. Terraform remains infrastructure source of truth, with explicit target and legacy vector indexes during migration. CI validates contracts, relevant policy/integration/privacy/evaluation tests, dependency resolution/lock, container/dependency scans and Terraform. Architecture approval does not execute deployment or IAM changes.
 
 ## 10. Alternatives Considered & Trade-offs
 
 | Option | Pros | Cons | Decision | Driver |
 |--------|------|------|----------|--------|
-| Modular monolith on Cloud Run | Simple deployment, clear internal modules, scale to zero | Modules share one release and failure boundary | Selected | Greenfield scope, three users, €5 constraint |
-| Microservices or GKE | Independent scaling and deployment | Disproportionate cost and operations | Rejected | No scale or team need justifies complexity |
-| Firestore native vector search | One managed store, transactions, low operations | Less specialized than dedicated vector platforms | Selected | Low corpus/user scale and cost-first design |
-| Cloud SQL with pgvector | Familiar relational model and rich SQL | Always-on cost and database administration | Rejected | Exceeds current need and budget risk |
-| Vertex AI Vector Search | Strong dedicated vector scaling | Extra service, cost, and operational complexity | Rejected | Corpus size and traffic do not require it |
-| React/Vite SPA on Firebase Hosting | Small static artifact, preview channels, low cost | No server-side rendering | Selected | Authenticated tool does not require SEO or SSR |
-| Next.js/SSR | Server rendering and integrated routes | Additional runtime and complexity | Rejected | No stated business requirement |
-| OpenRouter through a LangChain-compatible adapter | Keeps chain contracts stable while centralizing primary/fallback routing | Creates dependency on one gateway and its upstream routes | Selected | Sponsor selected OpenRouter as the exclusive answer provider |
-| Vertex AI Gemini as fallback | GCP-aligned provider diversity | Contradicts approved all-external answer-model decision | Rejected | Sponsor selected external fallback |
-| OpenRouter for primary and fallback | One credential and adapter; model-level resilience | No gateway-level resilience | Selected | Sponsor confirmed OpenRouter is the only external answer provider |
-| Custom authentication | Full control | Password, email, throttling, and recovery risk | Rejected | Firebase provides safer managed capability |
-| Firebase Authentication | Managed security and email flows | Platform dependency; MFA remains out of scope | Selected | Functional and cost fit |
-| Persist production questions for diagnosis | Better retrospective debugging | Violates FR-013 and NFR-011 | Rejected | Privacy requirement |
-| Persist evaluator-authored questions | Enables reproducible release gates | Requires clear separation from user interactions | Selected | FR-021 and FR-022 explicitly require it |
-| Atomic active-dataset generation with superseded run history | Failed imports preserve current state; old decisions remain reproducible without appearing as current evidence | Requires generation-aware queries and cleanup of abandoned staging data | Selected | FR-022, FR-029, NFR-015, and NFR-016 together |
-| Delete all old evaluation records on import | Simple interpretation of replacement | Destroys reproducibility of prior decisions and complicates failed-import recovery | Rejected | FR-022 requires historical identification; FR-029 only disallows old results as available evidence |
-| Require gold approval before every evaluation | Prevents weak evidence from being run | Blocks immediate exploratory runs | Rejected | FR-031 requires exploration before gold approval |
-| Minimum Cloud Run instance of one | Lower cold-start latency | Recurring idle cost threatens €5 target | Rejected initially | Cost takes precedence; performance is tested |
-| Two isolated GCP projects plus preview validation | Environment isolation and adequate release controls | Duplicates low-volume managed resources | Selected | Development and production safety |
-| Multi-region/high-availability deployment | Better infrastructure resilience | Higher cost and complexity | Rejected | Best-effort availability is accepted |
-| Proceed without publisher permission | Allows project to continue | High-severity legal and release risk remains | Sponsor accepted, with release warning | Explicit BRD decision |
+| FastAPI modular monolith and Cloud Run jobs | Existing boundaries, scale to zero, one maintainable codebase | Shared release/failure boundary | Retain | Three concurrent users, €5 infrastructure ceiling, MIG-02 |
+| Microservices, GKE or additional agent runtime | Independent scaling, more orchestration features | Added operations/cost without a requirement | Reject | No scale/team/workflow driver |
+| Firestore native vectors through LangChain | Reuses existing backing service and domain transactions | Inspected integration has dependency/score gaps | Retain with compatibility gate | CON-03 and MIG-01 |
+| Cloud SQL/pgvector or Vertex AI Vector Search | Mature alternatives for relational/specialized vector needs | New backing service, cost and migration; changes current constraint | Reject as default; separate approval needed if spike fails | Existing store and budget |
+| React/Vite SPA on Firebase Hosting | Existing flows, low static hosting cost | No SSR | Retain; Next.js/SSR unnecessary | Authenticated tool has no SEO requirement |
+| Keep custom RAG mechanisms behind more LangChain wrappers | Least immediate change | Does not replace loading, splitting, embeddings, storage, search or model transports | Reject | Explicit sponsor MIG-01 |
+| Supported score-preserving compatible LangChain Firestore release | Meets full replacement without patch ownership | No verified suitable set established | Preferred; prove in spike | Dependency intersection and score semantics |
+| Narrow maintained LangChain Firestore patch/upstream contribution | Preserves library search/storage and existing architecture | Requires compatibility/score tests, pinned distribution and maintenance | Conditional fallback under approved recommendation; assumption A-14 | Verified integration gaps |
+| Fully stock older LangChain stack | Avoids owning a patch | Support/security/provider capabilities and compatible releases unverified | No downgrade selected; consider only with documented evidence/decision | Reproducible supported dependencies |
+| Native ChatOpenRouter and LangChain Google chat integration | Replaces custom transports, supports shared chain/configuration | Route schema/usage/error behavior needs validation | Select according to existing effective provider mode | MIG-01/MIG-02 |
+| Change production answer provider during migration | May offer provider diversity | Changes approved production routing and parity baseline | Reject implicit change; retain OpenRouter production and existing explicit modes elsewhere | Approved provider decision and configuration drift finding |
+| Primary/fallback models on OpenRouter | One configured gateway, model-level resilience | Gateway-wide outage defeats fallback | Retain production decision | FR-014, INT-01, best-effort availability |
+| Add Vertex as a new production fallback | Provider diversity | Changes approved production answer routing | Not selected; existing enabled Vertex mode remains a parity case | Separate route approval required |
+| Firebase Authentication instead of custom identity | Managed hashing, verification/recovery/throttling | Platform dependency; no MFA in scope | Retain | Identity/security/cost requirements |
+| Persist production questions or enable remote content tracing/history | Easier debugging and chain inspection | Violates FR-013/NFR-011 | Reject | Ephemeral interaction requirement |
+| Persist evaluator-authored datasets and versioned evidence | Reproducible gold/release review | Must stay distinct from interactions | Retain | FR-021/FR-022 |
+| New derived corpus and staged v2 collection/index | Avoids source-ID reuse and legacy overwrite; enables coupled rollback | Temporary storage/rebuild cost, annotation remapping | Select | Parser/splitter/schema impacts and lifecycle gaps |
+| Reuse source-only corpus IDs / overwrite active vectors | Less migration bookkeeping | Same PDF may bypass rebuild, corrupt rollback and stale gold references | Reject | Verified manifest identity and early-exit behavior |
+| Preserve 700/70 whitespace-word settings via a native splitter | Matches current units and page boundary policy | Library boundaries may differ and require review | Select and validate | Functional parity; older architecture token description was inaccurate |
+| Atomic active-dataset generation with superseded history | Failure isolation and audit without old release evidence | Generation-aware queries/cleanup | Retain | FR-022/FR-029/NFR-015/NFR-016 |
+| Delete all old evaluation records on import | Simple replacement | Destroys reproducibility and recovery | Reject | Historical identification requirement |
+| Require gold approval before every evaluation | Ensures all runs have reviewed data | Prevents immediate exploration | Reject; preserve exploratory runs | FR-031 and NFR-017 |
+| Count citation presence/nonempty output as full quality proof | Cheap automated proxies | Cannot verify grounded factual claims or rubric correctness | Reject as release proof; supplement with reviewed assessments | SM-02–SM-04 |
+| Carry forward 60-second generation timeout | Matches current config | Does not enforce the 15-second objective | Replace with measured whole-request/shared-attempt budgets before promotion | SM-06/NFR-001 |
+| One minimum instance or multi-region availability | Better startup/availability | Higher cost | No initial change; consider minimum instance only within approved budget | €5 ceiling and best-effort availability |
+| Two isolated GCP projects with preview validation | Environment isolation and exact-artifact tests | Duplicate low-volume resources | Retain placement assumption and verify | Development/production parity |
+| Proceed without publisher permission | Sponsor can continue project work | High-severity rights/release risk remains | Existing sponsor acceptance remains; architecture is not legal clearance | BRD risk decision |
+
+The sponsor approved the impact recommendation before this document was updated. Unverified technology choices are bounded assumptions with validation owners; failed gates are reported rather than silently changing providers, store, budgets or functional policy.
 
 ## 11. Assumptions
 
-1. **A-01 — Existing implementation baseline.** FastAPI, evaluation contracts, in-memory reference stores, OpenRouter adapter, and Terraform exist; durable import and active-dataset behavior remain to be implemented. **Owner:** solution design. **Validation:** verify reuse against current modules and tests when planning issues.
-2. **A-02 — GCP placement.** Two GCP projects use `europe-west1`: `dev-dmbok-compass` for development and `prod-dmbok-compass` for production. Each has isolated Firebase, Firestore, storage, secrets, Artifact Registry, and Cloud Run resources. **Owner:** sponsor. **Validation:** confirm both projects and immutable Firestore locations before provisioning.
-3. **A-03 — OpenRouter model routing.** OpenRouter exclusively supplies both answer models. The provider decision currently lists `mistralai/mistral-nemo` as primary and `meta-llama/llama-3.1-8b-instruct` as fallback. **Owner:** sponsor. **Validation:** approve final primary/fallback routes and pass availability, privacy, quality, latency, and cost evaluation.
-4. **A-04 — OpenRouter privacy terms.** Production sends only minimum ephemeral context to OpenRouter; applicable OpenRouter and upstream route no-training and minimal-retention terms must be reviewed. **Owner:** sponsor. **Validation:** retain OpenRouter decision evidence and verify terms before release.
-5. **A-05 — Quota defaults.** Per-user and global limits both initially default to 100 accepted requests per UTC day and remain administrator-configurable. **Owner:** sponsor. **Validation:** confirm in acceptance testing and cost baseline.
-6. **A-06 — Cost boundary.** GCP infrastructure must remain at or below €5 monthly, and free or paid OpenRouter usage must remain within a separately sponsor-approved provider budget. **Owner:** sponsor. **Validation:** pre-release forecast, configured hard cap, and monthly review.
-7. **A-07 — Corpus extractability.** The searchable PDF provides enough structure to recover accurate page and chapter or section provenance. **Owner:** corpus owner. **Validation:** ingestion spike and human-reviewed gold subset.
-8. **A-08 — Evaluation coverage.** The sponsor supplies approximately 200 representative questions and defines a balanced distribution before baseline; 30–50 are human-approved gold items. **Owner:** sponsor/evaluator. **Validation:** dataset review and version approval.
-9. **A-09 — Evaluation versus interaction data.** The non-retention rule applies to production user interactions, while evaluator-authored questions and annotations persist because FR-021/FR-022 require reproducibility. **Owner:** sponsor. **Validation:** privacy model and storage tests.
-10. **A-10 — Publisher rights.** The sponsor continues without written permission and owns the release-risk decision; architecture approval is not legal clearance. **Owner:** sponsor. **Validation:** reconsider permission or obtain qualified advice before multi-user release.
-11. **A-11 — Remaining runtime validation.** Existing code and Terraform are partial; durable evaluation import, end-to-end provider tests, restore exercises, and performance evidence remain implementation gates. **Owner:** orchestrator/implementation team. **Validation:** attach evidence before release.
-12. **A-12 — Operational metadata retention.** Content-free logs and metrics are retained for 30 days unless the sponsor approves another bounded period. **Owner:** administrator. **Validation:** infrastructure policy and privacy inspection.
-13. **A-13 — Managed email delivery.** Firebase Authentication’s managed verification and reset email flow is acceptable for the first release. **Owner:** sponsor. **Validation:** end-to-end email-flow test before onboarding users.
+1. **A-01 — Current baseline.** Reuse current FastAPI/React contracts, policy helpers, job entrypoints, source controls, durable evaluation wiring, Terraform and release services; verify actual behavior instead of older descriptions of missing wiring. **Owner:** implementation owner. **Validation:** freeze source/configuration and reviewed parity fixtures before replacing RAG mechanisms.
+2. **A-02 — Placement.** Retain two isolated GCP projects in `europe-west1`, `dev-dmbok-compass` and `prod-dmbok-compass`, with isolated Firebase/Firestore/storage/secrets/runtime resources. **Owner:** sponsor. **Validation:** confirm project and immutable database placement before infrastructure changes.
+3. **A-03 — Effective provider routing.** OpenRouter remains the approved production gateway. Explicit Vertex answer mode and its existing fallback configuration remain supported wherever currently enabled. Code defaults to Vertex while Terraform/delivery select OpenRouter, and `.env.example` uses different OpenRouter IDs; no source of defaults overrides effective deployed settings by assumption. **Owner:** sponsor/implementation owner. **Validation:** record routes, schema capabilities, eligible failures and budgets per environment; verify native integration parity before enabling a migrated mode. The existing nested Vertex-to-OpenRouter fallback can attempt more than the public two-attempt trace limit; reconcile this failure-path inconsistency explicitly before enabling it, rather than silently widening/truncating the contract or changing routes.
+4. **A-04 — Provider privacy/capacity.** Applicable gateway and upstream no-training/minimal-retention terms, availability and capacity must pass sponsor review for each effective route. **Owner:** sponsor. **Validation:** retain decision/terms evidence and live route checks before release.
+5. **A-05 — Quota defaults.** Per-user/global defaults remain 100 accepted requests per UTC day, administrator-configurable; fallback consumes no extra quota reservation. **Owner:** sponsor. **Validation:** contract/transaction/fallback tests and cost baseline.
+6. **A-06 — Cost.** GCP infrastructure stays ≤€5/month with separate approved provider hard cap, including temporary migration resources and re-embedding. **Owner:** sponsor. **Validation:** rebuild/dependency/runtime forecast and billing review before promotion.
+7. **A-07 — Provenance.** The searchable PDF supports correct one-based page/section attribution using LangChain page extraction plus existing enrichment. **Owner:** corpus owner. **Validation:** real-page comparison, carried heading/Unclassified cases and reviewed gold citations.
+8. **A-08 — Gold coverage.** Approximately 200 representative authored questions cover the five categories and evidence outcomes; 30–50 approved gold items support release. Changed corpus chunk references are remapped/reviewed. **Owner:** sponsor/evaluator. **Validation:** dataset/rubric/annotation approval and new candidate-specific evidence.
+9. **A-09 — Data separation.** Production interactions remain ephemeral; authored evaluation questions/annotations/results are durable as required by FR-021/FR-022. **Owner:** sponsor/implementation owner. **Validation:** storage/log/callback/cache/exception privacy checks.
+10. **A-10 — Publisher rights.** Existing sponsor acceptance of proceeding without permission remains; multi-user release risk is unresolved. **Owner:** sponsor. **Validation:** reconsider permission/qualified advice and record final risk decision before release.
+11. **A-11 — Validation scope.** This version approves the target design and records a maintained patched package, candidate lock, clean local Python 3.11 install and live development compatibility checks, not a Linux target-image installation or application migration. Persisted lifecycle, quality, load, privacy, cost and recovery evidence remain to be produced. **Owner:** orchestrator/implementation owner. **Validation:** ordered exit gates in section 13; dependent work cannot bypass the target-image check.
+12. **A-12 — Safe metadata retention.** Content-free logs/metrics retain a provisional 30 days; never include interaction content. **Owner:** administrator. **Validation:** infrastructure retention and privacy inspection.
+13. **A-13 — Managed email.** Firebase verification/reset delivery remains acceptable for first release. **Owner:** sponsor. **Validation:** existing end-to-end identity/regression flows before onboarding.
+14. **A-14 — LangChain integration boundary.** Sponsor agreement with the recommendation is interpreted as accepting application policy retention and a narrow, maintained Firestore LangChain integration patch only if no supported compatible score-returning release is available. This does not approve a backing-store change, unverified downgrade or resolver bypass. **Owner:** implementation owner/sponsor. **Validation:** compatibility spike records the selected integration/artifact, exact lock, score semantics, maintenance/upstream plan and any necessary revised decision. If this path fails, stop dependent implementation.
+15. **A-15 — Deadline allocation.** Provisional 14-second backend ceiling, eight-second shared generation budget and five/three-second primary/fallback reservation leave browser/network margin under the unchanged 15-second target. **Owner:** implementation owner/evaluator. **Validation:** measure complete responses, cold starts and representative fallback mix at three users; adjust within the same target/cost ceiling without treating errors as successful answers.
+16. **A-16 — Migration data boundary.** An externally configured `document_chunks_v2` collection with nested metadata, a new derived fingerprint and staged rebuild is acceptable internal maintenance; legacy collection/index/revision remain until rollback acceptance. Native word-counted 700/70 splitter may change exact boundaries. **Owner:** corpus owner/implementation owner. **Validation:** converter/schema/index round trip, persisted completeness, idempotent batches, concurrent activation, gold remapping and executable coupled rollback.
 
 ## 12. Risks & Mitigations
 
 | Risk | Impact | Likelihood | Mitigation |
 |------|--------|------------|------------|
-| Publisher restrictions may prohibit ingestion, embeddings, provider transmission, or excerpts | High; may prevent lawful multi-user release | High | Seek written permission and qualified legal advice; keep corpus/access narrow; sponsor records final release decision. |
-| OpenRouter or its upstream models change | High; integration, latency, quality, privacy, and cost can regress | Medium | Stable LangChain-compatible adapter; pin model IDs after selection, review terms, and repeat provider evaluation before release. |
-| Provider may retain or train on prompts and excerpts | High privacy and contractual exposure | Medium/High | Require reviewed no-training/minimal-retention terms, minimize context, warn users, and block release without approval. |
-| Both answer models share one provider | Provider-wide outage defeats fallback | Medium | Honest error response, bounded circuit breaker, best-effort SLA; revisit provider diversity after first release. |
-| Free tiers or service terms may change | Cost or availability can exceed constraints | High | Configurable quotas, spend monitoring, model configuration outside code, and release/operation exception process. |
-| €5 budget may conflict with performance or usage | Requests may be throttled or latency target missed | Medium | Scale to zero, cap instances and daily requests, benchmark cost per answer, lower limits before exceeding budget. |
-| PDF extraction may mislabel pages or sections | Incorrect citations undermine core value | High | Deterministic ingestion, provenance validation, gold-subset review, and 95% citation gate. |
-| Generated evaluation annotations may reinforce system errors | False confidence and unsafe release | High | Human-review 30–50 gold items and separate gold from automated metrics. |
-| Failed or concurrent dataset import could replace valid evidence | Incorrect active dataset or loss of visible history | Medium | Stage immutable generation, validate all writes, switch pointer transactionally with compare-and-set, and test concurrent/failed imports. |
-| Exploratory or superseded runs could be mistaken for release evidence | Release without an eligible gold baseline | Medium | Persist report eligibility, scope evidence queries to active generation, and recheck the 30–50 gold count and passing gates at release approval. |
-| No MFA increases administrator takeover risk | Unauthorized access or configuration change | Medium | Strong password flow, throttling, secure recovery, least privilege, and immediate deactivation; accepted first-release risk. |
-| Ephemeral interactions reduce incident evidence | Harder retrospective diagnosis | Medium | Safe aggregate metadata, request-scoped trace, reproducible evaluation questions, and deterministic configuration versions. |
-| One person owns all operational roles | Delayed response and weak segregation of duties | Medium | Document runbooks, automate gates, preserve immutable evidence, backups, and rollback procedures. |
-| Firestore hot quota document becomes a bottleneck | Quota failures or request rejection | Low at three users | Transactional counter is adequate at current scale; measure contention and shard only if requirements grow. |
-| Cold starts threaten the 15-second objective | User-visible latency regression | Medium | Small image, optimized startup, bounded dependencies, performance testing; consider one minimum instance only with approved cost. |
+| Selected inspected integration releases have incompatible core/GenAI requirements | Blocking: proposed stock stack cannot resolve | Confirmed for inspected releases | Prove a supported compatible set or validated narrow patch; lock all dependencies/artifacts; do not use `--no-deps`. Block dependent implementation until exit evidence. |
+| Firestore integration loses scores or changes normalization | Blocking: evidence/refusal outcomes regress | Confirmed score omission in inspected path | Prove pre-filtered cosine search, explicit five results, `1-distance`, metadata round trip and policy boundary tests through the native integration before selection. |
+| Narrow compatibility patch becomes an unsupported fork | Upgrade/maintenance burden for one sponsor | Medium if required | Minimum integration-only scope, pinned build/source/hash, compatibility tests, named maintenance owner and upstream contribution; prefer supported release when available. |
+| Loader/splitter/schema change reuses active source-only ID | Stale corpus, overwritten data, invalid rollback | High without controls | Derived fingerprint plus separate v2 collection/index, immutable IDs, staged rebuild and source-generation binding. |
+| Gold chunk IDs or old reports authorize the migrated candidate | False release readiness | High without version binding | Remap/review annotations; new pinned corpus/configuration/dependency evidence; supersede incompatible reports. |
+| Production lifecycle checks do not validate data or concurrent activation | Incomplete corpus activated; rollback unavailable | Existing gaps confirmed | Persisted counts/hash/provenance/vector checks, compare-and-set pointer, partial-batch/concurrent-job tests and executable revision/schema/corpus rollback. |
+| Evaluator uses cited/nonempty-answer proxies as quality proof | Grounding/rubric regressions go undetected | Existing proxy limitation confirmed | Human-reviewed relevant passages, claims, citation support and rubric outcomes; retain minimum gates and legacy parity review. |
+| Native route/schema/retry/fallback differs from effective config | Extra calls, wrong failure handling, invalid traces/output | Medium; defaults already differ | Freeze effective environment config; shared factory; explicit eligible errors/retry limits/deadlines; resolve enabled Vertex nested-attempt inconsistency against the public schema before migration. |
+| Provider bodies, callbacks or environment tracing retain content | Violates non-retention/privacy requirements | Existing raw-body log confirmed; integration risk medium | Remove raw content log, disable content tracing/caches/history, reject unsafe callbacks and inspect SDK success/error paths. |
+| Blocking sync calls or shared mutable filters under concurrency | Latency failure or corpus/request contamination | Current inline sync behavior confirmed | Native async where verified, bounded executor/RPC timeouts, immutable per-request filters and three-user isolation/load evidence. |
+| Larger dependency image, cold starts and current 60-second generation budget | 15-second target missed; memory/cost regression | Unmeasured migration overhead | Full-path timing and bounded provisional deadline, small image/startup checks, representative cold/fallback load at three users. |
+| Duplicate staged vectors/re-embedding exceed cost cap | Budget breach or stalled migration | Medium | Forecast temporary resource/provider cost, bounded job batches and cleanup after rollback acceptance; no extra service/subscription. |
+| Publisher restrictions prohibit ingestion/transmission/excerpts | May prevent lawful multi-user release | High | Existing sponsor risk acceptance; seek written permission/qualified advice and record release decision. Architecture approval does not resolve rights. |
+| Hosted provider retains/trains on prompts or changes routes | Privacy, quality, cost and availability regression | Medium/High | Sponsor reviews upstream terms/capacity, minimizes context, warns users and revalidates exact routes before release. |
+| Development OpenRouter key appeared in diagnostic output | Unauthorized use of the development provider account | Confirmed | Rotate the key at OpenRouter and update the development Secret Manager version; do not print raw provider exceptions or headers in future probes. |
+| Both approved production models share one gateway | Gateway-wide outage defeats fallback | Medium | Bounded failures, honest operational errors and best-effort availability; no implicit provider change. |
+| Free tiers or €5 budget conflict with normal usage/performance | Throttling or service quality failure | Medium/High | External quotas, provider hard cap, usage/cost forecasts and monthly review; stop release/continued operation if limits cannot hold. |
+| Failed/concurrent dataset import or stale report eligibility | Wrong active dataset or invalid release decision | Medium | Preserve staged generation and transactional compare-and-set; current-gold/config eligibility checks; restart/concurrent/import-failure regression tests. |
+| No MFA and one person owning all roles | Account takeover or delayed incident response | Medium | Existing accepted scope; managed password/recovery/throttling, least privilege, reproducible runbooks and immediate deactivation. |
+| Ephemeral interactions limit incident diagnosis | Less retrospective evidence | Accepted | Content-free aggregates, live traces and authored reproduction questions; no retained conversations. |
+| Hot transactional quota record | Quota contention at load | Low at three users | Reuse current counter, measure contention; shard only if requirements justify it. |
+
+Compatibility and score preservation block dependent implementation. Other listed gates block promotion/release until their evidence or existing sponsor risk decision is recorded; design approval itself does not assert they passed.
 
 ## 13. Notes for the Orchestrator
 
-Create atomic implementation issues in this dependency order:
+Scope is an internal RAG migration, not a rebuild of identity, UI, quotas or evaluation administration. Create atomic migration issues in this order, reusing existing modules and behavioral tests:
 
-1. **Foundation and contracts (M):** extend existing repository layout, shared API schemas, configuration model, privacy-safe logging contract, Terraform, and CI; freeze import/generation/report eligibility contracts.
-2. **Identity and access (M):** Firebase setup, registration profile, verification/approval/deactivation, roles, 10-user transaction, recovery flows, and authorization tests. Depends on 1.
-3. **Application data and quotas (M):** Firestore schema, indexes, security posture, per-user/global UTC counters, admin configuration, and aggregate metrics. Depends on 1–2.
-4. **Corpus storage and ingestion spike (L):** Cloud Storage, PDF extraction, provenance validation, chunk strategy, deterministic IDs, Vertex embeddings, staged corpus versions, and rebuild runbook. Depends on 1 and infrastructure foundation.
-5. **Retrieval service (M):** query embeddings, active-version filtering, Firestore vector search, candidate selection, evidence thresholds, and top-five benchmark harness. Depends on 3–4.
-6. **LangChain and OpenRouter adapter (M):** compose existing retrieval/answering modules with LangChain, preserve current answer contracts, add primary/fallback routing, structured output, timeouts, circuit breaker, safe usage metadata, and provider contract tests. Live route approval remains a release gate.
-7. **Grounded answering pipeline (L):** quota reservation, retrieval, prompt policy, answer/qualified/refusal outcomes, synthesis labels, citation validation, ephemeral trace, and privacy tests. Depends on 3, 5, and 6.
-8. **User web experience (M):** responsive auth and chat workflows, answer/citation/trace rendering, quotas, errors, privacy warning, and WCAG checks. Depends on frozen contracts from 1 and backend capabilities from 2 and 7.
-9. **Administration and dataset import (L):** pending/approved users, limits, anonymous aggregates, bounded JSON upload, per-record validation summary, active-dataset view, gold-item approval/rejection, and release decision UI. Depends on 2–4 and frozen contracts.
-10. **Durable evaluation pipeline (L):** Firestore-backed dataset generations, atomic activation, failed-import rollback, server-resolved active dataset, full/subset exploratory jobs, 30–50 gold gate, explicit report eligibility, six quality/performance metrics, version binding, and release approval checks. Depends on 4–7 and 9; test restart, concurrent imports, and superseded results.
-11. **Operations and recovery (M):** content-free dashboards/alerts, Secret Manager, backups, restore test, scheduler authentication, cost controls, and rollback runbooks. Depends on infrastructure and data components.
-12. **Delivery and release validation (L):** immutable builds, Artifact Registry, preview/zero-traffic deployments, Terraform plan review, security/privacy/accessibility/load tests, provider evaluation, and final evidence bundle. Depends on all prior issues.
+| Step | Work and dependency | Complexity | Required exit evidence |
+|---|---|---|---|
+| 1 | Freeze current source/contracts and effective per-environment provider, schema, quota, evidence, trace and fallback configuration; reviewed legacy baseline using authored data | M | Existing workflows/policies recorded; no production interaction capture; clarify enabled Vertex attempt mismatch before migration of that mode |
+| 2 | Isolated compatibility spike: resolve full native LangChain stack, supported Firestore release first and narrow patch only if required; test all six capability boundaries | M | Exact resolvable lock and artifact/source; native metadata/writes, score/filter semantics, Vertex tasks/768 dimensions, route structured output/fallback behavior; named patch owner if used |
+| 3 | Freeze shared configuration/factory and native-to-domain contracts; validate external settings, privacy allowlist and deadline policy | M | Same construction for API/evaluation; existing public schemas preserved; unsafe callback/tracing config rejected; depends on 1–2 |
+| 4 | Implement derived corpus fingerprint, target v2 metadata schema/vector index, manifests and durable lifecycle safety | L | Explicit IDs, count/hash/provenance/vector validation, idempotent partial/multi-batch retries, concurrent compare-and-set activation and executable rollback; depends on 2–3 |
+| 5 | Replace PDF extraction/windowing/document embed/write with native LangChain ingestion inside existing job | L | Real-page provenance/unit/boundary comparison, deterministic IDs and staged complete corpus; depends on 4 |
+| 6 | Replace custom query embed/search/model transports with native retrieval/generation composition; retain application evidence/citation/response policies | L | Threshold/tie/corpus-filter parity, absent no-generation, partial qualification, quota-once, route/error/attempt/raw-output mappings, bounded async/deadline/privacy tests; depends on 3–5 |
+| 7 | Wire API and pinned evaluation to shared factory; remap/review gold chunk references and bind new report/configuration/lock metadata | M | Same-chain reproducibility, current eligibility and human-reviewed semantic metrics; existing import/review/release workflows preserved; depends on 5–6 |
+| 8 | Update dependency lock installation in image/CI, external settings/example, Terraform target index and runbooks/release evidence | M | Reproducible exact artifact/config, preview candidate and tested legacy/new revision+schema+corpus rollback; depends on 2–7 |
+| 9 | Rebuild, evaluate and prepare promotion against unchanged BRD and legacy baseline | L | 30–50 approved gold items; five semantic quality gates, 95% within 15 seconds at three users, privacy/accessibility/auth/admin parity, budget/provider terms, daily backup/≤30 copies and ≤24-hour restore; depends on 7–8 |
+| 10 | Promote through existing release process; retire superseded custom mechanisms after promotion and rollback acceptance | S | No active production/job callers of custom extraction/windowing/embed/vector-write/search/generation engines; archived legacy artifact remains usable for agreed rollback period; depends on 9 and release approval |
 
-Freeze the API response schema, JSON import schema and bounds, active-generation transaction, Firestore entity ownership, report eligibility, vector dimensionality, corpus-version contract, and privacy logging allowlist before parallel implementation. OpenRouter is selected; approve the final model routes, their data terms, and provider budget whether the routes are free or paid. Do not mark release complete until the active dataset has 30–50 approved gold items, a passing release-evidence run, publisher-risk acceptance, provider terms, retrieval/grounding/citation/answer/refusal thresholds, 15-second performance, three-user concurrency, €5 GCP forecast plus provider cap, daily backup, and 24-hour restore evidence.
+Step 2 is the first technology gate. Maintained source, a reproducible wheel, a universal candidate runtime lock, clean local Python 3.11 installation and live development Firestore/Vertex/OpenRouter route and fallback checks now pass. Complete it with the Linux Python 3.11 compatibility image build in GitHub Actions; the local Docker daemon is unavailable and Cloud Build is disabled in the development project. Do not schedule dependent ingestion/answer integration as ready until that build passes. Do not silently downgrade, return scoreless documents, change vector backing services or let provider SDK retries exceed the shared deadline. If the candidate fails in the target image, return a concrete revised design decision to the sponsor. No corpus migration or application deployment has been performed.
+
+Likely touchpoints are `backend/app/ingestion/{extract,entrypoint,job}.py`, `backend/app/corpus/{chunking,embedding,indexing,manifest,firestore,versions}.py`, `backend/app/retrieval/search.py`, `backend/app/answering/pipeline.py`, `backend/model/{langchain,openrouter,gemini,fallback,smoke}.py`, `backend/app/main.py`, `backend/app/evaluation/worker.py`, domain configuration/corpus/evidence bindings, behavioral tests, `backend/pyproject.toml`, a full Python lock, `backend/Dockerfile`, CI/delivery, `.env.example`, `infra/terraform/firestore_vector.tf`, corpus runbook and release evidence documentation. Preserve source/provenance/policy/protocol helpers wherever they remain application responsibilities. Replace transport mocks with boundary assertions rather than testing LangChain internals.
+
+Freeze public API schemas, import bounds/categories/generation switching, evidence/citation/error/trace policy, embedding tasks/dimensions, metadata/index layout, derived identity, serving binding, annotation/report eligibility and privacy controls before implementation. Only documented candidate-specific passing evidence supports promotion; old reports and coarse proxies are insufficient. Existing publisher/provider risk decisions, model/privacy/budget approval and release controls remain binding.
+
+**Document verification and limits:** This update uses source, BRD, graph navigation, package/API evidence and the compatibility work in section 5.5. Candidate source/wheel/lock/checks are under `backend/`; disposable environments remain under `/tmp`. A development `document_chunks_v2` vector index was added through Terraform and live development provider/Firestore calls were made with authored test data. The active application dependency manifest, corpus, deployed app, quality/performance evidence and production environment are unchanged. Verify all 14 sections, requirements coverage, component classifications, assumption count and consistent YAML before handoff. Dependent implementation remains blocked pending the Linux target-image check.
 
 ## 14. Machine-Readable Handoff
 
 ```yaml
-status: READY_FOR_ORCHESTRATION
+status: BLOCKED_PENDING_COMPATIBILITY_VALIDATION
 open_questions: 0
-assumptions_count: 13
+assumptions_count: 16
 components:
   - name: Web Application
-    kind: new
+    kind: reused
   - name: Backend API
-    kind: new
+    kind: reused
   - name: Corpus Ingestion and Evaluation Worker
-    kind: new
-  - name: External Model Adapter
+    kind: reused
+  - name: LangChain Chat Model Integration
     kind: new
   - name: LangChain RAG Pipeline
     kind: new
@@ -396,12 +499,12 @@ components:
   - name: Google Cloud Operations and Delivery Platform
     kind: reused
 new_components:
+  - LangChain Chat Model Integration
+  - LangChain RAG Pipeline
+reused_components:
   - Web Application
   - Backend API
   - Corpus Ingestion and Evaluation Worker
-  - External Model Adapter
-  - LangChain RAG Pipeline
-reused_components:
   - Firebase Authentication
   - Firestore Data and Vector Store
   - Cloud Storage Corpus Repository
@@ -409,6 +512,8 @@ reused_components:
   - External Hosted Answer Models
   - Google Cloud Operations and Delivery Platform
 blocking_risks:
-  - Publisher-rights clearance remains unresolved for multi-user release
-  - OpenRouter upstream privacy review, final model routes, live availability, and runtime evaluation remain release gates
+  - The candidate dependency lock has not been cleanly installed in the Linux Python 3.11 target image or adopted by the active application build
+  - The exposed development OpenRouter key must be rotated before further shared validation or deployment
+  - Candidate-specific parity, reviewed quality, privacy, latency, cost and coupled rollback/recovery evidence remain promotion gates
+  - Publisher-rights release risk and effective provider privacy, routing and live capacity decisions remain subject to sponsor review
 ```

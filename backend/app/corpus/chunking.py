@@ -7,6 +7,9 @@ import re
 from dataclasses import dataclass
 from typing import Iterable
 
+from langchain_core.documents import Document
+from langchain_text_splitters import CharacterTextSplitter
+
 
 _WHITESPACE = re.compile(r"\s+")
 
@@ -54,19 +57,23 @@ def chunk_pages(
     if overlap_tokens < 0 or overlap_tokens >= target_tokens:
         raise ValueError("overlap_tokens must be non-negative and smaller than target_tokens")
 
+    splitter = CharacterTextSplitter(
+        separator=" ",
+        chunk_size=target_tokens,
+        chunk_overlap=overlap_tokens,
+        length_function=lambda text: len(text.split()),
+    )
     chunks: list[TextChunk] = []
     for source_page in pages:
         _validate_page(source_page)
-        tokens = _normalized_tokens(source_page.text)
-        if not tokens:
+        normalized = " ".join(_normalized_tokens(source_page.text))
+        if not normalized:
             continue
-
-        step = target_tokens - overlap_tokens
-        for ordinal, start in enumerate(range(0, len(tokens), step)):
-            window = tokens[start : start + target_tokens]
-            if not window:
-                break
-            text = " ".join(window)
+        documents = splitter.split_documents(
+            [Document(page_content=normalized, metadata={"page": source_page.page})]
+        )
+        for ordinal, document in enumerate(documents):
+            text = document.page_content
             content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
             chunks.append(
                 TextChunk(
@@ -79,9 +86,6 @@ def chunk_pages(
                     text=text,
                 )
             )
-            if start + target_tokens >= len(tokens):
-                break
-
     return tuple(chunks)
 
 

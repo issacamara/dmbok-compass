@@ -9,9 +9,11 @@ from __future__ import annotations
 
 from copy import deepcopy
 from threading import RLock
-from typing import Iterable, Protocol
+from typing import Any, Iterable, Protocol
 
-from app.contracts import CorpusVersion, DocumentChunk
+from app.contracts import CorpusVersion
+
+_UNSET = object()
 
 
 class CorpusVersionError(ValueError):
@@ -22,12 +24,21 @@ class CorpusCompletenessError(CorpusVersionError):
     """Raised when a staged corpus is incomplete or internally inconsistent."""
 
 
+class ConcurrentCorpusActivationError(CorpusVersionError):
+    """Raised when the active corpus changed while a candidate was ingesting."""
+
+
 class CorpusVersionStore(Protocol):
     def stage(self, version: CorpusVersion) -> CorpusVersion: ...
 
-    def validate(self, version_id: str, chunks: Iterable[DocumentChunk]) -> CorpusVersion: ...
+    def validate(self, version_id: str, chunks: Iterable[Any]) -> CorpusVersion: ...
 
-    def activate(self, version_id: str) -> CorpusVersion: ...
+    def activate(
+        self,
+        version_id: str,
+        *,
+        expected_active_version_id: str | None,
+    ) -> CorpusVersion: ...
 
     def rollback(self, version_id: str | None = None) -> CorpusVersion: ...
 
@@ -70,7 +81,7 @@ class InMemoryCorpusVersionStore:
             self._versions[version.version_id] = version.model_copy(deep=True)
             return deepcopy(version)
 
-    def validate(self, version_id: str, chunks: Iterable[DocumentChunk]) -> CorpusVersion:
+    def validate(self, version_id: str, chunks: Iterable[Any]) -> CorpusVersion:
         chunk_list = tuple(chunks)
         with self._lock:
             version = self._require(version_id)
@@ -85,19 +96,36 @@ class InMemoryCorpusVersionStore:
                 raise CorpusCompletenessError("corpus contains duplicate chunk IDs")
             if any(chunk.corpus_version_id != version_id for chunk in chunk_list):
                 raise CorpusCompletenessError("every chunk must belong to the staged corpus version")
-            if any(not chunk.text.strip() or len(chunk.embedding) != 768 for chunk in chunk_list):
-                raise CorpusCompletenessError("every chunk must contain text and a 768-dimensional embedding")
+            if any(not chunk.text.strip() for chunk in chunk_list):
+                raise CorpusCompletenessError("every chunk must contain text")
+            if any(
+                hasattr(chunk, "embedding") and len(chunk.embedding) != 768
+                for chunk in chunk_list
+            ):
+                raise CorpusCompletenessError("every persisted embedding must have 768 dimensions")
             updated = version.model_copy(update={"status": "validated"}, deep=True)
             self._versions[version_id] = updated
             return deepcopy(updated)
 
-    def activate(self, version_id: str) -> CorpusVersion:
+    def activate(
+        self,
+        version_id: str,
+        *,
+        expected_active_version_id: str | None | object = _UNSET,
+    ) -> CorpusVersion:
         with self._lock:
             version = self._require(version_id)
             if version.status == "active" and self._active_id == version_id:
                 return deepcopy(version)
             if version.status != "validated":
                 raise CorpusVersionError("only a validated corpus version can become active")
+            if (
+                expected_active_version_id is not _UNSET
+                and self._active_id != expected_active_version_id
+            ):
+                raise ConcurrentCorpusActivationError(
+                    "active corpus changed before activation could commit"
+                )
             previous_id = self._active_id
             if previous_id is not None:
                 previous = self._require(previous_id)

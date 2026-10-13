@@ -63,10 +63,15 @@ Firebase project; they are not service account credentials. Local development
 can point Authentication at the emulator with
 `VITE_FIREBASE_AUTH_EMULATOR_HOST=127.0.0.1:9099`.
 
-Firestore's `document_chunks` collection stores immutable chunk provenance,
-the 768-dimensional `gemini-embedding-001` document vector, and its
-`corpus_version_id`. The native vector index combines the corpus-version
-filter with the embedding field so retrieval can never cross corpus versions.
+Firestore's LangChain-backed collection defaults to `document_chunks_v2` and
+is configured at runtime with `RAG_VECTOR_COLLECTION`. It stores immutable text
+and a 768-dimensional `gemini-embedding-001` vector at the top level. The
+`metadata` map contains source identity, corpus version, chunk ID, page,
+section, ordinal, content hash, and schema version. The native vector index
+combines `metadata.corpus_version_id` with the `embedding` field so retrieval
+cannot cross corpus versions. Transactional activation state is stored in
+`corpus_state/active`, including current and previous valid version IDs for
+compare-and-set promotion and rollback.
 
 Firestore application and vector data is protected by the managed daily backup
 schedule in `backup.tf`. Its 30-day retention is the explicit upper bound for

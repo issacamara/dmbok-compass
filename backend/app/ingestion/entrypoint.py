@@ -12,19 +12,18 @@ from google.cloud import firestore, storage
 
 from app.contracts import CorpusVersion
 from app.corpus.chunking import SourcePage, chunk_pages
-from app.corpus.embedding import create_vertex_document_embedder
-from app.corpus.indexing import CorpusEmbeddingWriter, FirestoreChunkRepository
 from app.corpus.manifest import create_source_manifest
 from app.corpus.firestore import FirestoreCorpusVersionStore
 from app.ingestion.extract import extract_pdf
 from app.ingestion.job import CorpusIngestionJob
+from app.rag import LangChainRagFactory, LangChainRagSettings
 
 
 def main() -> None:
     project = _required("GOOGLE_CLOUD_PROJECT")
     bucket_name = _required("CORPUS_BUCKET_NAME")
     object_name = _required("CORPUS_OBJECT_NAME")
-    location = os.environ.get("GOOGLE_CLOUD_LOCATION", "europe-west1")
+    settings = LangChainRagSettings.from_environment()
     bucket = storage.Client(project=project).bucket(bucket_name)
     blob = bucket.blob(object_name)
     if not blob.exists():
@@ -59,11 +58,20 @@ def main() -> None:
             created_at=datetime.now(timezone.utc),
         )
         client = firestore.Client(project=project)
-        writer = CorpusEmbeddingWriter(
-            create_vertex_document_embedder(project=project, location=location),
-            FirestoreChunkRepository(client),
+        factory = LangChainRagFactory(client, settings)
+        writer = factory.ingestion_writer(
+            source_metadata={
+                "source_uri": manifest.object_uri,
+                "source_sha256": manifest.content_sha256,
+                "derivation": manifest.derivation,
+            },
         )
-        result = CorpusIngestionJob(FirestoreCorpusVersionStore(client), writer).run(version, chunks)
+        result = CorpusIngestionJob(
+            FirestoreCorpusVersionStore(
+                client, vector_collection=settings.vector_collection
+            ),
+            writer,
+        ).run(version, chunks)
         print(f"Activated corpus version {result.version.version_id} with {len(result.chunks)} chunks.")
 
 

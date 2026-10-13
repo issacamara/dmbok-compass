@@ -27,7 +27,7 @@ async def main() -> None:
     )
     for model in models:
         try:
-            result = await adapter._generate_model(request, model)
+            result = await adapter._generate_model(request, model, timeout_ms=60_000)
             if not result.candidate.answer_text or not any(
                 citation.citation_id == "smoke-1" for citation in result.candidate.citations
             ):

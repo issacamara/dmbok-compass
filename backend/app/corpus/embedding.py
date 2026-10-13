@@ -1,64 +1,61 @@
-"""Vertex AI document embeddings for corpus ingestion."""
+"""Native LangChain Vertex embeddings shared by ingestion and retrieval."""
 
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import Any
+
+from langchain_core.embeddings import Embeddings
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 
 EMBEDDING_MODEL = "gemini-embedding-001"
 DOCUMENT_TASK_TYPE = "RETRIEVAL_DOCUMENT"
+QUERY_TASK_TYPE = "RETRIEVAL_QUERY"
 EMBEDDING_DIMENSIONS = 768
 
 
-class EmbeddingClient(Protocol):
-    """Small subset of the Google Gen AI client used by the service."""
+class VertexEmbeddings(Embeddings):
+    """Validate the native integration's fixed vector contract."""
 
-    models: Any
+    def __init__(self, service: GoogleGenerativeAIEmbeddings) -> None:
+        self.service = service
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        vectors = self.service.embed_documents(texts, task_type=DOCUMENT_TASK_TYPE)
+        return [_validated(vector) for vector in vectors]
+
+    def embed_query(self, text: str) -> list[float]:
+        return _validated(self.service.embed_query(text, task_type=QUERY_TASK_TYPE))
 
 
-class VertexDocumentEmbedder:
-    """Generate and validate one document vector at a time."""
+def create_vertex_embeddings(
+    *,
+    project: str,
+    location: str,
+    client: Any | None = None,
+    credentials: Any | None = None,
+) -> VertexEmbeddings:
+    """Create one native LangChain embedding service for both task paths."""
 
-    def __init__(self, client: EmbeddingClient, *, model: str = EMBEDDING_MODEL) -> None:
-        self.client = client
-        self.model = model
+    if not project.strip():
+        raise ValueError("project must be non-empty")
+    if not location.strip():
+        raise ValueError("location must be non-empty")
+    service = GoogleGenerativeAIEmbeddings(
+        model=EMBEDDING_MODEL,
+        vertexai=True,
+        project=project,
+        location=location,
+        credentials=credentials,
+        output_dimensionality=EMBEDDING_DIMENSIONS,
+    )
+    if client is not None:
+        service.client = client
+    return VertexEmbeddings(service)
 
-    def embed(self, text: str) -> list[float]:
-        if not text or not text.strip():
-            raise ValueError("text must be non-empty")
-        response = self.client.models.embed_content(
-            model=self.model,
-            contents=text,
-            config={
-                "task_type": DOCUMENT_TASK_TYPE,
-                "output_dimensionality": EMBEDDING_DIMENSIONS,
-            },
+
+def _validated(vector: list[float]) -> list[float]:
+    if len(vector) != EMBEDDING_DIMENSIONS:
+        raise ValueError(
+            f"Vertex returned {len(vector)} dimensions; expected {EMBEDDING_DIMENSIONS}"
         )
-        values = _embedding_values(response)
-        if len(values) != EMBEDDING_DIMENSIONS:
-            raise ValueError(
-                f"Vertex returned {len(values)} dimensions; expected {EMBEDDING_DIMENSIONS}"
-            )
-        return values
-
-
-def create_vertex_document_embedder(*, project: str, location: str) -> VertexDocumentEmbedder:
-    """Create the workload-identity Vertex client used by ingestion jobs."""
-    from google import genai
-
-    client = genai.Client(vertexai=True, project=project, location=location)
-    return VertexDocumentEmbedder(client)
-
-
-def _embedding_values(response: Any) -> list[float]:
-    embeddings = getattr(response, "embeddings", None)
-    if embeddings is None and isinstance(response, dict):
-        embeddings = response.get("embeddings")
-    if not embeddings:
-        raise ValueError("Vertex returned no embedding")
-    first = embeddings[0]
-    values = getattr(first, "values", None)
-    if values is None and isinstance(first, dict):
-        values = first.get("values")
-    if values is None:
-        raise ValueError("Vertex returned an embedding without values")
-    return [float(value) for value in values]
+    return [float(value) for value in vector]

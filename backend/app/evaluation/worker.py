@@ -15,10 +15,7 @@ from app.corpus.firestore import FirestoreCorpusVersionStore
 from app.evaluation.generations import FirestoreEvaluationGenerationStore
 from app.evaluation.job import EvaluationOutcome, EvaluationRunError, EvaluationRunStore, EvaluationWorker
 from app.evaluation.job import FirestoreEvaluationRunStore
-from app.retrieval.search import FirestorePassageRetriever, create_vertex_query_embedder
-from model.fallback import FallbackAdapter
-from model.gemini import create_gemini_adapter
-from model.openrouter import OpenRouterAdapter
+from app.rag import LangChainRagFactory
 
 
 def execute_run(
@@ -76,7 +73,6 @@ class EvaluationAnswerEvaluator:
 def main() -> None:
     project = _required("GOOGLE_CLOUD_PROJECT")
     run_id = _required("EVALUATION_RUN_ID")
-    location = os.environ.get("GOOGLE_CLOUD_LOCATION", "europe-west1")
     client = firestore.Client(project=project)
     datasets = FirestoreEvaluationGenerationStore(client)
     runs = FirestoreEvaluationRunStore(client)
@@ -92,7 +88,9 @@ def main() -> None:
             run_id,
             datasets=datasets,
             runs=runs,
-            evaluate=EvaluationAnswerEvaluator(dataset, _pinned_answerer(project, location, run.corpus_version_id)),
+            evaluate=EvaluationAnswerEvaluator(
+                dataset, _pinned_answerer(project, run.corpus_version_id)
+            ),
         )
     except Exception:
         # Configuration and provider setup failures must be durable, but may
@@ -101,32 +99,26 @@ def main() -> None:
         raise
 
 
-def _pinned_answerer(project: str, location: str, corpus_version_id: str) -> RetrievedAnswerService:
+def _pinned_answerer(project: str, corpus_version_id: str) -> RetrievedAnswerService:
     client = firestore.Client(project=project)
-    corpus = FirestoreCorpusVersionStore(client).get(corpus_version_id)
+    factory = LangChainRagFactory.from_environment(client)
+    corpus = FirestoreCorpusVersionStore(
+        client, vector_collection=factory.settings.vector_collection
+    ).get(corpus_version_id)
     if corpus is None:
         raise EvaluationRunError("run references an unavailable corpus version")
-    openrouter = OpenRouterAdapter.from_environment()
-    provider = os.environ.get("ANSWER_PROVIDER", "vertex").strip().lower()
-    if provider == "openrouter":
-        adapter = openrouter
-        model_name = os.environ.get("OPENROUTER_PRIMARY_MODEL", "answer-model")
-    elif provider == "vertex":
-        adapter = FallbackAdapter(create_gemini_adapter(project=project, location=location, vertexai=True), openrouter)
-        model_name = os.environ.get("VERTEX_PRIMARY_MODEL", "gemini-2.5-flash-lite")
-    else:
-        raise EvaluationRunError("answer provider is not configured")
+    adapter = factory.generation_adapter()
 
     class _PinnedCorpus:
         def active(self):
             return corpus
 
     return RetrievedAnswerService(
-        FirestorePassageRetriever(client, create_vertex_query_embedder(project=project, location=location)),
+        factory.retriever(),
         _PinnedCorpus(),
         GroundedAnswerPolicy(
             adapter,
-            model_name=model_name,
+            model_name=factory.selected_model(),
             timeout_ms=int(os.environ.get("ANSWER_GENERATION_TIMEOUT_MS", "60000")),
         ),
     )

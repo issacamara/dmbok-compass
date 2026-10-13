@@ -1,9 +1,4 @@
-"""Extract searchable PDF text while retaining page and section provenance.
-
-This module is deliberately a spike, not the corpus ingestion job. It produces
-an inspectable report that can be reviewed before chunking or embedding is
-implemented.
-"""
+"""Load searchable PDF pages with LangChain and retain citation provenance."""
 
 from __future__ import annotations
 
@@ -14,7 +9,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from pypdf import PdfReader
+from langchain_community.document_loaders import PyPDFLoader
 
 
 _CHAPTER = re.compile(r"\b(?:CHAPTER|Chapter)\s+\d+(?:\s*[-:.]\s*|\s+)(.+)")
@@ -100,13 +95,14 @@ def extract_pdf(pdf_path: str | Path, *, source_uri: str | None = None) -> Extra
 
     path = Path(pdf_path)
     payload = path.read_bytes()
-    reader = PdfReader(path)
+    documents = PyPDFLoader(str(path), mode="page").load()
     previous_section: str | None = None
     pages: list[PageProvenance] = []
     failures: list[str] = []
 
-    for page_number, page in enumerate(reader.pages, start=1):
-        raw_text = page.extract_text() or ""
+    for document in documents:
+        raw_text = document.page_content
+        page_number = int(document.metadata.get("page", len(pages))) + 1
         text = _normalise_text(raw_text)
         section = _recover_section(raw_text, previous_section)
         if text and section:
@@ -121,8 +117,8 @@ def extract_pdf(pdf_path: str | Path, *, source_uri: str | None = None) -> Extra
     return ExtractionReport(
         source_uri=source_uri or path.name,
         source_sha256=hashlib.sha256(payload).hexdigest(),
-        parser=f"pypdf {parser_version}",
-        page_count=len(reader.pages),
+        parser=f"langchain-community PyPDFLoader / pypdf {parser_version}",
+        page_count=len(documents),
         pages=tuple(pages),
         failures=tuple(failures),
     )

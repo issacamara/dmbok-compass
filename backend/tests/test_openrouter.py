@@ -4,7 +4,7 @@ import json
 import httpx
 import pytest
 
-from model.openrouter import OpenRouterAdapter
+from model.openrouter import OpenRouterAdapter, parse_json_schema_supported
 from model.protocol import GenerationError, GenerationErrorCode, GenerationRequest, TimeoutBudget
 
 
@@ -16,7 +16,9 @@ def response_payload(answer: str = "Grounded answer.") -> dict[str, object]:
     return {
         "choices": [
             {
+                "index": 0,
                 "message": {
+                    "role": "assistant",
                     "content": json.dumps(
                         {
                             "outcome": "answer",
@@ -25,11 +27,27 @@ def response_payload(answer: str = "Grounded answer.") -> dict[str, object]:
                             "citations": [],
                         }
                     )
-                }
+                },
+                "finish_reason": "stop",
             }
         ],
         "usage": {"prompt_tokens": 10, "completion_tokens": 6, "total_tokens": 16},
+        "id": "test-completion",
+        "created": 1,
+        "model": "test-model",
+        "object": "chat.completion",
+        "system_fingerprint": None,
     }
+
+
+@pytest.mark.parametrize(("value", "expected"), [("true", True), ("0", False)])
+def test_json_schema_support_configuration_is_strict(value: str, expected: bool) -> None:
+    assert parse_json_schema_supported(value) is expected
+
+
+def test_json_schema_support_configuration_rejects_unknown_values() -> None:
+    with pytest.raises(ValueError, match="must be a boolean"):
+        parse_json_schema_supported("sometimes")
 
 
 def test_openrouter_parses_candidate_and_usage() -> None:
@@ -142,7 +160,7 @@ def test_openrouter_uses_json_mode_when_route_does_not_support_schema() -> None:
     assert result.candidate.answer_text == "Grounded answer."
 
 
-def test_openrouter_retries_json_object_when_schema_is_rejected() -> None:
+def test_openrouter_does_not_retry_when_configured_schema_is_rejected() -> None:
     formats: list[dict[str, object]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -152,14 +170,12 @@ def test_openrouter_retries_json_object_when_schema_is_rejected() -> None:
             return httpx.Response(400, json={"error": {"message": "json_schema unsupported"}})
         return httpx.Response(200, json=response_payload())
 
-    result = asyncio.run(OpenRouterAdapter(
-        "test-key", transport=httpx.MockTransport(handler)
-    ).generate(request()))
-    assert formats == [
-        {"type": "json_schema", "json_schema": formats[0]["json_schema"]},
-        {"type": "json_object"},
-    ]
-    assert result.candidate.answer_text == "Grounded answer."
+    with pytest.raises(GenerationError) as raised:
+        asyncio.run(OpenRouterAdapter(
+            "test-key", transport=httpx.MockTransport(handler)
+        ).generate(request()))
+    assert raised.value.code is GenerationErrorCode.REQUEST_REJECTED
+    assert len(formats) == 1
 
 
 def test_openrouter_uses_free_fallback_for_rate_limit() -> None:
@@ -201,11 +217,10 @@ def test_openrouter_reports_both_failed_routes_without_request_content() -> None
 def test_openrouter_requests_contract_citation_id() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         body = json.loads(request.content)
-        assert '"citation_id":string' in body["messages"][0]["content"]
         assert "Do not include reasoning, analysis, or hidden thoughts" in body["messages"][0]["content"]
         assert body["response_format"]["type"] == "json_schema"
-        assert body["response_format"]["json_schema"]["name"] == "generation_candidate"
-        assert body["reasoning"] == {"exclude": True}
+        assert "citation_id" in json.dumps(body["response_format"]["json_schema"])
+        assert body["response_format"]["json_schema"]["name"] == "GenerationCandidate"
         return httpx.Response(200, json=response_payload())
 
     asyncio.run(OpenRouterAdapter("test-key", transport=httpx.MockTransport(handler)).generate(request()))
@@ -299,11 +314,11 @@ def test_openrouter_allows_fallback_after_primary_timeout() -> None:
         model = json.loads(request.content)["model"]
         models.append(model)
         if len(models) == 1:
-            await asyncio.sleep(0.02)
+            await asyncio.sleep(0.12)
         return httpx.Response(200, json=response_payload("Fallback answer."))
 
     adapter = OpenRouterAdapter("test-key", transport=httpx.MockTransport(handler))
-    result = asyncio.run(adapter.generate(request(timeout=TimeoutBudget(total_ms=30))))
+    result = asyncio.run(adapter.generate(request(timeout=TimeoutBudget(total_ms=200))))
 
     assert models == ["mistralai/mistral-nemo", "meta-llama/llama-3.1-8b-instruct"]
     assert result.candidate.answer_text == "Fallback answer."

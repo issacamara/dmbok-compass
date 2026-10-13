@@ -35,6 +35,24 @@ def test_replacing_source_object_creates_a_new_corpus_version() -> None:
     assert replacement.corpus_version_id != original.corpus_version_id
 
 
+def test_pipeline_change_creates_a_new_derived_corpus_version() -> None:
+    original = create_source_manifest(
+        bucket="dmbok-corpus",
+        object_name="source/dmbok.pdf",
+        generation=7,
+        content_sha256=PDF_HASH,
+    )
+    changed = create_source_manifest(
+        bucket="dmbok-corpus",
+        object_name="source/dmbok.pdf",
+        generation=7,
+        content_sha256=PDF_HASH,
+        derivation="langchain-pypdf-page|changed-pipeline",
+    )
+
+    assert changed.corpus_version_id != original.corpus_version_id
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [

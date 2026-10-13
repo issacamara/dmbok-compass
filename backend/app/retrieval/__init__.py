@@ -10,12 +10,7 @@ from .evidence import (
     classify_evidence,
     retrieval_success_metric,
 )
-from .search import (
-    QUERY_TASK_TYPE,
-    VertexQueryEmbedder,
-    FirestorePassageRetriever,
-    create_vertex_query_embedder,
-)
+from .search import FirestorePassageRetriever
 
 __all__ = [
     "EvidenceBundle",
@@ -23,11 +18,8 @@ __all__ = [
     "FirestorePassageRetriever",
     "MAX_EVIDENCE_PASSAGES",
     "PARTIAL_EVIDENCE_THRESHOLD",
-    "QUERY_TASK_TYPE",
     "RetrievalCase",
     "STRONG_EVIDENCE_THRESHOLD",
-    "VertexQueryEmbedder",
     "classify_evidence",
-    "create_vertex_query_embedder",
     "retrieval_success_metric",
 ]

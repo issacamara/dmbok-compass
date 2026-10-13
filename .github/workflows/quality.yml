@@ -50,7 +50,7 @@ jobs:
           # The maintained Firestore wheel is checksum-verified above but its
           # post-release version is intentionally absent from PyPI. Audit
           # every registry dependency in the universal lock independently.
-          rg -v '^\./vendor/langchain-google-firestore/' requirements-compat.lock > "$RUNNER_TEMP/requirements-audit.lock"
+          grep -v '^\./vendor/langchain-google-firestore/' requirements-compat.lock > "$RUNNER_TEMP/requirements-audit.lock"
           pip-audit --strict --no-deps -r "$RUNNER_TEMP/requirements-audit.lock"
 
   frontend:

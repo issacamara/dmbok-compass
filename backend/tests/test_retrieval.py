@@ -1,105 +1,40 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
+from langchain_core.documents import Document
 
-from app.retrieval.search import (
-    DISTANCE_RESULT_FIELD,
-    QUERY_TASK_TYPE,
-    FirestorePassageRetriever,
-    VertexQueryEmbedder,
-)
+from app.retrieval.search import FirestorePassageRetriever
 
 
-class FakeEmbeddingModels:
-    def __init__(self) -> None:
-        self.calls: list[dict] = []
+class FakeVectorStore:
+    def __init__(self, results):
+        self.results = results
+        self.calls = []
 
-    def embed_content(self, **kwargs):
-        self.calls.append(kwargs)
-        return SimpleNamespace(embeddings=[SimpleNamespace(values=[0.25] * 768)])
-
-
-class FakeEmbeddingClient:
-    def __init__(self) -> None:
-        self.models = FakeEmbeddingModels()
-
-
-class FakeDocument:
-    def __init__(self, data: dict) -> None:
-        self.data = data
-
-    def to_dict(self) -> dict:
-        return self.data
-
-
-class FakeNearestQuery:
-    def __init__(self, documents: list[FakeDocument]) -> None:
-        self.documents = documents
-
-    def stream(self):
-        return iter(self.documents)
-
-
-class FakeFilteredQuery:
-    def __init__(self, parent: "FakeCollection") -> None:
-        self.parent = parent
-
-    def find_nearest(self, **kwargs):
-        self.parent.nearest_kwargs = kwargs
-        return FakeNearestQuery(self.parent.documents)
-
-
-class FakeCollection:
-    def __init__(self, documents: list[FakeDocument]) -> None:
-        self.documents = documents
-        self.filter = None
-        self.nearest_kwargs = None
-
-    def where(self, **kwargs):
-        self.filter = kwargs["filter"]
-        return FakeFilteredQuery(self)
-
-
-class FakeFirestore:
-    def __init__(self, collection: FakeCollection) -> None:
-        self.collection_value = collection
-
-    def collection(self, collection_id: str) -> FakeCollection:
-        assert collection_id == "document_chunks"
-        return self.collection_value
-
-
-def test_query_embedder_uses_query_task_and_document_dimensions() -> None:
-    client = FakeEmbeddingClient()
-
-    vector = VertexQueryEmbedder(client).embed("What is data governance?")
-
-    assert len(vector) == 768
-    assert client.models.calls[0]["config"] == {
-        "task_type": QUERY_TASK_TYPE,
-        "output_dimensionality": 768,
-    }
+    def similarity_search_with_score(self, question, *, k, filters):
+        self.calls.append((question, k, filters))
+        return self.results
 
 
 def test_retriever_filters_active_version_and_returns_ranked_top_five() -> None:
-    documents = [
-        FakeDocument(
-            {
-                "chunk_id": f"v1:{index}:0",
-                "page": index + 1,
-                "section": "Governance",
-                "text": f"Passage {index}",
-                DISTANCE_RESULT_FIELD: distance,
-            }
+    results = [
+        (
+            Document(
+                page_content=f"Passage {index}",
+                metadata={
+                    "metadata": {
+                        "chunk_id": f"v1:{index}:0",
+                        "page": index + 1,
+                        "section": "Governance",
+                    }
+                },
+            ),
+            score,
         )
-        for index, distance in enumerate([0.4, 0.1, 0.3, 0.2, 0.5, 0.6])
+        for index, score in enumerate([0.6, 0.9, 0.7, 0.8, 0.5, float("nan")])
     ]
-    collection = FakeCollection(documents)
-    retriever = FirestorePassageRetriever(
-        FakeFirestore(collection), VertexQueryEmbedder(FakeEmbeddingClient())
-    )
+    store = FakeVectorStore(results)
+    retriever = FirestorePassageRetriever(store)
 
     passages = retriever.retrieve("What is governance?", active_corpus_version_id="v1")
 
@@ -111,16 +46,14 @@ def test_retriever_filters_active_version_and_returns_ranked_top_five() -> None:
         "v1:0:0",
         "v1:4:0",
     ]
-    assert collection.filter.field_path == "corpus_version_id"
-    assert collection.filter.value == "v1"
-    assert collection.nearest_kwargs["limit"] == 5
-    assert collection.nearest_kwargs["vector_field"] == "embedding"
+    _, limit, corpus_filter = store.calls[0]
+    assert limit == 5
+    assert corpus_filter.field_path == "metadata.corpus_version_id"
+    assert corpus_filter.value == "v1"
 
 
 def test_retriever_rejects_invalid_limits_and_empty_active_version() -> None:
-    retriever = FirestorePassageRetriever(
-        FakeFirestore(FakeCollection([])), VertexQueryEmbedder(FakeEmbeddingClient())
-    )
+    retriever = FirestorePassageRetriever(FakeVectorStore([]))
 
     with pytest.raises(ValueError, match="active_corpus_version_id"):
         retriever.retrieve("question", active_corpus_version_id=" ")

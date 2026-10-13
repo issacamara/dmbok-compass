@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from app.contracts import CorpusVersion, DocumentChunk
+from app.contracts import CorpusVersion
 from app.corpus.indexing import CorpusEmbeddingWriter
 from app.corpus.versions import CorpusVersionStore
 from app.corpus.chunking import TextChunk
@@ -13,7 +13,7 @@ from app.corpus.chunking import TextChunk
 @dataclass(frozen=True, slots=True)
 class IngestionResult:
     version: CorpusVersion
-    chunks: tuple[DocumentChunk, ...]
+    chunks: tuple[TextChunk, ...]
     activated: bool
 
 
@@ -30,6 +30,7 @@ class CorpusIngestionJob:
         self.writer = writer
 
     def run(self, version: CorpusVersion, chunks: list[TextChunk] | tuple[TextChunk, ...]) -> IngestionResult:
+        current = self.versions.active()
         existing = self.versions.get(version.version_id)
         if existing is not None and existing.status == "active":
             return IngestionResult(existing, (), False)
@@ -37,6 +38,8 @@ class CorpusIngestionJob:
         staged = self.versions.stage(version)
         stored = self.writer.write(chunks)
         validated = self.versions.validate(staged.version_id, stored)
-        active = self.versions.activate(validated.version_id)
+        active = self.versions.activate(
+            validated.version_id,
+            expected_active_version_id=current.version_id if current is not None else None,
+        )
         return IngestionResult(active, stored, True)
-

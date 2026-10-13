@@ -14,10 +14,12 @@ def request(**kwargs: object) -> GenerationRequest:
 
 def response(answer: str = "Grounded answer.") -> dict[str, object]:
     return {
-        "choices": [{"message": {"content": json.dumps({
+        "choices": [{"index": 0, "message": {"role": "assistant", "content": json.dumps({
             "outcome": "answer", "answer_text": answer, "synthesis": False, "citations": []
-        })}}],
+        })}, "finish_reason": "stop"}],
         "usage": {"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+        "id": "test-completion", "created": 1, "model": "test-model",
+        "object": "chat.completion", "system_fingerprint": None,
     }
 
 
@@ -73,7 +75,8 @@ def test_runnable_preserves_timeout_contract() -> None:
 
 
 def test_runnable_preserves_malformed_output_contract() -> None:
-    payload = {"choices": [{"message": {"content": "not JSON"}}]}
+    payload = response()
+    payload["choices"][0]["message"]["content"] = "not JSON"
     with pytest.raises(GenerationError) as raised:
         asyncio.run(OpenRouterAdapter("test-key", transport=httpx.MockTransport(
             lambda _: httpx.Response(200, json=payload)

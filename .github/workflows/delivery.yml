@@ -113,7 +113,7 @@ jobs:
         run: |
           api_image="$(jq -r .api_image "$RUNNER_TEMP/delivery-manifest.json")"
           gcloud run deploy "$API_SERVICE" --image="$api_image" --region="$REGION" \
-            --update-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${REGION},EVALUATION_JOB_NAME=${EVALUATION_JOB},ANSWER_PROVIDER=openrouter,ANSWER_GENERATION_TIMEOUT_MS=60000,OPENROUTER_PRIMARY_MODEL=mistralai/mistral-nemo,OPENROUTER_FALLBACK_MODEL=meta-llama/llama-3.1-8b-instruct" \
+            --update-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${REGION},RAG_VECTOR_COLLECTION=document_chunks_v2,EVALUATION_JOB_NAME=${EVALUATION_JOB},ANSWER_PROVIDER=openrouter,ANSWER_GENERATION_TIMEOUT_MS=60000,OPENROUTER_PRIMARY_MODEL=mistralai/mistral-nemo,OPENROUTER_FALLBACK_MODEL=meta-llama/llama-3.1-8b-instruct" \
             --platform=managed --no-traffic --quiet --format='value(status.latestCreatedRevisionName)' \
             > "$RUNNER_TEMP/preview_revision"
           revision="$(cat "$RUNNER_TEMP/preview_revision")"
@@ -143,7 +143,7 @@ jobs:
           api_image="$(jq -r .api_image "$RUNNER_TEMP/delivery-manifest.json")"
           gcloud run jobs deploy "$INGESTION_JOB" --image="$api_image" --region="$REGION" --quiet
           gcloud run jobs deploy "$EVALUATION_JOB" --image="$api_image" --region="$REGION" \
-            --update-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${REGION},ANSWER_PROVIDER=openrouter,ANSWER_GENERATION_TIMEOUT_MS=60000,OPENROUTER_PRIMARY_MODEL=mistralai/mistral-nemo,OPENROUTER_FALLBACK_MODEL=meta-llama/llama-3.1-8b-instruct" \
+            --update-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${REGION},RAG_VECTOR_COLLECTION=document_chunks_v2,ANSWER_PROVIDER=openrouter,ANSWER_GENERATION_TIMEOUT_MS=60000,OPENROUTER_PRIMARY_MODEL=mistralai/mistral-nemo,OPENROUTER_FALLBACK_MODEL=meta-llama/llama-3.1-8b-instruct" \
             --quiet
 
       - name: Validate and upload release evidence

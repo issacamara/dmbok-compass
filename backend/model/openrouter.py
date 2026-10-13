@@ -1,16 +1,21 @@
-"""OpenRouter adapter for structured, ephemeral model generation."""
+"""Native LangChain OpenRouter generation with one bounded fallback."""
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
-import logging
 import os
 import re
+from collections.abc import Callable
 from typing import Any
 
+import openrouter
 import httpx
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import Runnable
+from langchain_openrouter import ChatOpenRouter
+from langsmith import tracing_context
+
 from app.contracts.api import ModelAttempt
 
 from .langchain import LangChainGenerationRunnable, as_langchain_runnable
@@ -25,14 +30,20 @@ from .protocol import (
     parse_candidate,
 )
 
-OPENROUTER_ENDPOINT = "https://openrouter.ai/api/v1/chat/completions"
 OPENROUTER_PRIMARY_MODEL = "mistralai/mistral-nemo"
 OPENROUTER_FALLBACK_MODEL = "meta-llama/llama-3.1-8b-instruct"
-logger = logging.getLogger("dmbok_compass.model")
+PROVIDER = "openrouter"
+_SYSTEM_PROMPT = (
+    "Return only the final grounded answer in the required schema. "
+    "Do not include reasoning, analysis, or hidden thoughts in any field."
+)
+_PROMPT = ChatPromptTemplate.from_messages(
+    [("system", _SYSTEM_PROMPT), ("human", "{prompt}\n\nSupplied evidence:\n{evidence}")]
+)
+ChainFactory = Callable[[str, int, bool], Runnable[dict[str, str], Any]]
 
 
-def _env_bool(value: str) -> bool:
-    """Parse an explicit boolean runtime setting without accepting surprises."""
+def parse_json_schema_supported(value: str) -> bool:
     normalized = value.strip().lower()
     if normalized in {"1", "true", "yes", "on"}:
         return True
@@ -42,283 +53,288 @@ def _env_bool(value: str) -> bool:
 
 
 class OpenRouterAdapter(ModelAdapter):
-    """Call OpenRouter while keeping provider details behind ModelAdapter."""
+    """Generate through native LangChain chat models and structured output."""
 
     def __init__(
         self,
         api_key: str,
         *,
         primary_model: str = OPENROUTER_PRIMARY_MODEL,
-        fallback_model: str = OPENROUTER_FALLBACK_MODEL,
-        endpoint: str = OPENROUTER_ENDPOINT,
-        transport: httpx.AsyncBaseTransport | None = None,
+        fallback_model: str | None = OPENROUTER_FALLBACK_MODEL,
         json_schema_supported: bool = True,
+        chain_factory: ChainFactory | None = None,
+        transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         if not api_key.strip():
             raise ValueError("OPENROUTER_API_KEY must not be empty.")
-        self._api_key = api_key
+        if not primary_model.strip() or (fallback_model is not None and not fallback_model.strip()):
+            raise ValueError("OpenRouter model IDs must not be empty.")
+        self._api_key = api_key.strip()
         self._primary_model = primary_model
         self._fallback_model = fallback_model
-        self._endpoint = endpoint
-        self._transport = transport
         self._json_schema_supported = json_schema_supported
+        self._chain_factory = chain_factory or self._build_chain
+        self._transport = transport
 
     @classmethod
     def from_environment(cls) -> "OpenRouterAdapter":
-        """Build the adapter from runtime-only configuration."""
-
-        api_key = os.environ.get("OPENROUTER_API_KEY", "")
         return cls(
-            api_key,
-            primary_model=os.environ.get("OPENROUTER_PRIMARY_MODEL", OPENROUTER_PRIMARY_MODEL),
-            fallback_model=os.environ.get("OPENROUTER_FALLBACK_MODEL", OPENROUTER_FALLBACK_MODEL),
-            json_schema_supported=_env_bool(
+            os.environ.get("OPENROUTER_API_KEY", ""),
+            primary_model=os.environ.get(
+                "OPENROUTER_PRIMARY_MODEL", OPENROUTER_PRIMARY_MODEL
+            ),
+            fallback_model=os.environ.get(
+                "OPENROUTER_FALLBACK_MODEL", OPENROUTER_FALLBACK_MODEL
+            ),
+            json_schema_supported=parse_json_schema_supported(
                 os.environ.get("OPENROUTER_JSON_SCHEMA_SUPPORTED", "true")
             ),
         )
 
+    @property
+    def primary_model(self) -> str:
+        return self._primary_model
+
     def as_langchain_runnable(self) -> LangChainGenerationRunnable:
-        """Expose this adapter without changing provider routing behavior."""
         return as_langchain_runnable(self)
 
     async def generate(self, request: GenerationRequest) -> GenerationResult:
-        """Generate with primary, then retry eligible model failures once."""
-
         attempts: list[ModelAttempt] = []
-        active_model = self._primary_model
+        models = tuple(
+            model for model in (self._primary_model, self._fallback_model) if model is not None
+        )
         deadline = asyncio.get_running_loop().time() + request.timeout.total_ms / 1000
-        for index, model in enumerate((self._primary_model, self._fallback_model)):
-            active_model = model
+        for index, model in enumerate(models):
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 break
-            # Reserve time for the fallback instead of letting the primary
-            # consume the entire request budget.
-            attempt_budget = remaining / (2 - index)
-            attempt_request = request.model_copy(update={
-                "timeout": request.timeout.model_copy(update={
-                    "total_ms": max(1, int(attempt_budget * 1000)),
-                })
-            })
+            attempt_seconds = remaining / (len(models) - index)
             try:
-                async with asyncio.timeout(attempt_budget):
-                    result = await self._generate_model(attempt_request, model)
+                async with asyncio.timeout(attempt_seconds):
+                    result = await self._generate_model(
+                        request,
+                        model,
+                        timeout_ms=max(1, int(attempt_seconds * 1000)),
+                    )
             except TimeoutError:
-                attempts.append(ModelAttempt(model=model, outcome="timeout"))
-                if index == 1:
-                    break
-                continue
-            except GenerationError as error:
-                attempts.append(ModelAttempt(
-                    model=model, outcome=error.code.value, status_code=error.status_code
-                ))
-                error.attempts = tuple(attempts)
-                if index == 1 or error.code not in {
+                error = GenerationError(
                     GenerationErrorCode.TIMEOUT,
-                    GenerationErrorCode.UNAVAILABLE,
-                    GenerationErrorCode.RATE_LIMITED,
-                }:
-                    raise
+                    "The answer provider timed out.",
+                    retryable=True,
+                )
+            except GenerationError as exc:
+                error = exc
+            except Exception as exc:
+                error = _normalize_openrouter_error(exc)
             else:
                 attempts.append(ModelAttempt(model=model, outcome="success", status_code=200))
-                return result.model_copy(update={
-                    "usage": result.usage.model_copy(update={"attempts": attempts})
-                })
+                return result.model_copy(
+                    update={"usage": result.usage.model_copy(update={"attempts": attempts})}
+                )
+
+            attempts.append(
+                ModelAttempt(
+                    model=model,
+                    outcome=error.code.value,
+                    status_code=error.status_code,
+                )
+            )
+            if index == len(models) - 1 or error.code not in {
+                GenerationErrorCode.TIMEOUT,
+                GenerationErrorCode.UNAVAILABLE,
+                GenerationErrorCode.RATE_LIMITED,
+            }:
+                error.attempts = tuple(attempts)
+                raise error
 
         raise GenerationError(
             GenerationErrorCode.TIMEOUT,
             "Model generation exceeded its timeout budget.",
             retryable=True,
-            attempts=tuple(attempts or [ModelAttempt(model=active_model, outcome="timeout")]),
+            attempts=tuple(attempts),
         )
 
     async def _generate_model(
-        self, request: GenerationRequest, model: str
+        self, request: GenerationRequest, model: str, *, timeout_ms: int
     ) -> GenerationResult:
-        payload = {
-            "model": model,
-            "messages": [
-                {
-                    "role": "system",
-                    "content": (
-                        "Return only one JSON object matching this schema. "
-                        "Do not include reasoning, analysis, or hidden thoughts in any field; "
-                        "return only the final grounded answer. "
-                        'The outcome value must be one of "answer", "qualified", or "refusal": '
-                        '{"outcome":"answer",'
-                        '"answer_text":string|null,"synthesis":boolean,'
-                        '"citations":[{"citation_id":string,"page":integer,'
-                        '"section":string,"excerpt":string}]}.'
-                    ),
-                },
-                {"role": "user", "content": self._user_content(request)},
-            ],
-            "reasoning": {"exclude": True},
-            "temperature": 0,
-            "response_format": self._response_format(),
-        }
-        headers = {
-            "Authorization": f"Bearer {self._api_key}",
-            "Content-Type": "application/json",
-            "HTTP-Referer": "https://dmbok-compass.web.app",
-            "X-Title": "DMBOK Compass",
-        }
+        chain = self._chain_factory(model, timeout_ms, self._json_schema_supported)
+        values = {"prompt": request.prompt, "evidence": _render_evidence(request)}
+        with tracing_context(enabled=False):
+            response = await chain.ainvoke(values, config={"callbacks": []})
 
-        try:
-            async with httpx.AsyncClient(
-                transport=self._transport,
-                timeout=request.timeout.total_ms / 1000,
-            ) as client:
-                response = await client.post(self._endpoint, headers=headers, json=payload)
-                if response.status_code == 400 and self._json_schema_supported:
-                    error_text = response.text.lower()
-                    if "response_format" in error_text or "json_schema" in error_text:
-                        payload["response_format"] = {"type": "json_object"}
-                        response = await client.post(
-                            self._endpoint, headers=headers, json=payload
-                        )
-        except httpx.TimeoutException as exc:
-            raise GenerationError(
-                GenerationErrorCode.TIMEOUT,
-                "Model generation exceeded its timeout budget.",
-                retryable=True,
-            ) from exc
-        except httpx.RequestError as exc:
-            raise GenerationError(
-                GenerationErrorCode.UNAVAILABLE,
-                "The model provider is unavailable.",
-                retryable=True,
-            ) from exc
-
-        logger.info(
-            "openrouter_response_body %s",
-            json.dumps({
-                "model": model,
-                "status_code": response.status_code,
-                "body": response.text[:20_000],
-                "truncated": len(response.text) > 20_000,
-            }, ensure_ascii=False, sort_keys=True),
-        )
-
-        if response.status_code in {401, 403}:
-            raise GenerationError(
-                GenerationErrorCode.AUTHENTICATION_FAILED,
-                "Model provider authentication failed.",
-                status_code=response.status_code,
-            )
-        if response.status_code == 429:
-            raise GenerationError(
-                GenerationErrorCode.RATE_LIMITED,
-                "The model provider rate limit was reached.",
-                retryable=True,
-                status_code=429,
-            )
-        # OpenRouter uses 404 when a configured model/route is no longer
-        # available. Treat that as a provider outage so the fallback model can
-        # still serve grounded answers.
-        if response.status_code == 404 or response.status_code >= 500:
-            raise GenerationError(
-                GenerationErrorCode.UNAVAILABLE,
-                "The model provider is unavailable.",
-                retryable=True,
-                status_code=response.status_code,
-            )
-        if response.status_code >= 400:
-            raise GenerationError(
-                GenerationErrorCode.REQUEST_REJECTED,
-                "The model provider rejected the request.",
-                status_code=response.status_code,
-            )
-
-        try:
-            body = response.json()
-            raw_content = body["choices"][0]["message"]["content"]
-            content = self._content_text(raw_content)
-            logger.info("openrouter_response %s", json.dumps({
-                "model": model,
-                "content_type": type(raw_content).__name__,
-                "content_length": len(content),
-                "json_length": len(content),
-                "json_sha256": hashlib.sha256(content.encode()).hexdigest(),
-            }, sort_keys=True))
-            candidate = parse_candidate(json.loads(content))
-            if candidate.answer_text:
-                candidate = candidate.model_copy(update={
-                    "answer_text": re.sub(
-                        r"<think>.*?</think>\s*", "", candidate.answer_text,
-                        flags=re.DOTALL | re.IGNORECASE,
-                    ).strip()
-                })
-            supplied_ids = {passage.passage_id for passage in request.passages}
-            if any(citation.citation_id not in supplied_ids for citation in candidate.citations):
+        if self._json_schema_supported:
+            if not isinstance(response, dict):
                 raise GenerationError(
                     GenerationErrorCode.INVALID_OUTPUT,
-                    "The model returned a citation outside the supplied evidence.",
+                    "The model returned an invalid structured candidate.",
                 )
-            usage = body.get("usage", {})
-        except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as exc:
-            logger.info("openrouter_response_invalid %s", json.dumps({
-                "model": model,
-                "error_type": type(exc).__name__,
-                "error": str(exc)[:200],
-            }, sort_keys=True))
+            parsing_error = response.get("parsing_error")
+            if parsing_error is not None:
+                raise GenerationError(
+                    GenerationErrorCode.INVALID_OUTPUT,
+                    "The model returned an invalid structured candidate.",
+                ) from parsing_error
+            raw = response.get("raw")
+            _message_payload(raw)
+            candidate = parse_candidate(response.get("parsed"))
+        else:
+            raw = response
+            candidate = parse_candidate(_message_payload(raw))
+
+        candidate = _sanitize_candidate(candidate)
+        known_passages = {passage.passage_id for passage in request.passages}
+        if any(citation.citation_id not in known_passages for citation in candidate.citations):
+            raise GenerationError(
+                GenerationErrorCode.INVALID_OUTPUT,
+                "The model cited evidence that was not supplied.",
+            )
+
+        return GenerationResult(
+            candidate=candidate,
+            usage=_usage_metadata(raw, model),
+            raw_output=_raw_output(raw),
+        )
+
+    def _build_chain(
+        self, model: str, timeout_ms: int, json_schema_supported: bool
+    ) -> Runnable[dict[str, str], Any]:
+        # max_retries=0 alone preserves the SDK's default retry policy, so the
+        # explicitly injected SDK client must also disable retry_config.
+        async_client = (
+            httpx.AsyncClient(transport=self._transport)
+            if self._transport is not None
+            else None
+        )
+        sdk = openrouter.OpenRouter(
+            api_key=self._api_key,
+            async_client=async_client,
+            retry_config=None,
+            timeout_ms=timeout_ms,
+        )
+        chat = ChatOpenRouter(
+            model=model,
+            api_key=self._api_key,
+            client=sdk,
+            max_retries=0,
+            timeout=timeout_ms,
+            temperature=0,
+        )
+        if json_schema_supported:
+            output = chat.with_structured_output(
+                GenerationCandidate,
+                method="json_schema",
+                include_raw=True,
+                strict=True,
+            )
+        else:
+            output = chat.bind(response_format={"type": "json_object"})
+        return _PROMPT | output
+
+
+def _render_evidence(request: GenerationRequest) -> str:
+    return "\n\n".join(
+        f"[{passage.passage_id}] page {passage.page}, {passage.section}:\n{passage.text}"
+        for passage in request.passages
+    )
+
+
+def _message_payload(message: Any) -> object:
+    content = getattr(message, "content", message)
+    if isinstance(content, str):
+        try:
+            return json.loads(content)
+        except json.JSONDecodeError as exc:
             raise GenerationError(
                 GenerationErrorCode.INVALID_OUTPUT,
                 "The model returned an invalid structured candidate.",
             ) from exc
-
-        input_tokens = self._token_value(usage, "prompt_tokens")
-        output_tokens = self._token_value(usage, "completion_tokens")
-        return GenerationResult(
-            candidate=candidate,
-            usage=UsageMetadata(
-                provider="openrouter",
-                model=model,
-                input_tokens=input_tokens,
-                output_tokens=output_tokens,
-                total_tokens=self._token_value(usage, "total_tokens"),
-            ),
-            # Keep the optional trace free of provider reasoning/preamble.
-            raw_output=content,
+    if isinstance(content, list):
+        text = "".join(
+            str(block.get("text", ""))
+            for block in content
+            if isinstance(block, dict) and block.get("type") in {"text", "output_text"}
         )
+        try:
+            return json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise GenerationError(
+                GenerationErrorCode.INVALID_OUTPUT,
+                "The model returned an invalid structured candidate.",
+            ) from exc
+    return content
 
-    @staticmethod
-    def _user_content(request: GenerationRequest) -> str:
-        evidence = "\n\n".join(
-            f"[{passage.passage_id}] page {passage.page}, {passage.section}:\n{passage.text}"
-            for passage in request.passages
+
+def _usage_metadata(message: Any, model: str) -> UsageMetadata:
+    usage = getattr(message, "usage_metadata", None) or {}
+    return UsageMetadata(
+        provider=PROVIDER,
+        model=model,
+        input_tokens=_non_negative_int(usage.get("input_tokens")),
+        output_tokens=_non_negative_int(usage.get("output_tokens")),
+        total_tokens=_non_negative_int(usage.get("total_tokens")),
+    )
+
+
+def _raw_output(message: Any) -> str | None:
+    content = getattr(message, "content", None)
+    if isinstance(content, str):
+        return content[:20_000]
+    if content is None:
+        return None
+    return json.dumps(content, default=str)[:20_000]
+
+
+def _non_negative_int(value: Any) -> int | None:
+    return value if isinstance(value, int) and value >= 0 else None
+
+
+def _sanitize_candidate(candidate: GenerationCandidate) -> GenerationCandidate:
+    if not candidate.answer_text:
+        return candidate
+    answer = re.sub(
+        r"<think>.*?</think>",
+        "",
+        candidate.answer_text,
+        flags=re.DOTALL | re.IGNORECASE,
+    ).strip()
+    return candidate.model_copy(update={"answer_text": answer})
+
+
+def _normalize_openrouter_error(error: BaseException) -> GenerationError:
+    if isinstance(error, GenerationError):
+        return error
+    status = getattr(error, "status_code", None) or getattr(error, "status", None)
+    if isinstance(status, str) and status.isdigit():
+        status = int(status)
+    text = str(error).lower()
+    if status in {401, 403} or any(
+        marker in text for marker in ("authentication", "unauthorized", "api key")
+    ):
+        return GenerationError(
+            GenerationErrorCode.AUTHENTICATION_FAILED,
+            "The answer provider rejected authentication.",
+            status_code=status,
         )
-        return f"{request.prompt}\n\nSupplied evidence:\n{evidence}"
-
-    @staticmethod
-    def _content_text(content: object) -> str:
-        """Normalize OpenRouter string or content-block responses."""
-        if isinstance(content, str):
-            return content
-        if isinstance(content, list):
-            parts = []
-            for block in content:
-                if isinstance(block, str):
-                    parts.append(block)
-                elif isinstance(block, dict) and isinstance(block.get("text"), str):
-                    parts.append(block["text"])
-            if parts:
-                return "".join(parts)
-        raise TypeError("OpenRouter returned no text content")
-
-    def _response_format(self) -> dict[str, object]:
-        if not self._json_schema_supported:
-            return {"type": "json_object"}
-        return {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "generation_candidate",
-                "strict": True,
-                "schema": GenerationCandidate.model_json_schema(),
-            },
-        }
-
-    @staticmethod
-    def _token_value(usage: dict[str, Any], key: str) -> int | None:
-        value = usage.get(key)
-        return value if isinstance(value, int) and value >= 0 else None
+    if status == 429 or "rate limit" in text:
+        return GenerationError(
+            GenerationErrorCode.RATE_LIMITED,
+            "The answer provider rate limit was reached.",
+            retryable=True,
+            status_code=status,
+        )
+    if status in {404, 408, 500, 502, 503, 504} or any(
+        marker in text for marker in ("timeout", "unavailable", "overloaded", "capacity")
+    ):
+        return GenerationError(
+            GenerationErrorCode.UNAVAILABLE,
+            "The answer provider is temporarily unavailable.",
+            retryable=True,
+            status_code=status,
+        )
+    if status in {400, 409, 422}:
+        return GenerationError(
+            GenerationErrorCode.REQUEST_REJECTED,
+            "The answer provider rejected the request.",
+            status_code=status,
+        )
+    return GenerationError(GenerationErrorCode.UNKNOWN, "Model generation failed.")

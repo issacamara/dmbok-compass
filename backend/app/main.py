@@ -36,10 +36,7 @@ from app.metrics import AggregateMetricRepository, FirestoreAggregateMetricRepos
 from app.quota import FirestoreQuotaRepository, QuotaExceededError, QuotaRepository
 from app.telemetry import LoggingTelemetryAdapter, TelemetryAdapter, error_event, response_event
 from app.corpus.firestore import FirestoreCorpusVersionStore
-from app.retrieval.search import FirestorePassageRetriever, create_vertex_query_embedder
-from model.fallback import FallbackAdapter
-from model.gemini import create_gemini_adapter
-from model.openrouter import OpenRouterAdapter
+from app.rag import LangChainRagFactory
 from app.evaluation import (
     CloudRunEvaluationJobDispatcher,
     CloudRunJobExecutor,
@@ -234,10 +231,6 @@ def question_answerer() -> QuestionAnswerer:
 
 @lru_cache(maxsize=1)
 def configured_question_answerer() -> RetrievedAnswerService:
-    project = os.environ.get("GOOGLE_CLOUD_PROJECT") or os.environ.get("GCP_PROJECT_ID")
-    location = os.environ.get("GOOGLE_CLOUD_LOCATION", "europe-west1")
-    if not project:
-        raise HTTPException(status_code=503, detail="The Google Cloud project is not configured.")
     import firebase_admin
     from firebase_admin import firestore
 
@@ -246,24 +239,23 @@ def configured_question_answerer() -> RetrievedAnswerService:
     except ValueError:
         firebase_admin.initialize_app()
     client = firestore.client()
-    retriever = FirestorePassageRetriever(client, create_vertex_query_embedder(project=project, location=location))
-    openrouter = OpenRouterAdapter.from_environment()
-    provider = os.environ.get("ANSWER_PROVIDER", "vertex").strip().lower()
-    if provider == "openrouter":
-        adapter = openrouter
-        model_name = os.environ.get("OPENROUTER_PRIMARY_MODEL", "answer-model")
-    elif provider == "vertex":
-        vertex = create_gemini_adapter(project=project, location=location, vertexai=True)
-        adapter = FallbackAdapter(vertex, openrouter)
-        model_name = os.environ.get("VERTEX_PRIMARY_MODEL", "gemini-2.5-flash-lite")
-    else:
-        raise HTTPException(status_code=503, detail="The answer provider is not configured.")
+    try:
+        factory = LangChainRagFactory.from_environment(client)
+        adapter = factory.generation_adapter()
+    except ValueError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     policy = GroundedAnswerPolicy(
         adapter,
-        model_name=model_name,
+        model_name=factory.selected_model(),
         timeout_ms=int(os.environ.get("ANSWER_GENERATION_TIMEOUT_MS", "60000")),
     )
-    return RetrievedAnswerService(retriever, FirestoreCorpusVersionStore(client), policy)
+    return RetrievedAnswerService(
+        factory.retriever(),
+        FirestoreCorpusVersionStore(
+            client, vector_collection=factory.settings.vector_collection
+        ),
+        policy,
+    )
 
 
 @app.post("/api/questions", response_model=AnswerResponse)

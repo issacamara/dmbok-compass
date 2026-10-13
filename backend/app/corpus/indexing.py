@@ -1,66 +1,70 @@
-"""Idempotent Firestore persistence for embedded corpus chunks."""
+"""Native LangChain vector-store writes for immutable corpus chunks."""
 
 from __future__ import annotations
 
-from typing import Any, Protocol
+from collections.abc import Mapping, Sequence
+from typing import Any
 
-from google.cloud.firestore_v1.vector import Vector
+from langchain_core.documents import Document
+from langchain_google_firestore import FirestoreVectorStore
 
-from app.contracts import DocumentChunk
 from app.corpus.chunking import TextChunk
-from app.corpus.embedding import VertexDocumentEmbedder
+
+VECTOR_COLLECTION = "document_chunks_v2"
+VECTOR_SCHEMA_VERSION = "2"
 
 
-class DocumentReference(Protocol):
-    def set(self, data: dict[str, Any]) -> Any: ...
+def create_vector_store(
+    client: Any,
+    embeddings: Any,
+    *,
+    collection_id: str = VECTOR_COLLECTION,
+) -> FirestoreVectorStore:
+    """Bind the native vector store to the v2 Firestore schema."""
 
-
-class DocumentCollection(Protocol):
-    def document(self, document_id: str) -> DocumentReference: ...
-
-
-class FirestoreClient(Protocol):
-    def collection(self, collection_id: str) -> DocumentCollection: ...
-
-
-class FirestoreChunkRepository:
-    """Store immutable chunk identities with replace-safe writes."""
-
-    collection_id = "document_chunks"
-
-    def __init__(self, client: FirestoreClient) -> None:
-        self.chunks = client.collection(self.collection_id)
-
-    def upsert(self, chunk: DocumentChunk) -> DocumentChunk:
-        """Write the same deterministic document on retries and return it."""
-        payload = chunk.model_dump(mode="json")
-        payload["embedding"] = Vector(chunk.embedding)
-        self.chunks.document(chunk.chunk_id).set(payload)
-        return chunk
+    if not collection_id.strip():
+        raise ValueError("collection_id must be non-empty")
+    return FirestoreVectorStore(
+        client.collection(collection_id),
+        embeddings,
+        client=client,
+        content_field="text",
+        metadata_field="metadata",
+        embedding_field="embedding",
+    )
 
 
 class CorpusEmbeddingWriter:
-    """Embed deterministic text chunks and persist their durable records."""
+    """Map deterministic chunks to Documents and let LangChain embed/write them."""
 
-    def __init__(self, embedder: VertexDocumentEmbedder, repository: FirestoreChunkRepository) -> None:
-        self.embedder = embedder
-        self.repository = repository
+    def __init__(
+        self,
+        vector_store: FirestoreVectorStore,
+        *,
+        source_metadata: Mapping[str, Any] | None = None,
+    ) -> None:
+        self.vector_store = vector_store
+        self.source_metadata = dict(source_metadata or {})
 
-    def write(self, chunks: list[TextChunk] | tuple[TextChunk, ...]) -> tuple[DocumentChunk, ...]:
-        stored: list[DocumentChunk] = []
-        for chunk in chunks:
-            stored.append(
-                self.repository.upsert(
-                    DocumentChunk(
-                        chunk_id=chunk.chunk_id,
-                        corpus_version_id=chunk.corpus_version_id,
-                        page=chunk.page,
-                        section=chunk.section,
-                        chunk_ordinal=chunk.chunk_ordinal,
-                        content_hash=chunk.content_hash,
-                        text=chunk.text,
-                        embedding=self.embedder.embed(chunk.text),
-                    )
-                )
+    def write(self, chunks: Sequence[TextChunk]) -> tuple[TextChunk, ...]:
+        documents = [
+            Document(
+                page_content=chunk.text,
+                metadata={
+                    **self.source_metadata,
+                    "schema_version": VECTOR_SCHEMA_VERSION,
+                    "corpus_version_id": chunk.corpus_version_id,
+                    "chunk_id": chunk.chunk_id,
+                    "page": chunk.page,
+                    "section": chunk.section,
+                    "chunk_ordinal": chunk.chunk_ordinal,
+                    "content_hash": chunk.content_hash,
+                },
             )
-        return tuple(stored)
+            for chunk in chunks
+        ]
+        ids = [chunk.chunk_id for chunk in chunks]
+        stored_ids = self.vector_store.add_documents(documents, ids=ids)
+        if list(stored_ids) != ids:
+            raise RuntimeError("LangChain vector store did not preserve deterministic chunk IDs")
+        return tuple(chunks)

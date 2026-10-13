@@ -44,6 +44,10 @@ resource "google_cloud_run_v2_service" "api" {
         value = var.region
       }
       env {
+        name  = "RAG_VECTOR_COLLECTION"
+        value = "document_chunks_v2"
+      }
+      env {
         name  = "EVALUATION_JOB_NAME"
         value = var.evaluation_job_name
       }
@@ -126,6 +130,10 @@ resource "google_cloud_run_v2_job" "ingestion" {
           value = var.region
         }
         env {
+          name  = "RAG_VECTOR_COLLECTION"
+          value = "document_chunks_v2"
+        }
+        env {
           name  = "CORPUS_BUCKET_NAME"
           value = var.corpus_bucket_name
         }
@@ -161,6 +169,10 @@ resource "google_cloud_run_v2_job" "evaluation" {
         env {
           name  = "GOOGLE_CLOUD_LOCATION"
           value = var.region
+        }
+        env {
+          name  = "RAG_VECTOR_COLLECTION"
+          value = "document_chunks_v2"
         }
         env {
           name  = "ANSWER_PROVIDER"

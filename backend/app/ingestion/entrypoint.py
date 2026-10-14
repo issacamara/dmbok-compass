@@ -12,7 +12,7 @@ from google.cloud import firestore, storage
 
 from app.contracts import CorpusVersion
 from app.corpus.chunking import SourcePage, chunk_pages
-from app.corpus.manifest import create_source_manifest
+from app.corpus.manifest import create_source_manifest, default_derivation
 from app.corpus.firestore import FirestoreCorpusVersionStore
 from app.ingestion.extract import extract_pdf
 from app.ingestion.job import CorpusIngestionJob
@@ -40,6 +40,7 @@ def main() -> None:
             object_name=object_name,
             generation=int(blob.generation),
             content_sha256=digest,
+            derivation=default_derivation(vector_collection=settings.vector_collection),
         )
         report = extract_pdf(source_path, source_uri=manifest.object_uri)
         pages = tuple(
@@ -60,11 +61,7 @@ def main() -> None:
         client = firestore.Client(project=project)
         factory = LangChainRagFactory(client, settings)
         writer = factory.ingestion_writer(
-            source_metadata={
-                "source_uri": manifest.object_uri,
-                "source_sha256": manifest.content_sha256,
-                "derivation": manifest.derivation,
-            },
+            source_metadata=manifest.corpus_metadata(),
         )
         result = CorpusIngestionJob(
             FirestoreCorpusVersionStore(

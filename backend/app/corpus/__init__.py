@@ -14,7 +14,7 @@ from .indexing import (
     CorpusEmbeddingWriter,
     create_vector_store,
 )
-from .manifest import RAG_DERIVATION, SourceManifest, create_source_manifest
+from .manifest import RAG_DERIVATION, SourceManifest, create_source_manifest, default_derivation
 from .versions import (
     ConcurrentCorpusActivationError,
     CorpusCompletenessError,
@@ -25,6 +25,7 @@ from .versions import (
 __all__ = [
     "SourceManifest",
     "RAG_DERIVATION",
+    "default_derivation",
     "SourcePage",
     "TextChunk",
     "DOCUMENT_TASK_TYPE",

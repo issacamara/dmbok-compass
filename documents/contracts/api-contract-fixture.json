@@ -21,6 +21,90 @@
     "trace",
     "excerpt"
   ],
+  "publicSchemas": {
+    "QuestionRequest": {
+      "fields": ["question"],
+      "required": ["question"]
+    },
+    "ApiError": {
+      "fields": ["code", "message", "retryable", "status"],
+      "required": ["code", "message"]
+    },
+    "QuotaStatus": {
+      "fields": ["user_used", "user_limit", "global_used", "global_limit", "resets_at"],
+      "required": ["user_used", "user_limit", "global_used", "global_limit", "resets_at"]
+    },
+    "Citation": {
+      "fields": ["citation_id", "page", "section", "excerpt"],
+      "required": ["citation_id", "page", "section", "excerpt"]
+    },
+    "ModelAttempt": {
+      "fields": ["model", "outcome", "status_code"],
+      "required": ["model", "outcome"]
+    },
+    "RetrievalTrace": {
+      "fields": ["retrieved_passages", "selected_model", "timings_ms", "model_attempts", "model_output"],
+      "required": ["retrieved_passages", "selected_model"]
+    },
+    "AnswerResponse": {
+      "fields": ["outcome", "answer_text", "synthesis", "citations", "trace", "quota", "error"],
+      "required": ["outcome", "trace", "quota"]
+    }
+  },
+  "migrationBaseline": {
+    "mergedIntegrationCommit": "50b9470836241cfcec0e9f60118c659f40d4fa17",
+    "compatibilityCandidate": {
+      "commit": "df32ecaa392c2be0104903a3f2b691989cbab4b6",
+      "workflowRun": "38457027955",
+      "compatibilityImage": "sha256:1bab38309da206e88812655888fe1e6fa4e501bb0cfe0d01974e35579093e43d",
+      "baseImage": "python:3.11-slim@sha256:e88e9763f943ec1834f992a4b51e0f24500486803e8bc534e5767af9ea65f6ce",
+      "lockSha256": "4b14a82ce8542173da5bec0e541110c868339f881be8dca4abd92a4de8b66784",
+      "wheelSha256": "9ced9b491908b453a31a4b2598c1ec5fbbddf106dff868adcfe36bd5e60124c2"
+    },
+    "codeDefaults": {
+      "location": "europe-west1",
+      "vectorCollection": "document_chunks_v2",
+      "answerProvider": "openrouter",
+      "answerGenerationTimeoutMs": 60000,
+      "openrouterPrimaryModel": "mistralai/mistral-nemo",
+      "openrouterFallbackModel": "meta-llama/llama-3.1-8b-instruct",
+      "vertexPrimaryModel": "gemini-2.5-flash-lite"
+    },
+    "effectiveEnvironments": {
+      "localCompose": {
+        "answerProvider": "openrouter",
+        "answerGenerationTimeoutMs": 60000,
+        "openrouterPrimaryModel": "mistralai/mistral-nemo",
+        "openrouterFallbackModel": "meta-llama/llama-3.1-8b-instruct"
+      },
+      "deliveryPreviewAndJobs": {
+        "answerProvider": "openrouter",
+        "answerGenerationTimeoutMs": 60000,
+        "vectorCollection": "document_chunks_v2",
+        "openrouterPrimaryModel": "mistralai/mistral-nemo",
+        "openrouterFallbackModel": "meta-llama/llama-3.1-8b-instruct"
+      },
+      "vertexRoute": {
+        "enabled": false,
+        "releaseGate": "Explicit release gate: requires an approved provider-route, structured-output, privacy, cost, and runtime-evaluation review before enablement."
+      }
+    },
+    "answeringPolicy": {
+      "strongEvidenceThreshold": 0.75,
+      "partialEvidenceThreshold": 0.45,
+      "maxEvidencePassages": 5,
+      "eligibleFallbackErrors": ["timeout", "unavailable", "rate_limited"],
+      "maxModelAttempts": 2
+    },
+    "authoredParityCases": [
+      {"id": "strong-evidence", "productionContent": false},
+      {"id": "partial-evidence", "productionContent": false},
+      {"id": "absent-evidence", "productionContent": false},
+      {"id": "eligible-fallback", "productionContent": false},
+      {"id": "ineligible-fallback", "productionContent": false},
+      {"id": "provenance-reconstruction", "productionContent": false}
+    ]
+  },
   "evaluation": {
     "maxImportBytes": 1048576,
     "maxImportItems": 500,

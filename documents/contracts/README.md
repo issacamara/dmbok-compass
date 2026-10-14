@@ -4,6 +4,11 @@ The contract boundary is shared by the FastAPI backend and the TypeScript web
 client. `api-contract-fixture.json` is intentionally small and stable: it
 holds values that must remain identical across languages.
 
+`langchain-baseline.md` freezes the migration candidate evidence and the
+internal corpus/configuration and assessment bindings. It records code
+defaults separately from actual local and deployment routes; it is not a
+source of secrets or a production-routing approval.
+
 ## Ownership
 
 Firestore is authoritative for `UserProfile`, approval state, roles, quota

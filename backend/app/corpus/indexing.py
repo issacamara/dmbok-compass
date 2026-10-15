@@ -46,7 +46,21 @@ class CorpusEmbeddingWriter:
         self.vector_store = vector_store
         self.source_metadata = dict(source_metadata or {})
 
+    max_batch_size = 500
+
     def write(self, chunks: Sequence[TextChunk]) -> tuple[TextChunk, ...]:
+        """Persist deterministic chunk IDs in Firestore-safe batches."""
+
+        stored: list[TextChunk] = []
+        for start in range(0, len(chunks), self.max_batch_size):
+            stored.extend(self.write_batch(chunks[start : start + self.max_batch_size]))
+        return tuple(stored)
+
+    def write_batch(self, chunks: Sequence[TextChunk]) -> tuple[TextChunk, ...]:
+        """Persist one explicit-ID batch without activating its corpus version."""
+
+        if len(chunks) > self.max_batch_size:
+            raise ValueError(f"corpus write batches may contain at most {self.max_batch_size} chunks")
         documents = [
             Document(
                 page_content=chunk.text,

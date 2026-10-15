@@ -14,9 +14,14 @@ version, chunk ID, page, section, ordinal, content hash, and schema version in
 the nested `metadata` map. Re-running the same source overwrites the same
 deterministic IDs rather than creating duplicates.
 
-The ingestion job writes a `staged` corpus version, persists every vector, and
-then compares the stored IDs, text, hashes, provenance, and embedding dimensions
-with the derived manifest. Only a complete version becomes `validated`.
+The ingestion job writes a `staged` corpus version, persists every vector in
+explicit-ID batches of at most 500, and then compares the stored IDs, text,
+hashes, provenance, and embedding dimensions with the derived manifest. A
+`SIGTERM` is recorded after the current persisted batch; the job exits with
+status 1, leaves the version staged, and never activates it. Re-running the
+same derived version safely rewrites the same IDs and resumes validation only
+after every required batch has completed. Only a complete version becomes
+`validated`.
 Activation uses a Firestore transaction and compare-and-set against the corpus
 that was active when ingestion began, so a stale concurrent job cannot replace
 a newer activation. The same transaction retires the old version, activates the
@@ -29,6 +34,25 @@ It atomically restores the recorded previous valid version and retires the
 withdrawn version. An explicit previously valid version ID may be supplied when
 an administrator needs a targeted rollback. Keep old vector documents and the
 versioned source object until promotion and rollback evidence is accepted.
+
+## Abandoned staging cleanup
+
+Use the same authenticated Cloud Run Job image and its worker service account
+for maintenance; do not grant browser or anonymous access to corpus storage.
+Set `CORPUS_CLEANUP_VERSION` to one exact corpus version ID to inspect the
+cleanup targets. This is a dry run by default and reports only the version and
+its matching vector document paths:
+
+```sh
+CORPUS_CLEANUP_VERSION=<abandoned-version-id> python -m app.ingestion.entrypoint
+```
+
+After reviewing the reported targets, set `CORPUS_CLEANUP_APPLY=true` in the
+same invocation to remove that exact abandoned staged version and its vectors.
+Cleanup refuses an active version, its rollback-retained predecessor, and any
+version with a running ingestion reservation. It never removes serving or
+rollback records; investigate a still-running reservation rather than forcing
+cleanup.
 
 Before production promotion, rebuild the full candidate corpus, verify filtered
 retrieval from the active version, run the approved evaluation and load gates,

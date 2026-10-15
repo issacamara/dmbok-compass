@@ -22,6 +22,13 @@ variable "evaluation_job_name" {
   default     = "dmbok-compass-evaluation"
 }
 
+
+variable "corpus_version_id" {
+  description = "Immutable corpus version coupled to this API and its admin jobs."
+  type        = string
+  default     = "unconfigured"
+}
+
 resource "google_cloud_run_v2_service" "api" {
   name     = var.api_service_name
   location = var.region
@@ -46,6 +53,18 @@ resource "google_cloud_run_v2_service" "api" {
       env {
         name  = "RAG_VECTOR_COLLECTION"
         value = "document_chunks_v2"
+      }
+      env {
+        name  = "RAG_CORPUS_VERSION_ID"
+        value = var.corpus_version_id
+      }
+      env {
+        name  = "RAG_SCHEMA_VERSION"
+        value = "v2"
+      }
+      env {
+        name  = "RAG_VECTOR_INDEX"
+        value = "document_chunks_v2_vector"
       }
       env {
         name  = "EVALUATION_JOB_NAME"
@@ -138,6 +157,18 @@ resource "google_cloud_run_v2_job" "ingestion" {
           value = "document_chunks_v2"
         }
         env {
+          name  = "RAG_CORPUS_VERSION_ID"
+          value = var.corpus_version_id
+        }
+        env {
+          name  = "RAG_SCHEMA_VERSION"
+          value = "v2"
+        }
+        env {
+          name  = "RAG_VECTOR_INDEX"
+          value = "document_chunks_v2_vector"
+        }
+        env {
           name  = "CORPUS_BUCKET_NAME"
           value = var.corpus_bucket_name
         }
@@ -177,6 +208,18 @@ resource "google_cloud_run_v2_job" "evaluation" {
         env {
           name  = "RAG_VECTOR_COLLECTION"
           value = "document_chunks_v2"
+        }
+        env {
+          name  = "RAG_CORPUS_VERSION_ID"
+          value = var.corpus_version_id
+        }
+        env {
+          name  = "RAG_SCHEMA_VERSION"
+          value = "v2"
+        }
+        env {
+          name  = "RAG_VECTOR_INDEX"
+          value = "document_chunks_v2_vector"
         }
         env {
           name  = "ANSWER_PROVIDER"

@@ -25,8 +25,43 @@ steps:
         test -n "${api_digest}"
         frontend_digest="$(cat /workspace/frontend.sha256)"
         test -n "${frontend_digest}"
-        printf '{"commit":"%s","api_image":"%s@%s","api_digest":"%s","frontend_digest":"%s","preview_revision":"","release_revision":""}\n' \
-          "${COMMIT_SHA}" "${_IMAGE_REPOSITORY}/api" "${api_digest}" "${api_digest}" "${frontend_digest}" > /workspace/delivery-manifest.json
+        corpus_version_id="${_CORPUS_VERSION_ID}"
+        test "${corpus_version_id}" != "replace-with-reviewed-corpus-version"
+        python3 - "${COMMIT_SHA}" "${_IMAGE_REPOSITORY}/api@${api_digest}" "${api_digest}" "${frontend_digest}" "${corpus_version_id}" <<'PY' > /workspace/delivery-manifest.json
+        import hashlib
+        import json
+        import sys
+
+        commit, image, digest, frontend_digest, corpus_version_id = sys.argv[1:]
+        configuration = {
+            "collection": "document_chunks_v2",
+            "schema_version": "v2",
+            "index": "document_chunks_v2_vector",
+            "request_timeout_ms": "14000",
+            "generation_timeout_ms": "8000",
+            "provider": "openrouter",
+        }
+        manifest = {
+            "commit": commit,
+            "api_image": image,
+            "admin_image": image,
+            "api_digest": digest,
+            "frontend_digest": frontend_digest,
+            "api_schema_version": "v2",
+            "serving_binding": {
+                "corpus_version_id": corpus_version_id,
+                "collection": configuration["collection"],
+                "schema_version": configuration["schema_version"],
+                "index": configuration["index"],
+                "configuration_digest": hashlib.sha256(
+                    json.dumps(configuration, sort_keys=True, separators=(",", ":")).encode()
+                ).hexdigest(),
+            },
+            "preview_revision": "",
+            "release_revision": "",
+        }
+        print(json.dumps(manifest, separators=(",", ":")))
+        PY
 
   - id: terraform-plan
     name: hashicorp/terraform:1.9
@@ -40,7 +75,8 @@ steps:
         terraform plan -input=false -refresh=false -out=/workspace/delivery.tfplan \
           -var="project_id=${PROJECT_ID}" \
           -var="corpus_bucket_name=${_CORPUS_BUCKET_NAME}" \
-          -var="api_image=$(sed -n 's/.*"api_image":"\([^"]*\)".*/\1/p' /workspace/delivery-manifest.json)"
+          -var="api_image=$(sed -n 's/.*"api_image":"\([^"]*\)".*/\1/p' /workspace/delivery-manifest.json)" \
+          -var="corpus_version_id=${_CORPUS_VERSION_ID}"
         terraform show -no-color /workspace/delivery.tfplan > /workspace/delivery.tfplan.txt
 
   - id: preview-api
@@ -51,7 +87,9 @@ steps:
       - -ceu
       - |
         api_image="$(sed -n 's/.*"api_image":"\([^"]*\)".*/\1/p' /workspace/delivery-manifest.json)"
-        gcloud run deploy "${_API_SERVICE}" --image="${api_image}" --region="${_REGION}" --platform=managed --no-traffic --quiet --format='value(status.latestCreatedRevisionName)' > /workspace/preview_revision
+        gcloud run deploy "${_API_SERVICE}" --image="${api_image}" --region="${_REGION}" --platform=managed \
+          --update-env-vars="RAG_VECTOR_COLLECTION=document_chunks_v2,RAG_CORPUS_VERSION_ID=${_CORPUS_VERSION_ID},RAG_SCHEMA_VERSION=v2,RAG_VECTOR_INDEX=document_chunks_v2_vector" \
+          --no-traffic --quiet --format='value(status.latestCreatedRevisionName)' > /workspace/preview_revision
         revision="$(cat /workspace/preview_revision)"
         test -n "${revision}"
         python3 - <<'PY'
@@ -81,8 +119,10 @@ steps:
       - -ceu
       - |
         api_image="$(sed -n 's/.*"api_image":"\([^"]*\)".*/\1/p' /workspace/delivery-manifest.json)"
-        gcloud run jobs deploy "${_INGESTION_JOB}" --image="${api_image}" --region="${_REGION}" --quiet
-        gcloud run jobs deploy "${_EVALUATION_JOB}" --image="${api_image}" --region="${_REGION}" --quiet
+        gcloud run jobs deploy "${_INGESTION_JOB}" --image="${api_image}" --region="${_REGION}" \
+          --update-env-vars="RAG_VECTOR_COLLECTION=document_chunks_v2,RAG_CORPUS_VERSION_ID=${_CORPUS_VERSION_ID},RAG_SCHEMA_VERSION=v2,RAG_VECTOR_INDEX=document_chunks_v2_vector" --quiet
+        gcloud run jobs deploy "${_EVALUATION_JOB}" --image="${api_image}" --region="${_REGION}" \
+          --update-env-vars="RAG_VECTOR_COLLECTION=document_chunks_v2,RAG_CORPUS_VERSION_ID=${_CORPUS_VERSION_ID},RAG_SCHEMA_VERSION=v2,RAG_VECTOR_INDEX=document_chunks_v2_vector" --quiet
 
   - id: write-evidence
     name: gcr.io/google.com/cloudsdktool/cloud-sdk
@@ -121,6 +161,7 @@ images:
 substitutions:
   _API_SERVICE: dmbok-compass-api
   _CORPUS_BUCKET_NAME: replace-with-reviewed-bucket
+  _CORPUS_VERSION_ID: replace-with-reviewed-corpus-version
   _HOSTING_SITE: dmbok-compass
   _INGESTION_JOB: dmbok-compass-ingestion
   _IMAGE_REPOSITORY: europe-west1-docker.pkg.dev/$PROJECT_ID/dmbok-compass

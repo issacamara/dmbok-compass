@@ -20,6 +20,24 @@ on:
         description: Release decision identifier required for promotion
         required: false
         type: string
+      corpus_version_id:
+        description: Immutable corpus version bound to this delivery
+        required: false
+        type: string
+      rollback:
+        description: Create a coupled rollback preflight plan (never changes traffic)
+        required: true
+        default: false
+        type: boolean
+      rollback_run_id:
+        description: Workflow run containing the previous promoted delivery evidence
+        required: false
+        type: string
+      owner_approved:
+        description: Owner approval for a protected rollback preflight
+        required: true
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -49,6 +67,10 @@ jobs:
       BILLING_ACCOUNT_ID: ${{ vars.GCP_BILLING_ACCOUNT_ID }}
       IMAGE_REPOSITORY: europe-west1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/dmbok-compass
       HOSTING_SITE: ${{ vars.HOSTING_SITE }}
+      CORPUS_VERSION_ID: ${{ inputs.corpus_version_id || vars.CORPUS_VERSION_ID }}
+      CORPUS_COLLECTION: document_chunks_v2
+      CORPUS_SCHEMA_VERSION: v2
+      CORPUS_INDEX: document_chunks_v2_vector
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -94,9 +116,14 @@ jobs:
           api_digest="$(gcloud artifacts docker images describe "${IMAGE_REPOSITORY}/api:${GITHUB_SHA}" --format='value(image_summary.digest)')"
           test -n "$api_digest"
           frontend_digest="$(cat "$RUNNER_TEMP/frontend.sha256")"
+          test -n "$CORPUS_VERSION_ID"
+          configuration="$(jq -cn --arg collection "$CORPUS_COLLECTION" --arg schema "$CORPUS_SCHEMA_VERSION" --arg index "$CORPUS_INDEX" --arg request_timeout "14000" --arg generation_timeout "8000" --arg provider "openrouter" '{collection: $collection, schema_version: $schema, index: $index, request_timeout_ms: $request_timeout, generation_timeout_ms: $generation_timeout, provider: $provider}')"
+          configuration_digest="$(printf '%s' "$configuration" | sha256sum | cut -d' ' -f1)"
           jq -n --arg commit "$GITHUB_SHA" --arg image "${IMAGE_REPOSITORY}/api@${api_digest}" \
             --arg digest "$api_digest" --arg frontend_digest "$frontend_digest" \
-            '{commit: $commit, api_image: $image, api_digest: $digest, frontend_digest: $frontend_digest, preview_revision: "", release_revision: ""}' \
+            --arg corpus_version "$CORPUS_VERSION_ID" --arg collection "$CORPUS_COLLECTION" \
+            --arg schema "$CORPUS_SCHEMA_VERSION" --arg index "$CORPUS_INDEX" --arg configuration_digest "$configuration_digest" \
+            '{commit: $commit, api_image: $image, admin_image: $image, api_digest: $digest, frontend_digest: $frontend_digest, api_schema_version: $schema, serving_binding: {corpus_version_id: $corpus_version, collection: $collection, schema_version: $schema, index: $index, configuration_digest: $configuration_digest}, preview_revision: "", release_revision: ""}' \
             > "$RUNNER_TEMP/delivery-manifest.json"
 
       - name: Plan Terraform against immutable image
@@ -106,14 +133,15 @@ jobs:
           terraform plan -input=false -refresh=false -out="$RUNNER_TEMP/delivery.tfplan" \
             -var="project_id=${PROJECT_ID}" -var="corpus_bucket_name=${CORPUS_BUCKET_NAME}" \
             -var="billing_account_id=${BILLING_ACCOUNT_ID}" \
-            -var="api_image=$(jq -r .api_image "$RUNNER_TEMP/delivery-manifest.json")"
+            -var="api_image=$(jq -r .api_image "$RUNNER_TEMP/delivery-manifest.json")" \
+            -var="corpus_version_id=${CORPUS_VERSION_ID}"
           terraform show -no-color "$RUNNER_TEMP/delivery.tfplan" > "$RUNNER_TEMP/delivery.tfplan.txt"
 
       - name: Deploy zero-traffic API preview
         run: |
           api_image="$(jq -r .api_image "$RUNNER_TEMP/delivery-manifest.json")"
           gcloud run deploy "$API_SERVICE" --image="$api_image" --region="$REGION" \
-            --update-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${REGION},RAG_VECTOR_COLLECTION=document_chunks_v2,EVALUATION_JOB_NAME=${EVALUATION_JOB},ANSWER_PROVIDER=openrouter,ANSWER_REQUEST_TIMEOUT_MS=14000,ANSWER_GENERATION_TIMEOUT_MS=8000,OPENROUTER_PRIMARY_MODEL=mistralai/mistral-nemo,OPENROUTER_FALLBACK_MODEL=meta-llama/llama-3.1-8b-instruct" \
+            --update-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${REGION},RAG_VECTOR_COLLECTION=${CORPUS_COLLECTION},RAG_CORPUS_VERSION_ID=${CORPUS_VERSION_ID},RAG_SCHEMA_VERSION=${CORPUS_SCHEMA_VERSION},RAG_VECTOR_INDEX=${CORPUS_INDEX},EVALUATION_JOB_NAME=${EVALUATION_JOB},ANSWER_PROVIDER=openrouter,ANSWER_REQUEST_TIMEOUT_MS=14000,ANSWER_GENERATION_TIMEOUT_MS=8000,OPENROUTER_PRIMARY_MODEL=mistralai/mistral-nemo,OPENROUTER_FALLBACK_MODEL=meta-llama/llama-3.1-8b-instruct" \
             --platform=managed --no-traffic --quiet --format='value(status.latestCreatedRevisionName)' \
             > "$RUNNER_TEMP/preview_revision"
           revision="$(cat "$RUNNER_TEMP/preview_revision")"
@@ -141,9 +169,10 @@ jobs:
       - name: Deploy preview jobs
         run: |
           api_image="$(jq -r .api_image "$RUNNER_TEMP/delivery-manifest.json")"
-          gcloud run jobs deploy "$INGESTION_JOB" --image="$api_image" --region="$REGION" --quiet
+          gcloud run jobs deploy "$INGESTION_JOB" --image="$api_image" --region="$REGION" \
+            --update-env-vars="RAG_VECTOR_COLLECTION=${CORPUS_COLLECTION},RAG_CORPUS_VERSION_ID=${CORPUS_VERSION_ID},RAG_SCHEMA_VERSION=${CORPUS_SCHEMA_VERSION},RAG_VECTOR_INDEX=${CORPUS_INDEX}" --quiet
           gcloud run jobs deploy "$EVALUATION_JOB" --image="$api_image" --region="$REGION" \
-            --update-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${REGION},RAG_VECTOR_COLLECTION=document_chunks_v2,ANSWER_PROVIDER=openrouter,ANSWER_REQUEST_TIMEOUT_MS=14000,ANSWER_GENERATION_TIMEOUT_MS=8000,OPENROUTER_PRIMARY_MODEL=mistralai/mistral-nemo,OPENROUTER_FALLBACK_MODEL=meta-llama/llama-3.1-8b-instruct" \
+            --update-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${REGION},RAG_VECTOR_COLLECTION=${CORPUS_COLLECTION},RAG_CORPUS_VERSION_ID=${CORPUS_VERSION_ID},RAG_SCHEMA_VERSION=${CORPUS_SCHEMA_VERSION},RAG_VECTOR_INDEX=${CORPUS_INDEX},ANSWER_PROVIDER=openrouter,ANSWER_REQUEST_TIMEOUT_MS=14000,ANSWER_GENERATION_TIMEOUT_MS=8000,OPENROUTER_PRIMARY_MODEL=mistralai/mistral-nemo,OPENROUTER_FALLBACK_MODEL=meta-llama/llama-3.1-8b-instruct" \
             --quiet
 
       - name: Validate and upload release evidence
@@ -226,5 +255,51 @@ jobs:
         with:
           name: promoted-delivery-evidence-${{ github.sha }}
           path: delivery-evidence
+          if-no-files-found: error
+          retention-days: 30
+
+  rollback-preflight:
+    name: Preflight coupled rollback
+    needs: preview
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.rollback == true && inputs.target_environment == 'production' && inputs.owner_approved == true }}
+    runs-on: ubuntu-latest
+    # GitHub's protected production environment supplies the existing approval gate.
+    environment: production
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Download candidate evidence
+        uses: actions/download-artifact@v4
+        with:
+          name: delivery-evidence-${{ github.sha }}
+          path: candidate-evidence
+
+      - name: Download previous promoted evidence
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ROLLBACK_RUN_ID: ${{ inputs.rollback_run_id }}
+        run: |
+          test -n "$ROLLBACK_RUN_ID"
+          gh run download "$ROLLBACK_RUN_ID" --repo "$GITHUB_REPOSITORY" --dir previous-evidence
+          test -n "$(find previous-evidence -path '*/promoted-delivery-evidence-*/*' -name delivery-manifest.json -print -quit)"
+
+      - name: Validate coupled rollback plan
+        run: |
+          previous_manifest="$(find previous-evidence -path '*/promoted-delivery-evidence-*/*' -name delivery-manifest.json -print -quit)"
+          python3 scripts/delivery/rollback.py \
+            --candidate candidate-evidence/delivery-manifest.json \
+            --previous "$previous_manifest" \
+            --output coupled-rollback-plan.json \
+            --protected-gate-approved --owner-approved
+
+      - name: Publish coupled rollback evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: coupled-rollback-preflight-${{ github.sha }}
+          path: coupled-rollback-plan.json
           if-no-files-found: error
           retention-days: 30

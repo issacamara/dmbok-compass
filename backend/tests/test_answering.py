@@ -5,7 +5,7 @@ import asyncio
 import pytest
 
 from app.answering import AnswerInvocation, GroundedAnswerPolicy, RetrievedAnswerService, classify_evidence
-from app.contracts import CorpusVersion, QuotaStatus, RetrievedPassage
+from app.contracts import CorpusServingBinding, CorpusVersion, QuotaStatus, RetrievedPassage
 from model.fake import FakeAdapter
 from model.protocol import GenerationCandidate
 
@@ -92,6 +92,54 @@ def test_retrieved_answer_service_uses_active_version_and_top_five_limit() -> No
 
     assert response.outcome == "answer"
     assert retriever.calls == [("What is governance?", "v1", 5)]
+
+
+def test_retrieved_answer_service_resolves_one_retriever_from_active_binding() -> None:
+    fallback = FakeRetriever(())
+    bound = FakeRetriever((passage("bound", 0.9),))
+    seen: list[CorpusServingBinding] = []
+    active = active_version().model_copy(
+        update={
+            "serving_binding": CorpusServingBinding(
+                corpus_version_id="v1",
+                vector_collection="document_chunks_v2",
+                vector_schema_version="2",
+                embedding_model="gemini-embedding-001",
+                ingestion_fingerprint="a" * 64,
+                configuration_fingerprint="b" * 64,
+            )
+        }
+    )
+    service = RetrievedAnswerService(
+        fallback,
+        FakeCorpusStore(active),
+        GroundedAnswerPolicy(
+            FakeAdapter(
+                {
+                    "outcome": "answer",
+                    "answer_text": "Grounded.",
+                    "citations": [
+                        {
+                            "citation_id": "bound",
+                            "page": 1,
+                            "section": "model",
+                            "excerpt": "model citation",
+                        }
+                    ],
+                }
+            )
+        ),
+        retriever_for_binding=lambda corpus: (
+            seen.append(corpus.serving_binding) or bound  # type: ignore[arg-type]
+        ),
+    )
+
+    response = asyncio.run(service.answer("What is governance?", quota()))
+
+    assert response.outcome == "answer"
+    assert seen == [active.serving_binding]
+    assert bound.calls == [("What is governance?", "v1", 5)]
+    assert fallback.calls == []
 
 
 def test_retrieved_answer_service_refuses_without_active_corpus() -> None:

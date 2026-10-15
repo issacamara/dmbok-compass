@@ -12,13 +12,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from math import isfinite
 from time import perf_counter
-from typing import Any, Iterable, Literal, Protocol
+from typing import Any, Callable, Iterable, Literal, Protocol
 
 from langchain_core.runnables import Runnable, RunnableConfig
 
 from app.contracts import (
     AnswerResponse,
     ApiError,
+    CorpusVersion,
     QuotaStatus,
     RetrievedPassage,
     RetrievalTrace,
@@ -336,10 +337,12 @@ class LangChainRagPipeline(Runnable[AnswerInvocation, AnswerResponse]):
         retriever: PassageRetriever,
         corpus_versions: ActiveCorpusStore,
         policy: GroundedAnswerPolicy,
+        retriever_for_binding: Callable[[CorpusVersion], PassageRetriever] | None = None,
     ) -> None:
         self._retriever = retriever
         self._corpus_versions = corpus_versions
         self._policy = policy
+        self._retriever_for_binding = retriever_for_binding
 
     def invoke(
         self,
@@ -372,8 +375,13 @@ class LangChainRagPipeline(Runnable[AnswerInvocation, AnswerResponse]):
                 code="active_corpus_unavailable",
                 message="No active DMBOK corpus is available.",
             )
+        retriever = (
+            self._retriever_for_binding(active)
+            if self._retriever_for_binding is not None
+            else self._retriever
+        )
         passages, retrieval_ms = await retrieve_off_event_loop(
-            self._retriever.retrieve,
+            retriever.retrieve,
             input.question,
             active_corpus_version_id=active.version_id,
             limit=MAX_EVIDENCE_PASSAGES,
@@ -399,8 +407,11 @@ class RetrievedAnswerService:
         retriever: PassageRetriever,
         corpus_versions: ActiveCorpusStore,
         policy: GroundedAnswerPolicy,
+        retriever_for_binding: Callable[[CorpusVersion], PassageRetriever] | None = None,
     ) -> None:
-        self._pipeline = LangChainRagPipeline(retriever, corpus_versions, policy)
+        self._pipeline = LangChainRagPipeline(
+            retriever, corpus_versions, policy, retriever_for_binding
+        )
 
     async def answer(self, question: str, quota: QuotaStatus) -> AnswerResponse:
         return await self._pipeline.ainvoke(AnswerInvocation(question=question, quota=quota))

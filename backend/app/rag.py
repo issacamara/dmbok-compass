@@ -6,6 +6,7 @@ import os
 from dataclasses import dataclass
 from typing import Any
 
+from app.contracts import CorpusServingBinding
 from app.corpus.embedding import create_vertex_embeddings
 from app.corpus.indexing import (
     VECTOR_COLLECTION,
@@ -77,6 +78,23 @@ class LangChainRagFactory:
 
     def retriever(self) -> FirestorePassageRetriever:
         return FirestorePassageRetriever(self._vector_store)
+
+    def retriever_for_binding(self, binding: CorpusServingBinding) -> FirestorePassageRetriever:
+        """Create a native store against one immutable serving binding."""
+
+        if binding.vector_schema_version != "2":
+            raise ValueError("unsupported corpus vector schema")
+        if binding.embedding_dimensions != 768:
+            raise ValueError("unsupported corpus embedding dimensions")
+        if binding.embedding_model != "gemini-embedding-001":
+            raise ValueError("unsupported corpus embedding model")
+        return FirestorePassageRetriever(
+            create_vector_store(
+                self.client,
+                self._embeddings,
+                collection_id=binding.vector_collection,
+            )
+        )
 
     def generation_adapter(self) -> ModelAdapter:
         if self.settings.answer_provider == "openrouter":

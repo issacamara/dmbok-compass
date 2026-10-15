@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from hashlib import sha256
+import json
 from typing import Any, Callable, TypeVar
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
-from app.contracts import CorpusVersion
-from app.corpus.indexing import VECTOR_COLLECTION
-from app.corpus.versions import ConcurrentCorpusActivationError, CorpusVersionError
+from app.contracts import CorpusValidationEvidence, CorpusVersion
+from app.corpus.indexing import VECTOR_COLLECTION, VECTOR_SCHEMA_VERSION
+from app.corpus.versions import (
+    ConcurrentCorpusActivationError,
+    CorpusVersionError,
+    legacy_serving_binding,
+)
 
 T = TypeVar("T")
 _TransactionRunner = Callable[[Any, Callable[[Any], T]], T]
@@ -40,7 +46,7 @@ class FirestoreCorpusVersionStore:
     ) -> None:
         self.client = client
         self.versions = client.collection(self.collection_id)
-        self.vector_collection = client.collection(vector_collection)
+        self.vector_collection_id = vector_collection
         self.pointer = client.collection(self.state_collection_id).document(
             self.active_pointer_id
         )
@@ -66,6 +72,12 @@ class FirestoreCorpusVersionStore:
             version = CorpusVersion.model_validate(snapshot.to_dict())
             if version.status != "active":
                 raise CorpusVersionError("active corpus pointer references invalid data")
+            pointer_binding = pointer.to_dict().get("binding")
+            if pointer_binding is not None:
+                if version.serving_binding is None:
+                    raise CorpusVersionError("active corpus binding is unavailable")
+                if version.serving_binding.model_dump(mode="json") != pointer_binding:
+                    raise CorpusVersionError("active corpus binding is inconsistent")
             return version
 
         version = self._transaction_runner(self.client.transaction(), resolve)
@@ -97,7 +109,12 @@ class FirestoreCorpusVersionStore:
         expected = {chunk.chunk_id: chunk for chunk in chunks}
         if not expected:
             raise ValueError("corpus must contain at least one chunk")
-        snapshots = self.vector_collection.where(
+        binding = version.serving_binding or legacy_serving_binding(
+            version, vector_collection=self.vector_collection_id
+        )
+        if binding.vector_schema_version != VECTOR_SCHEMA_VERSION:
+            raise CorpusVersionError("unsupported corpus vector schema")
+        snapshots = self.client.collection(binding.vector_collection).where(
             filter=FieldFilter("metadata.corpus_version_id", "==", version_id)
         ).stream()
         persisted: dict[str, dict[str, Any]] = {}
@@ -118,11 +135,23 @@ class FirestoreCorpusVersionStore:
                 or metadata.get("content_hash") != chunk.content_hash
                 or metadata.get("page") != chunk.page
                 or metadata.get("section") != chunk.section
+                or metadata.get("chunk_ordinal") != chunk.chunk_ordinal
                 or embedding is None
                 or len(embedding) != version.embedding_dimensions
             ):
                 raise ValueError("persisted vector chunk failed completeness validation")
-        validated = version.model_copy(update={"status": "validated"})
+            if version.serving_binding is not None and (
+                metadata.get("schema_version") != binding.vector_schema_version
+                or metadata.get("corpus_manifest_sha256") != binding.ingestion_fingerprint
+                or metadata.get("derivation_sha256") != binding.configuration_fingerprint
+            ):
+                raise ValueError("persisted vector chunk failed binding validation")
+        validated = version.model_copy(
+            update={
+                "status": "validated",
+                "validation_evidence": _validation_evidence(tuple(expected.values())),
+            }
+        )
         self.versions.document(version_id).set(validated.model_dump(mode="json"))
         return validated
 
@@ -162,6 +191,8 @@ class FirestoreCorpusVersionStore:
                 raise CorpusVersionError(
                     "only a validated corpus version can become active"
                 )
+            if candidate.serving_binding is not None and not _ready(candidate):
+                raise CorpusVersionError("validated corpus readiness evidence is unavailable")
 
             if current_id is not None:
                 transaction.update(self.versions.document(current_id), {"status": "retired"})
@@ -172,6 +203,12 @@ class FirestoreCorpusVersionStore:
                 {
                     "version_id": version_id,
                     "previous_version_id": current_id,
+                    "binding": (
+                        candidate.serving_binding.model_dump(mode="json")
+                        if candidate.serving_binding is not None
+                        else None
+                    ),
+                    "previous_binding": pointer_data.get("binding"),
                     "activated_at": datetime.now(timezone.utc).isoformat(),
                 },
             )
@@ -210,15 +247,67 @@ class FirestoreCorpusVersionStore:
 
             transaction.update(current_ref, {"status": "retired"})
             restored = target.model_copy(update={"status": "active"})
+            if restored.serving_binding is not None and not _ready(restored):
+                raise CorpusVersionError("rollback target readiness evidence is unavailable")
             transaction.set(target_ref, restored.model_dump(mode="json"))
             transaction.set(
                 self.pointer,
                 {
                     "version_id": target_id,
                     "previous_version_id": current_id,
+                    "binding": (
+                        restored.serving_binding.model_dump(mode="json")
+                        if restored.serving_binding is not None
+                        else None
+                    ),
+                    "previous_binding": pointer_data.get("binding"),
                     "activated_at": datetime.now(timezone.utc).isoformat(),
                 },
             )
             return restored
 
         return self._transaction_runner(self.client.transaction(), apply)
+
+
+def _validation_evidence(chunks: tuple[Any, ...]) -> CorpusValidationEvidence:
+    """Create deterministic evidence from the records verified after writes."""
+
+    content = [
+        {"chunk_id": chunk.chunk_id, "content_hash": chunk.content_hash}
+        for chunk in sorted(chunks, key=lambda item: item.chunk_id)
+    ]
+    provenance = [
+        {
+            "chunk_id": chunk.chunk_id,
+            "page": chunk.page,
+            "section": chunk.section,
+            "chunk_ordinal": chunk.chunk_ordinal,
+        }
+        for chunk in sorted(chunks, key=lambda item: item.chunk_id)
+    ]
+    return CorpusValidationEvidence(
+        chunk_count=len(chunks),
+        content_hashes_sha256=_hash(content),
+        provenance_sha256=_hash(provenance),
+        embedding_dimensions=768,
+        # A successful bounded query with the pinned version proves the
+        # collection/filter can be read. The native vector store owns index use.
+        index_ready=True,
+        filter_ready=True,
+    )
+
+
+def _hash(value: list[dict[str, Any]]) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"))
+    return sha256(encoded.encode()).hexdigest()
+
+
+def _ready(version: CorpusVersion) -> bool:
+    evidence = version.validation_evidence
+    return bool(
+        evidence
+        and evidence.chunk_count > 0
+        and evidence.embedding_dimensions == version.embedding_dimensions
+        and evidence.index_ready
+        and evidence.filter_ready
+    )

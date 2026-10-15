@@ -18,6 +18,7 @@ from app.answering import (
 )
 from app.contracts import EvaluationDataset, QuotaStatus
 from app.corpus.firestore import FirestoreCorpusVersionStore
+from app.corpus.versions import legacy_serving_binding
 from app.evaluation.generations import FirestoreEvaluationGenerationStore
 from app.evaluation.job import EvaluationOutcome, EvaluationRunError, EvaluationRunStore, EvaluationWorker
 from app.evaluation.job import FirestoreEvaluationRunStore
@@ -132,6 +133,12 @@ def _pinned_answerer(project: str, corpus_version_id: str) -> RetrievedAnswerSer
             timeout_ms=generation_timeout_ms,
         ),
         request_timeout_ms=request_timeout_ms,
+        retriever_for_binding=lambda pinned: factory.retriever_for_binding(
+            pinned.serving_binding
+            or legacy_serving_binding(
+                pinned, vector_collection=factory.settings.vector_collection
+            )
+        ),
     )
 
 

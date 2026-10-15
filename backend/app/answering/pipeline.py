@@ -20,6 +20,7 @@ from langchain_core.runnables import Runnable, RunnableConfig
 from app.contracts import (
     AnswerResponse,
     ApiError,
+    CorpusVersion,
     QuotaStatus,
     RetrievedPassage,
     RetrievalTrace,
@@ -420,12 +421,14 @@ class LangChainRagPipeline(Runnable[AnswerInvocation, AnswerResponse]):
         *,
         request_timeout_ms: int = DEFAULT_REQUEST_TIMEOUT_MS,
         clock: Callable[[], float] = perf_counter,
+        retriever_for_binding: Callable[[CorpusVersion], PassageRetriever] | None = None,
     ) -> None:
         self._retriever = retriever
         self._corpus_versions = corpus_versions
         self._policy = policy
         self._request_timeout_ms = request_timeout_ms
         self._clock = clock
+        self._retriever_for_binding = retriever_for_binding
 
     def invoke(
         self,
@@ -461,9 +464,14 @@ class LangChainRagPipeline(Runnable[AnswerInvocation, AnswerResponse]):
                 deadline=deadline,
             )
         try:
+            retriever = (
+                self._retriever_for_binding(active)
+                if self._retriever_for_binding is not None
+                else self._retriever
+            )
             async with asyncio.timeout(deadline.remaining_seconds()):
                 passages, retrieval_ms = await retrieve_off_event_loop(
-                    self._retriever.retrieve,
+                    retriever.retrieve,
                     input.question,
                     active_corpus_version_id=active.version_id,
                     limit=MAX_EVIDENCE_PASSAGES,
@@ -499,9 +507,14 @@ class RetrievedAnswerService:
         policy: GroundedAnswerPolicy,
         *,
         request_timeout_ms: int = DEFAULT_REQUEST_TIMEOUT_MS,
+        retriever_for_binding: Callable[[CorpusVersion], PassageRetriever] | None = None,
     ) -> None:
         self._pipeline = LangChainRagPipeline(
-            retriever, corpus_versions, policy, request_timeout_ms=request_timeout_ms
+            retriever,
+            corpus_versions,
+            policy,
+            request_timeout_ms=request_timeout_ms,
+            retriever_for_binding=retriever_for_binding,
         )
 
     async def answer(self, question: str, quota: QuotaStatus) -> AnswerResponse:

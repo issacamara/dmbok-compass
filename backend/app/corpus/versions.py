@@ -11,7 +11,8 @@ from copy import deepcopy
 from threading import RLock
 from typing import Any, Iterable, Protocol
 
-from app.contracts import CorpusVersion
+from app.contracts import CorpusServingBinding, CorpusVersion
+from app.corpus.indexing import VECTOR_SCHEMA_VERSION
 
 _UNSET = object()
 
@@ -26,6 +27,34 @@ class CorpusCompletenessError(CorpusVersionError):
 
 class ConcurrentCorpusActivationError(CorpusVersionError):
     """Raised when the active corpus changed while a candidate was ingesting."""
+
+
+def legacy_serving_binding(
+    version: CorpusVersion,
+    *,
+    vector_collection: str,
+) -> CorpusServingBinding:
+    """Adapt a pre-binding record without changing its persisted shape.
+
+    Earlier records did not persist a serving binding. They remain readable
+    only through the already-selected factory configuration; newly staged
+    records must persist a binding and never rely on this compatibility path.
+    """
+
+    import hashlib
+
+    fingerprint = hashlib.sha256(
+        f"legacy:{version.version_id}:{vector_collection}".encode()
+    ).hexdigest()
+    return CorpusServingBinding(
+        corpus_version_id=version.version_id,
+        vector_collection=vector_collection,
+        vector_schema_version=VECTOR_SCHEMA_VERSION,
+        embedding_model=version.embedding_model,
+        embedding_dimensions=version.embedding_dimensions,
+        ingestion_fingerprint=fingerprint,
+        configuration_fingerprint=fingerprint,
+    )
 
 
 class CorpusVersionStore(Protocol):

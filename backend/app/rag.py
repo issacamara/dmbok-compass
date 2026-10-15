@@ -16,6 +16,7 @@ from app.corpus.indexing import (
 from app.retrieval.search import FirestorePassageRetriever
 from model.fallback import FallbackAdapter
 from model.gemini import create_gemini_adapter
+from model.langchain import enforce_private_langchain_runtime
 from model.openrouter import OpenRouterAdapter, parse_json_schema_supported
 from model.protocol import ModelAdapter
 
@@ -55,6 +56,7 @@ class LangChainRagFactory:
     """Build consistent ingestion, retrieval, and generation integrations."""
 
     def __init__(self, client: Any, settings: LangChainRagSettings) -> None:
+        enforce_private_langchain_runtime()
         self.client = client
         self.settings = settings
         self._embeddings = create_vertex_embeddings(

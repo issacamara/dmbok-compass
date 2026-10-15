@@ -23,6 +23,7 @@ from app.contracts import (
     RetrievedPassage,
     RetrievalTrace,
 )
+from app.retrieval.search import retrieve_off_event_loop
 from model.langchain import LangChainGenerationRunnable, as_langchain_runnable
 from model.protocol import (
     GenerationError,
@@ -371,8 +372,8 @@ class LangChainRagPipeline(Runnable[AnswerInvocation, AnswerResponse]):
                 code="active_corpus_unavailable",
                 message="No active DMBOK corpus is available.",
             )
-        retrieval_started = perf_counter()
-        passages = self._retriever.retrieve(
+        passages, retrieval_ms = await retrieve_off_event_loop(
+            self._retriever.retrieve,
             input.question,
             active_corpus_version_id=active.version_id,
             limit=MAX_EVIDENCE_PASSAGES,
@@ -381,7 +382,7 @@ class LangChainRagPipeline(Runnable[AnswerInvocation, AnswerResponse]):
             input.question,
             passages,
             input.quota,
-            retrieval_ms=_elapsed_ms(retrieval_started),
+            retrieval_ms=round(max(0.0, retrieval_ms), 3),
         )
 
     @staticmethod

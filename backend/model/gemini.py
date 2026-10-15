@@ -10,9 +10,10 @@ from typing import Any
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langsmith import tracing_context
 
 from app.contracts.api import ModelAttempt
+
+from .langchain import private_langchain_execution, private_runnable_config
 
 from .protocol import (
     GenerationCandidate,
@@ -127,10 +128,10 @@ class GeminiAdapter(ModelAdapter):
             f"[{p.passage_id}] page {p.page}, {p.section}:\n{p.text}"
             for p in request.passages
         )
-        with tracing_context(enabled=False):
+        with private_langchain_execution():
             response = await chain.ainvoke(
                 {"prompt": request.prompt, "evidence": evidence},
-                config={"callbacks": []},
+                config=private_runnable_config(),
             )
         if not isinstance(response, dict) or response.get("parsing_error") is not None:
             raise GenerationError(
@@ -163,6 +164,7 @@ class GeminiAdapter(ModelAdapter):
             max_retries=0,
             timeout=timeout_seconds,
             temperature=0,
+            cache=False,
         )
         return _PROMPT | chat.with_structured_output(
             GenerationCandidate, method="json_schema", include_raw=True

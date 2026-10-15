@@ -26,7 +26,11 @@ from app.contracts import (
     RetrievalTrace,
 )
 from app.retrieval.search import retrieve_off_event_loop
-from model.langchain import LangChainGenerationRunnable, as_langchain_runnable
+from model.langchain import (
+    LangChainGenerationRunnable,
+    as_langchain_runnable,
+    reject_caller_runnable_configuration,
+)
 from model.protocol import (
     GenerationError,
     GenerationErrorCode,
@@ -436,7 +440,7 @@ class LangChainRagPipeline(Runnable[AnswerInvocation, AnswerResponse]):
         config: RunnableConfig | None = None,
         **kwargs: Any,
     ) -> AnswerResponse:
-        self._reject_callbacks(config, kwargs)
+        reject_caller_runnable_configuration(config, kwargs)
         import asyncio
 
         try:
@@ -451,7 +455,7 @@ class LangChainRagPipeline(Runnable[AnswerInvocation, AnswerResponse]):
         config: RunnableConfig | None = None,
         **kwargs: Any,
     ) -> AnswerResponse:
-        self._reject_callbacks(config, kwargs)
+        reject_caller_runnable_configuration(config, kwargs)
         if not isinstance(input, AnswerInvocation):
             raise TypeError("input must be an AnswerInvocation")
         deadline = RequestDeadline.start(self._request_timeout_ms, clock=self._clock)
@@ -490,12 +494,6 @@ class LangChainRagPipeline(Runnable[AnswerInvocation, AnswerResponse]):
             retrieval_ms=round(max(0.0, retrieval_ms), 3),
             deadline=deadline,
         )
-
-    @staticmethod
-    def _reject_callbacks(config: RunnableConfig | None, kwargs: dict[str, Any]) -> None:
-        if (config and config.get("callbacks")) or kwargs.get("callbacks"):
-            raise ValueError("Content-bearing LangChain callbacks are not supported.")
-
 
 class RetrievedAnswerService:
     """Bind active-corpus retrieval to the pure grounded answer policy."""

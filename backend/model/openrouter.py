@@ -14,11 +14,15 @@ import httpx
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import Runnable
 from langchain_openrouter import ChatOpenRouter
-from langsmith import tracing_context
 
 from app.contracts.api import ModelAttempt
 
-from .langchain import LangChainGenerationRunnable, as_langchain_runnable
+from .langchain import (
+    LangChainGenerationRunnable,
+    as_langchain_runnable,
+    private_langchain_execution,
+    private_runnable_config,
+)
 from .protocol import (
     GenerationCandidate,
     GenerationError,
@@ -159,8 +163,8 @@ class OpenRouterAdapter(ModelAdapter):
     ) -> GenerationResult:
         chain = self._chain_factory(model, timeout_ms, self._json_schema_supported)
         values = {"prompt": request.prompt, "evidence": _render_evidence(request)}
-        with tracing_context(enabled=False):
-            response = await chain.ainvoke(values, config={"callbacks": []})
+        with private_langchain_execution():
+            response = await chain.ainvoke(values, config=private_runnable_config())
 
         if self._json_schema_supported:
             if not isinstance(response, dict):
@@ -218,6 +222,7 @@ class OpenRouterAdapter(ModelAdapter):
             max_retries=0,
             timeout=timeout_ms,
             temperature=0,
+            cache=False,
         )
         if json_schema_supported:
             output = chat.with_structured_output(

@@ -207,6 +207,40 @@ class CorpusVersion(ContractModel):
     embedding_dimensions: Literal[768] = 768
     status: Literal["staged", "validated", "active", "retired"]
     created_at: datetime
+    serving_binding: "CorpusServingBinding | None" = None
+    validation_evidence: "CorpusValidationEvidence | None" = None
+
+    @model_validator(mode="after")
+    def validate_serving_binding(self) -> "CorpusVersion":
+        if (
+            self.serving_binding is not None
+            and self.serving_binding.corpus_version_id != self.version_id
+        ):
+            raise ValueError("serving binding must belong to its corpus version")
+        return self
+
+
+class CorpusServingBinding(ContractModel):
+    """The immutable storage/configuration identity for one served corpus."""
+
+    corpus_version_id: str = Field(min_length=1, max_length=128)
+    vector_collection: str = Field(min_length=1, max_length=256)
+    vector_schema_version: str = Field(min_length=1, max_length=32)
+    embedding_model: str = Field(min_length=1, max_length=128)
+    embedding_dimensions: Literal[768] = 768
+    ingestion_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+    configuration_fingerprint: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class CorpusValidationEvidence(ContractModel):
+    """Persisted proof that a bound vector corpus is ready to serve."""
+
+    chunk_count: int = Field(ge=1)
+    content_hashes_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    provenance_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    embedding_dimensions: Literal[768] = 768
+    index_ready: bool
+    filter_ready: bool
 
 
 class DocumentChunk(ContractModel):

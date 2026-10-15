@@ -10,8 +10,9 @@ from pathlib import Path
 
 from google.cloud import firestore, storage
 
-from app.contracts import CorpusVersion
+from app.contracts import CorpusServingBinding, CorpusVersion
 from app.corpus.chunking import SourcePage, chunk_pages
+from app.corpus.indexing import VECTOR_SCHEMA_VERSION
 from app.corpus.manifest import create_source_manifest, default_derivation
 from app.corpus.firestore import FirestoreCorpusVersionStore
 from app.ingestion.extract import extract_pdf
@@ -57,6 +58,14 @@ def main() -> None:
             embedding_model="gemini-embedding-001",
             status="staged",
             created_at=datetime.now(timezone.utc),
+            serving_binding=CorpusServingBinding(
+                corpus_version_id=manifest.corpus_version_id,
+                vector_collection=settings.vector_collection,
+                vector_schema_version=VECTOR_SCHEMA_VERSION,
+                embedding_model="gemini-embedding-001",
+                ingestion_fingerprint=manifest.manifest_sha256,
+                configuration_fingerprint=manifest.derivation_sha256,
+            ),
         )
         client = firestore.Client(project=project)
         factory = LangChainRagFactory(client, settings)

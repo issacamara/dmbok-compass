@@ -36,6 +36,7 @@ from app.metrics import AggregateMetricRepository, FirestoreAggregateMetricRepos
 from app.quota import FirestoreQuotaRepository, QuotaExceededError, QuotaRepository
 from app.telemetry import LoggingTelemetryAdapter, TelemetryAdapter, error_event, response_event
 from app.corpus.firestore import FirestoreCorpusVersionStore
+from app.corpus.versions import legacy_serving_binding
 from app.rag import LangChainRagFactory
 from app.evaluation import (
     CloudRunEvaluationJobDispatcher,
@@ -255,6 +256,12 @@ def configured_question_answerer() -> RetrievedAnswerService:
             client, vector_collection=factory.settings.vector_collection
         ),
         policy,
+        retriever_for_binding=lambda corpus: factory.retriever_for_binding(
+            corpus.serving_binding
+            or legacy_serving_binding(
+                corpus, vector_collection=factory.settings.vector_collection
+            )
+        ),
     )
 
 

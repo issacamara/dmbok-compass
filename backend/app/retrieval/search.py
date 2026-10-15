@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
 from math import isfinite
+from time import perf_counter
+from typing import Callable
 
 from google.cloud.firestore_v1.base_query import FieldFilter
 from langchain_core.documents import Document
@@ -11,6 +15,38 @@ from langchain_google_firestore import FirestoreVectorStore
 from app.contracts import RetrievedPassage
 
 DEFAULT_LIMIT = 5
+
+# Firestore's LangChain vector-store integration exposes only synchronous search.
+# Keep that work off request event loops and cap concurrent in-process RPCs.
+_RETRIEVAL_EXECUTOR = ThreadPoolExecutor(
+    max_workers=4,
+    thread_name_prefix="dmbok-retrieval",
+)
+
+
+async def retrieve_off_event_loop(
+    retrieve: Callable[..., tuple[RetrievedPassage, ...]],
+    question: str,
+    *,
+    active_corpus_version_id: str,
+    limit: int,
+) -> tuple[tuple[RetrievedPassage, ...], float]:
+    """Run one request-local synchronous retrieval in the bounded pool."""
+
+    def execute() -> tuple[tuple[RetrievedPassage, ...], float]:
+        started = perf_counter()
+        passages = retrieve(
+            question,
+            active_corpus_version_id=active_corpus_version_id,
+            limit=limit,
+        )
+        return passages, (perf_counter() - started) * 1000
+
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(
+        _RETRIEVAL_EXECUTOR,
+        execute,
+    )
 
 
 class FirestorePassageRetriever:

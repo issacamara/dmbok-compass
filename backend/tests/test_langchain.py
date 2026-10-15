@@ -1,9 +1,14 @@
 import asyncio
 import json
+import threading
+from datetime import datetime, timezone
 
 import httpx
 import pytest
 
+from app.answering import AnswerInvocation, GroundedAnswerPolicy, RetrievedAnswerService
+from app.contracts import CorpusVersion, QuotaStatus, RetrievedPassage
+from model.fake import FakeAdapter
 from model.openrouter import OpenRouterAdapter
 from model.protocol import GenerationError, GenerationErrorCode, GenerationRequest, TimeoutBudget
 
@@ -88,3 +93,170 @@ def test_runnable_rejects_content_bearing_callbacks() -> None:
     runnable = OpenRouterAdapter("test-key", transport=httpx.MockTransport(lambda _: httpx.Response(200, json=response()))).as_langchain_runnable()
     with pytest.raises(ValueError, match="callbacks"):
         asyncio.run(runnable.ainvoke(request(), {"callbacks": [object()]}))
+
+
+def quota() -> QuotaStatus:
+    return QuotaStatus(
+        user_used=1,
+        user_limit=100,
+        global_used=1,
+        global_limit=100,
+        resets_at=datetime(2026, 10, 7, tzinfo=timezone.utc),
+    )
+
+
+def passage(chunk_id: str = "chunk-1") -> RetrievedPassage:
+    return RetrievedPassage(
+        chunk_id=chunk_id,
+        page=1,
+        section="Governance",
+        excerpt="Stored DMBOK evidence.",
+        relevance_score=0.9,
+    )
+
+
+class FakeCorpusStore:
+    def __init__(self, version_id: str) -> None:
+        self._active = CorpusVersion(
+            version_id=version_id,
+            source_uri="gs://bucket/dmbok.pdf",
+            embedding_model="gemini-embedding-001",
+            status="active",
+            created_at=datetime(2026, 10, 6, tzinfo=timezone.utc),
+        )
+
+    def active(self) -> CorpusVersion:
+        return self._active
+
+
+class BlockingRetriever:
+    def __init__(self) -> None:
+        self.started = threading.Event()
+        self.release = threading.Event()
+        self.calls: list[tuple[str, str, int]] = []
+
+    def retrieve(self, question: str, *, active_corpus_version_id: str, limit: int):
+        self.calls.append((question, active_corpus_version_id, limit))
+        self.started.set()
+        assert self.release.wait(timeout=1)
+        return (passage("shared"),)
+
+
+class RecordingRetriever:
+    def __init__(self, expected_calls: int) -> None:
+        self.calls: list[tuple[str, str, int]] = []
+        self._barrier = threading.Barrier(expected_calls)
+
+    def retrieve(self, question: str, *, active_corpus_version_id: str, limit: int):
+        self.calls.append((question, active_corpus_version_id, limit))
+        self._barrier.wait(timeout=1)
+        return (passage("shared"),)
+
+
+class CountingAdapter(FakeAdapter):
+    def __init__(self) -> None:
+        super().__init__(
+            {
+                "outcome": "answer",
+                "answer_text": "Grounded.",
+                "citations": [{"citation_id": "chunk-1"}],
+            }
+        )
+        self.calls = 0
+
+    async def generate(self, request: GenerationRequest):
+        self.calls += 1
+        return await super().generate(request)
+
+
+def service(retriever, version_id: str = "v1", adapter: FakeAdapter | None = None):
+    policy = GroundedAnswerPolicy(
+        adapter
+        or FakeAdapter(
+            {
+                "outcome": "answer",
+                "answer_text": "Grounded.",
+                "citations": [
+                    {
+                        "citation_id": "shared",
+                        "page": 1,
+                        "section": "Governance",
+                        "excerpt": "Stored DMBOK evidence.",
+                    }
+                ],
+            }
+        )
+    )
+    return RetrievedAnswerService(retriever, FakeCorpusStore(version_id), policy)
+
+
+def test_blocking_retrieval_does_not_block_other_requests_or_event_loop() -> None:
+    async def exercise() -> None:
+        blocked = BlockingRetriever()
+        slow = service(blocked)
+        fast = service(RecordingRetriever(1), version_id="v2")
+        slow_task = asyncio.create_task(
+            slow.answer("slow question", quota())
+        )
+        assert await asyncio.to_thread(blocked.started.wait, 1)
+
+        heartbeat = asyncio.Event()
+
+        async def tick() -> None:
+            await asyncio.sleep(0)
+            heartbeat.set()
+
+        fast_response, _ = await asyncio.gather(
+            fast.answer("fast question", quota()), tick()
+        )
+        assert heartbeat.is_set()
+        assert fast_response.outcome == "answer"
+
+        blocked.release.set()
+        assert (await slow_task).outcome == "answer"
+
+    asyncio.run(exercise())
+
+
+def test_concurrent_invocations_keep_corpus_bindings_request_local() -> None:
+    async def exercise() -> None:
+        retriever = RecordingRetriever(3)
+        responses = await asyncio.gather(
+            *(
+                service(retriever, version_id).as_langchain_runnable().ainvoke(
+                    AnswerInvocation(question=question, quota=quota())
+                )
+                for question, version_id in (
+                    ("first", "v1"),
+                    ("second", "v2"),
+                    ("third", "v3"),
+                )
+            )
+        )
+        assert [response.outcome for response in responses] == ["answer"] * 3
+        assert set(retriever.calls) == {
+            ("first", "v1", 5),
+            ("second", "v2", 5),
+            ("third", "v3", 5),
+        }
+
+    asyncio.run(exercise())
+
+
+def test_cancelling_retrieval_does_not_start_generation_or_extra_retrieval_work() -> None:
+    async def exercise() -> None:
+        retriever = BlockingRetriever()
+        adapter = CountingAdapter()
+        pending = asyncio.create_task(service(retriever, adapter=adapter).answer("question", quota()))
+        assert await asyncio.to_thread(retriever.started.wait, 1)
+
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+
+        retriever.release.set()
+        await asyncio.sleep(0)
+        assert retriever.calls == [("question", "v1", 5)]
+        assert adapter.calls == 0
+
+    asyncio.run(exercise())

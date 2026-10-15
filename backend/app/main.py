@@ -8,8 +8,14 @@ from fastapi.responses import JSONResponse
 
 from app.api.evaluations import evaluation_service, router as evaluations_router
 from app.api.evaluation_datasets import evaluation_generation_store, router as evaluation_datasets_router
-from app.answering import QuestionAnswerer
-from app.answering.pipeline import GroundedAnswerPolicy, RetrievedAnswerService
+from app.answering import (
+    DEFAULT_GENERATION_TIMEOUT_MS,
+    DEFAULT_REQUEST_TIMEOUT_MS,
+    GroundedAnswerPolicy,
+    QuestionAnswerer,
+    RetrievedAnswerService,
+    timeout_settings,
+)
 from app.contracts.api import (
     AggregateMetric,
     AnswerResponse,
@@ -245,10 +251,14 @@ def configured_question_answerer() -> RetrievedAnswerService:
         adapter = factory.generation_adapter()
     except ValueError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    request_timeout_ms, generation_timeout_ms = timeout_settings(
+        os.environ.get("ANSWER_REQUEST_TIMEOUT_MS", str(DEFAULT_REQUEST_TIMEOUT_MS)),
+        os.environ.get("ANSWER_GENERATION_TIMEOUT_MS", str(DEFAULT_GENERATION_TIMEOUT_MS)),
+    )
     policy = GroundedAnswerPolicy(
         adapter,
         model_name=factory.selected_model(),
-        timeout_ms=int(os.environ.get("ANSWER_GENERATION_TIMEOUT_MS", "60000")),
+        timeout_ms=generation_timeout_ms,
     )
     return RetrievedAnswerService(
         factory.retriever(),
@@ -256,6 +266,7 @@ def configured_question_answerer() -> RetrievedAnswerService:
             client, vector_collection=factory.settings.vector_collection
         ),
         policy,
+        request_timeout_ms=request_timeout_ms,
         retriever_for_binding=lambda corpus: factory.retriever_for_binding(
             corpus.serving_binding
             or legacy_serving_binding(

@@ -22,6 +22,8 @@ from app.contracts.api import (
     RetrievalTrace,
 )
 from app.answering.pipeline import (
+    DEFAULT_GENERATION_TIMEOUT_MS,
+    DEFAULT_REQUEST_TIMEOUT_MS,
     MAX_EVIDENCE_PASSAGES,
     PARTIAL_EVIDENCE_THRESHOLD,
     STRONG_EVIDENCE_THRESHOLD,
@@ -159,6 +161,8 @@ def test_migration_baseline_matches_artifacts_and_effective_routes() -> None:
     assert settings.location == defaults["location"]
     assert settings.vector_collection == defaults["vectorCollection"]
     assert settings.answer_provider == defaults["answerProvider"]
+    assert DEFAULT_REQUEST_TIMEOUT_MS == defaults["answerRequestTimeoutMs"]
+    assert DEFAULT_GENERATION_TIMEOUT_MS == defaults["answerGenerationTimeoutMs"]
     assert OPENROUTER_PRIMARY_MODEL == defaults["openrouterPrimaryModel"]
     assert OPENROUTER_FALLBACK_MODEL == defaults["openrouterFallbackModel"]
 
@@ -167,6 +171,7 @@ def test_migration_baseline_matches_artifacts_and_effective_routes() -> None:
         key: defaults[key]
         for key in (
             "answerProvider",
+            "answerRequestTimeoutMs",
             "answerGenerationTimeoutMs",
             "openrouterPrimaryModel",
             "openrouterFallbackModel",

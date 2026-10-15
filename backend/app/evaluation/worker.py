@@ -9,7 +9,13 @@ from typing import Callable
 
 from google.cloud import firestore
 
-from app.answering import GroundedAnswerPolicy, RetrievedAnswerService
+from app.answering import (
+    DEFAULT_GENERATION_TIMEOUT_MS,
+    DEFAULT_REQUEST_TIMEOUT_MS,
+    GroundedAnswerPolicy,
+    RetrievedAnswerService,
+    timeout_settings,
+)
 from app.contracts import EvaluationDataset, QuotaStatus
 from app.corpus.firestore import FirestoreCorpusVersionStore
 from app.corpus.versions import legacy_serving_binding
@@ -114,14 +120,19 @@ def _pinned_answerer(project: str, corpus_version_id: str) -> RetrievedAnswerSer
         def active(self):
             return corpus
 
+    request_timeout_ms, generation_timeout_ms = timeout_settings(
+        os.environ.get("ANSWER_REQUEST_TIMEOUT_MS", str(DEFAULT_REQUEST_TIMEOUT_MS)),
+        os.environ.get("ANSWER_GENERATION_TIMEOUT_MS", str(DEFAULT_GENERATION_TIMEOUT_MS)),
+    )
     return RetrievedAnswerService(
         factory.retriever(),
         _PinnedCorpus(),
         GroundedAnswerPolicy(
             adapter,
             model_name=factory.selected_model(),
-            timeout_ms=int(os.environ.get("ANSWER_GENERATION_TIMEOUT_MS", "60000")),
+            timeout_ms=generation_timeout_ms,
         ),
+        request_timeout_ms=request_timeout_ms,
         retriever_for_binding=lambda pinned: factory.retriever_for_binding(
             pinned.serving_binding
             or legacy_serving_binding(

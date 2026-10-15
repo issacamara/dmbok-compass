@@ -9,6 +9,7 @@ provenance before the response leaves the service.
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from math import isfinite
 from time import perf_counter
@@ -28,6 +29,7 @@ from app.retrieval.search import retrieve_off_event_loop
 from model.langchain import LangChainGenerationRunnable, as_langchain_runnable
 from model.protocol import (
     GenerationError,
+    GenerationErrorCode,
     GenerationRequest,
     ModelAdapter,
     Passage,
@@ -40,6 +42,8 @@ EvidenceOutcome = Literal["strong", "partial", "absent"]
 STRONG_EVIDENCE_THRESHOLD = 0.75
 PARTIAL_EVIDENCE_THRESHOLD = 0.45
 MAX_EVIDENCE_PASSAGES = 5
+DEFAULT_REQUEST_TIMEOUT_MS = 14_000
+DEFAULT_GENERATION_TIMEOUT_MS = 8_000
 
 REFUSAL_TEXT = "I could not find enough relevant evidence in the DMBOK corpus to answer that question."
 GROUNDING_PROMPT = """You are a DMBOK Compass answerer.
@@ -63,6 +67,48 @@ class EvidenceBundle:
     outcome: EvidenceOutcome
     passages: tuple[RetrievedPassage, ...]
     basis: str
+
+
+@dataclass(frozen=True)
+class RequestDeadline:
+    """One monotonic deadline shared by retrieval and model generation."""
+
+    started: float
+    total_ms: int
+    clock: Callable[[], float] = perf_counter
+
+    @classmethod
+    def start(
+        cls, total_ms: int, *, clock: Callable[[], float] = perf_counter
+    ) -> "RequestDeadline":
+        if total_ms < 1:
+            raise ValueError("request timeout must be positive")
+        return cls(started=clock(), total_ms=total_ms, clock=clock)
+
+    def elapsed_ms(self) -> float:
+        return round(max(0.0, (self.clock() - self.started) * 1000), 3)
+
+    def remaining_ms(self) -> int:
+        return max(0, self.total_ms - int(self.elapsed_ms()))
+
+    def remaining_seconds(self) -> float:
+        return self.remaining_ms() / 1000
+
+
+def timeout_settings(request_timeout: str | int, generation_timeout: str | int) -> tuple[int, int]:
+    """Parse the externally configured whole-path and generation budgets."""
+
+    try:
+        request_ms = int(request_timeout)
+        generation_ms = int(generation_timeout)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("answer timeout settings must be integer milliseconds") from exc
+    if not 1 <= generation_ms <= request_ms <= 60_000:
+        raise ValueError(
+            "answer generation timeout must be positive, no greater than the request timeout, "
+            "and the request timeout must not exceed 60000 ms"
+        )
+    return request_ms, generation_ms
 
 
 def classify_evidence(
@@ -117,7 +163,7 @@ class GroundedAnswerPolicy:
         adapter: ModelAdapter,
         *,
         model_name: str = "answer-model",
-        timeout_ms: int = 8_000,
+        timeout_ms: int = DEFAULT_GENERATION_TIMEOUT_MS,
     ) -> None:
         if not model_name.strip():
             raise ValueError("model_name must be non-empty")
@@ -135,13 +181,14 @@ class GroundedAnswerPolicy:
         quota: QuotaStatus,
         *,
         retrieval_ms: float | None = None,
+        deadline: RequestDeadline | None = None,
     ) -> AnswerResponse:
         """Return a cited answer, qualified answer, or evidence-based refusal."""
 
         if not question or not question.strip():
             raise ValueError("question must be non-empty")
 
-        started = perf_counter()
+        deadline = deadline or RequestDeadline.start(self._timeout_ms)
         retrieved = tuple(passages)[:MAX_EVIDENCE_PASSAGES]
         evidence = classify_evidence(retrieved)
         timings = {"retrieval_ms": retrieval_ms} if retrieval_ms is not None else {}
@@ -158,7 +205,7 @@ class GroundedAnswerPolicy:
                     trace=trace,
                     quota=quota,
                 ),
-                started,
+                deadline,
             )
 
         request = GenerationRequest(
@@ -175,10 +222,17 @@ class GroundedAnswerPolicy:
                 for passage in evidence.passages
             ],
         )
-        generation_started = perf_counter()
+        generation_started = deadline.clock()
         try:
+            generation_budget_ms = min(self._timeout_ms, deadline.remaining_ms())
+            if generation_budget_ms < 1:
+                raise GenerationError(
+                    GenerationErrorCode.TIMEOUT,
+                    "Answer generation exceeded the whole-request deadline.",
+                    retryable=True,
+                )
             result = await self._generator.ainvoke(
-                request.model_copy(update={"timeout": TimeoutBudget(total_ms=self._timeout_ms)})
+                request.model_copy(update={"timeout": TimeoutBudget(total_ms=generation_budget_ms)})
             )
         except GenerationError as exc:
             if exc.attempts:
@@ -188,7 +242,7 @@ class GroundedAnswerPolicy:
                 })
             return self._finalize(
                 self._operational_refusal(trace, quota, exc),
-                started,
+                deadline,
                 generation_started,
             )
 
@@ -203,6 +257,21 @@ class GroundedAnswerPolicy:
                 "model_output": result.raw_output,
             }
         )
+        if deadline.remaining_ms() < 1:
+            return self._finalize(
+                self._operational_refusal(
+                    trace,
+                    quota,
+                    GenerationError(
+                        GenerationErrorCode.TIMEOUT,
+                        "Answer generation exceeded the whole-request deadline.",
+                        retryable=True,
+                        attempts=tuple(result.usage.attempts),
+                    ),
+                ),
+                deadline,
+                generation_started,
+            )
         candidate = result.candidate
         if candidate.outcome == "refusal":
             return self._finalize(
@@ -212,7 +281,7 @@ class GroundedAnswerPolicy:
                     trace=trace,
                     quota=quota,
                 ),
-                started,
+                deadline,
             )
 
         citations = validated_citations(candidate, evidence.passages)
@@ -223,7 +292,7 @@ class GroundedAnswerPolicy:
                     quota,
                     "The model response did not contain a citation to supplied evidence.",
                 ),
-                started,
+                deadline,
             )
 
         outcome = "qualified" if evidence.outcome == "partial" else candidate.outcome
@@ -236,32 +305,44 @@ class GroundedAnswerPolicy:
                 trace=trace,
                 quota=quota,
             ),
-            started,
+            deadline,
         )
 
     @staticmethod
     def _finalize(
         response: AnswerResponse,
-        started: float,
+        deadline: RequestDeadline,
         generation_started: float | None = None,
     ) -> AnswerResponse:
         timings = dict(response.trace.timings_ms)
         if generation_started is not None and "generation_ms" not in timings:
-            timings["generation_ms"] = _elapsed_ms(generation_started)
-        timings["total_ms"] = _elapsed_ms(started)
+            timings["generation_ms"] = round(
+                max(0.0, (deadline.clock() - generation_started) * 1000), 3
+            )
+        timings["total_ms"] = deadline.elapsed_ms()
         return response.model_copy(
             update={"trace": response.trace.model_copy(update={"timings_ms": timings})}
         )
 
     def service_refusal(
-        self, quota: QuotaStatus, *, code: str, message: str
+        self,
+        quota: QuotaStatus,
+        *,
+        code: str,
+        message: str,
+        deadline: RequestDeadline | None = None,
+        retrieval_ms: float | None = None,
     ) -> AnswerResponse:
-        return AnswerResponse(
+        deadline = deadline or RequestDeadline.start(self._timeout_ms)
+        timings = {"retrieval_ms": retrieval_ms} if retrieval_ms is not None else {}
+        return self._finalize(AnswerResponse(
             outcome="refusal",
             error=ApiError(code=code, message=message, retryable=True, status=503),
-            trace=RetrievalTrace(retrieved_passages=[], selected_model=self._model_name),
+            trace=RetrievalTrace(
+                retrieved_passages=[], selected_model=self._model_name, timings_ms=timings
+            ),
             quota=quota,
-        )
+        ), deadline)
 
     def _operational_refusal(
         self, trace: RetrievalTrace, quota: QuotaStatus, error: GenerationError
@@ -337,11 +418,16 @@ class LangChainRagPipeline(Runnable[AnswerInvocation, AnswerResponse]):
         retriever: PassageRetriever,
         corpus_versions: ActiveCorpusStore,
         policy: GroundedAnswerPolicy,
+        *,
+        request_timeout_ms: int = DEFAULT_REQUEST_TIMEOUT_MS,
+        clock: Callable[[], float] = perf_counter,
         retriever_for_binding: Callable[[CorpusVersion], PassageRetriever] | None = None,
     ) -> None:
         self._retriever = retriever
         self._corpus_versions = corpus_versions
         self._policy = policy
+        self._request_timeout_ms = request_timeout_ms
+        self._clock = clock
         self._retriever_for_binding = retriever_for_binding
 
     def invoke(
@@ -368,29 +454,41 @@ class LangChainRagPipeline(Runnable[AnswerInvocation, AnswerResponse]):
         self._reject_callbacks(config, kwargs)
         if not isinstance(input, AnswerInvocation):
             raise TypeError("input must be an AnswerInvocation")
+        deadline = RequestDeadline.start(self._request_timeout_ms, clock=self._clock)
         active = self._corpus_versions.active()
         if active is None:
             return self._policy.service_refusal(
                 input.quota,
                 code="active_corpus_unavailable",
                 message="No active DMBOK corpus is available.",
+                deadline=deadline,
             )
-        retriever = (
-            self._retriever_for_binding(active)
-            if self._retriever_for_binding is not None
-            else self._retriever
-        )
-        passages, retrieval_ms = await retrieve_off_event_loop(
-            retriever.retrieve,
-            input.question,
-            active_corpus_version_id=active.version_id,
-            limit=MAX_EVIDENCE_PASSAGES,
-        )
+        try:
+            retriever = (
+                self._retriever_for_binding(active)
+                if self._retriever_for_binding is not None
+                else self._retriever
+            )
+            async with asyncio.timeout(deadline.remaining_seconds()):
+                passages, retrieval_ms = await retrieve_off_event_loop(
+                    retriever.retrieve,
+                    input.question,
+                    active_corpus_version_id=active.version_id,
+                    limit=MAX_EVIDENCE_PASSAGES,
+                )
+        except TimeoutError:
+            return self._policy.service_refusal(
+                input.quota,
+                code="answer_request_timeout",
+                message="Answer retrieval exceeded the whole-request deadline.",
+                deadline=deadline,
+            )
         return await self._policy.answer(
             input.question,
             passages,
             input.quota,
             retrieval_ms=round(max(0.0, retrieval_ms), 3),
+            deadline=deadline,
         )
 
     @staticmethod
@@ -407,10 +505,16 @@ class RetrievedAnswerService:
         retriever: PassageRetriever,
         corpus_versions: ActiveCorpusStore,
         policy: GroundedAnswerPolicy,
+        *,
+        request_timeout_ms: int = DEFAULT_REQUEST_TIMEOUT_MS,
         retriever_for_binding: Callable[[CorpusVersion], PassageRetriever] | None = None,
     ) -> None:
         self._pipeline = LangChainRagPipeline(
-            retriever, corpus_versions, policy, retriever_for_binding
+            retriever,
+            corpus_versions,
+            policy,
+            request_timeout_ms=request_timeout_ms,
+            retriever_for_binding=retriever_for_binding,
         )
 
     async def answer(self, question: str, quota: QuotaStatus) -> AnswerResponse:

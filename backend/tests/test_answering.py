@@ -4,10 +4,18 @@ import asyncio
 
 import pytest
 
-from app.answering import AnswerInvocation, GroundedAnswerPolicy, RetrievedAnswerService, classify_evidence
+from app.answering import (
+    AnswerInvocation,
+    GroundedAnswerPolicy,
+    LangChainRagPipeline,
+    RequestDeadline,
+    RetrievedAnswerService,
+    timeout_settings,
+    classify_evidence,
+)
 from app.contracts import CorpusVersion, QuotaStatus, RetrievedPassage
 from model.fake import FakeAdapter
-from model.protocol import GenerationCandidate
+from model.protocol import GenerationCandidate, GenerationResult, GenerationRequest, UsageMetadata
 
 
 def quota() -> QuotaStatus:
@@ -48,6 +56,37 @@ class FakeCorpusStore:
 
     def active(self):
         return self._active
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, milliseconds: int) -> None:
+        self.now += milliseconds / 1000
+
+
+class BudgetAdapter:
+    def __init__(self, *, clock: FakeClock | None = None, advance_ms: int = 0) -> None:
+        self.budgets: list[int] = []
+        self._clock = clock
+        self._advance_ms = advance_ms
+
+    async def generate(self, request: GenerationRequest) -> GenerationResult:
+        self.budgets.append(request.timeout.total_ms)
+        if self._clock is not None:
+            self._clock.advance(self._advance_ms)
+        return GenerationResult(
+            candidate=GenerationCandidate(
+                outcome="answer",
+                answer_text="Grounded.",
+                citations=[{"citation_id": "chunk-1", "page": 1, "section": "x", "excerpt": "y"}],
+            ),
+            usage=UsageMetadata(provider="test", model="test-model"),
+        )
 
 
 def active_version() -> CorpusVersion:
@@ -204,6 +243,80 @@ def test_retrieved_service_includes_retrieval_timing_in_ephemeral_trace() -> Non
 
     assert response.trace.timings_ms["retrieval_ms"] >= 0
     assert response.trace.timings_ms["total_ms"] >= response.trace.timings_ms["retrieval_ms"]
+
+
+def test_whole_request_deadline_leaves_only_remaining_generation_budget() -> None:
+    clock = FakeClock()
+    adapter = BudgetAdapter()
+
+    class SlowRetriever(FakeRetriever):
+        def retrieve(self, *args, **kwargs):
+            clock.advance(6_000)
+            return super().retrieve(*args, **kwargs)
+
+    response = asyncio.run(LangChainRagPipeline(
+        SlowRetriever((passage("chunk-1", 0.9),)),
+        FakeCorpusStore(active_version()),
+        GroundedAnswerPolicy(adapter, timeout_ms=8_000),
+        request_timeout_ms=14_000,
+        clock=clock,
+    ).ainvoke(AnswerInvocation(question="What is governance?", quota=quota())))
+
+    assert adapter.budgets == [8_000]
+    assert response.trace.timings_ms["total_ms"] == 6_000
+
+
+def test_whole_request_exhaustion_is_an_operational_refusal_without_generation() -> None:
+    clock = FakeClock()
+    adapter = BudgetAdapter()
+
+    class ExhaustingRetriever(FakeRetriever):
+        def retrieve(self, *args, **kwargs):
+            clock.advance(14_000)
+            return super().retrieve(*args, **kwargs)
+
+    response = asyncio.run(LangChainRagPipeline(
+        ExhaustingRetriever((passage("chunk-1", 0.9),)),
+        FakeCorpusStore(active_version()),
+        GroundedAnswerPolicy(adapter, timeout_ms=8_000),
+        request_timeout_ms=14_000,
+        clock=clock,
+    ).ainvoke(AnswerInvocation(question="What is governance?", quota=quota())))
+
+    assert adapter.budgets == []
+    assert response.outcome == "refusal"
+    assert response.error is not None
+    assert response.error.code == "answer_provider_timeout"
+    assert response.trace.timings_ms["total_ms"] == 14_000
+
+
+def test_generation_that_overruns_the_shared_deadline_is_not_a_success() -> None:
+    clock = FakeClock()
+    adapter = BudgetAdapter(clock=clock, advance_ms=14_000)
+    deadline = RequestDeadline.start(14_000, clock=clock)
+
+    response = asyncio.run(GroundedAnswerPolicy(adapter, timeout_ms=8_000).answer(
+        "What is governance?", [passage("chunk-1", 0.9)], quota(), deadline=deadline
+    ))
+
+    assert response.outcome == "refusal"
+    assert response.error is not None
+    assert response.error.code == "answer_provider_timeout"
+
+
+@pytest.mark.parametrize(
+    ("request_timeout", "generation_timeout"),
+    [("0", "1"), ("14000", "14001"), ("not-ms", "8000")],
+)
+def test_timeout_settings_reject_invalid_or_legacy_configuration(
+    request_timeout: str, generation_timeout: str
+) -> None:
+    with pytest.raises(ValueError):
+        timeout_settings(request_timeout, generation_timeout)
+
+
+def test_timeout_settings_use_the_approved_provisional_budget() -> None:
+    assert timeout_settings("14000", "8000") == (14_000, 8_000)
 
 
 def test_provider_failure_is_safe_refusal() -> None:

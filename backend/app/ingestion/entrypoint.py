@@ -3,8 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
+import signal
 import tempfile
+from collections.abc import Callable
+from threading import Event
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -16,15 +20,47 @@ from app.corpus.indexing import VECTOR_SCHEMA_VERSION
 from app.corpus.manifest import create_source_manifest, default_derivation
 from app.corpus.firestore import FirestoreCorpusVersionStore
 from app.ingestion.extract import extract_pdf
-from app.ingestion.job import CorpusIngestionJob
+from app.ingestion.job import CorpusIngestionJob, IngestionInterrupted
 from app.rag import LangChainRagFactory, LangChainRagSettings
 
 
 def main() -> None:
+    termination_requested = Event()
+    previous_handler = signal.signal(signal.SIGTERM, lambda *_: termination_requested.set())
+    try:
+        _run(termination_requested.is_set)
+    except IngestionInterrupted:
+        print(json.dumps({"event": "dmbok_ingestion_interrupted", "exit_code": 1}))
+        raise SystemExit(1) from None
+    finally:
+        signal.signal(signal.SIGTERM, previous_handler)
+
+
+def _run(termination_requested: Callable[[], bool]) -> None:
     project = _required("GOOGLE_CLOUD_PROJECT")
+    settings = LangChainRagSettings.from_environment()
+    client = firestore.Client(project=project)
+    versions = FirestoreCorpusVersionStore(client, vector_collection=settings.vector_collection)
+    cleanup_version_id = os.environ.get("CORPUS_CLEANUP_VERSION", "").strip()
+    if cleanup_version_id:
+        result = versions.cleanup_staging(
+            cleanup_version_id,
+            dry_run=os.environ.get("CORPUS_CLEANUP_APPLY", "").strip().lower() != "true",
+        )
+        print(
+            json.dumps(
+                {
+                    "event": "dmbok_corpus_cleanup",
+                    "version_id": result.version_id,
+                    "dry_run": result.dry_run,
+                    "targets": result.targets,
+                }
+            )
+        )
+        return
+
     bucket_name = _required("CORPUS_BUCKET_NAME")
     object_name = _required("CORPUS_OBJECT_NAME")
-    settings = LangChainRagSettings.from_environment()
     bucket = storage.Client(project=project).bucket(bucket_name)
     blob = bucket.blob(object_name)
     if not blob.exists():
@@ -67,17 +103,14 @@ def main() -> None:
                 configuration_fingerprint=manifest.derivation_sha256,
             ),
         )
-        client = firestore.Client(project=project)
         factory = LangChainRagFactory(client, settings)
         writer = factory.ingestion_writer(
             source_metadata=manifest.corpus_metadata(),
         )
         result = CorpusIngestionJob(
-            FirestoreCorpusVersionStore(
-                client, vector_collection=settings.vector_collection
-            ),
+            versions,
             writer,
-        ).run(version, chunks)
+        ).run(version, chunks, termination_requested=termination_requested)
         print(f"Activated corpus version {result.version.version_id} with {len(result.chunks)} chunks.")
 
 

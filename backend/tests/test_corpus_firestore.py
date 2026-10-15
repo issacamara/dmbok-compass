@@ -40,6 +40,19 @@ class FakeDocument:
 
 
 @dataclass
+class FakeBatch:
+    client: "FakeFirestore"
+    deletions: list[FakeDocument] = field(default_factory=list)
+
+    def delete(self, reference: FakeDocument) -> None:
+        self.deletions.append(reference)
+
+    def commit(self) -> None:
+        for reference in self.deletions:
+            self.client.data.pop(reference.path, None)
+
+
+@dataclass
 class FakeQuery:
     collection: "FakeCollection"
     field: str
@@ -122,6 +135,9 @@ class FakeFirestore:
 
     def transaction(self) -> FakeTransaction:
         return FakeTransaction(self, deepcopy(self.data))
+
+    def batch(self) -> FakeBatch:
+        return FakeBatch(self)
 
 
 def run_transaction(transaction: FakeTransaction, callback):  # type: ignore[no-untyped-def]
@@ -296,3 +312,61 @@ def test_validation_requires_persisted_bound_vector_evidence() -> None:
     assert validated.validation_evidence is not None
     assert validated.validation_evidence.chunk_count == 1
     assert validated.validation_evidence.filter_ready is True
+
+
+def test_cleanup_is_dry_run_first_and_removes_only_the_exact_abandoned_version() -> None:
+    client = FakeFirestore()
+    active = version("active", "active", serving_binding=binding("active"))
+    rollback = version("rollback", "retired", serving_binding=binding("rollback"))
+    abandoned_binding = binding("abandoned")
+    abandoned = version("abandoned", "staged", serving_binding=abandoned_binding)
+    persist(client, active)
+    persist(client, rollback)
+    persist(client, abandoned)
+    abandoned_chunk = chunk("abandoned")
+    persist_vector(client, abandoned_chunk, abandoned_binding)
+    client.data["corpus_state/active"] = {
+        "version_id": "active",
+        "previous_version_id": "rollback",
+    }
+    repository = store(client)
+
+    preview = repository.cleanup_staging("abandoned")
+
+    assert preview.dry_run is True
+    assert "corpus_versions/abandoned" in preview.targets
+    assert "document_chunks_v2/abandoned:1:0" in preview.targets
+    assert "corpus_versions/abandoned" in client.data
+    assert "corpus_versions/active" in client.data
+    assert "corpus_versions/rollback" in client.data
+
+    removed = repository.cleanup_staging("abandoned", dry_run=False)
+
+    assert removed.dry_run is False
+    assert "corpus_versions/abandoned" not in client.data
+    assert "document_chunks_v2/abandoned:1:0" not in client.data
+    assert "corpus_versions/active" in client.data
+    assert "corpus_versions/rollback" in client.data
+
+
+def test_cleanup_rejects_running_active_and_rollback_retained_versions() -> None:
+    client = FakeFirestore()
+    active = version("active", "active", serving_binding=binding("active"))
+    rollback = version("rollback", "retired", serving_binding=binding("rollback"))
+    running = version("running", "staged", serving_binding=binding("running"))
+    persist(client, active)
+    persist(client, rollback)
+    persist(client, running)
+    client.data["corpus_state/active"] = {
+        "version_id": "active",
+        "previous_version_id": "rollback",
+    }
+    repository = store(client)
+    repository.begin_staging("running")
+
+    with pytest.raises(CorpusVersionError, match="running"):
+        repository.cleanup_staging("running")
+    with pytest.raises(CorpusVersionError):
+        repository.cleanup_staging("active")
+    with pytest.raises(CorpusVersionError):
+        repository.cleanup_staging("rollback")

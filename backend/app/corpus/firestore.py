@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from dataclasses import dataclass
 from hashlib import sha256
 import json
 from typing import Any, Callable, TypeVar
@@ -22,6 +23,15 @@ T = TypeVar("T")
 _TransactionRunner = Callable[[Any, Callable[[Any], T]], T]
 
 
+@dataclass(frozen=True, slots=True)
+class CorpusCleanupResult:
+    """Inspectable outcome of one exact abandoned-staging cleanup request."""
+
+    version_id: str
+    dry_run: bool
+    targets: tuple[str, ...]
+
+
 def _run_firestore_transaction(transaction: Any, callback: Callable[[Any], T]) -> T:
     @firestore.transactional
     def run(active_transaction: Any) -> T:
@@ -36,6 +46,7 @@ class FirestoreCorpusVersionStore:
     collection_id = "corpus_versions"
     state_collection_id = "corpus_state"
     active_pointer_id = "active"
+    ingestion_run_collection_id = "corpus_ingestion_runs"
 
     def __init__(
         self,
@@ -50,6 +61,7 @@ class FirestoreCorpusVersionStore:
         self.pointer = client.collection(self.state_collection_id).document(
             self.active_pointer_id
         )
+        self.ingestion_runs = client.collection(self.ingestion_run_collection_id)
         self._transaction_runner = transaction_runner
 
     def get(self, version_id: str) -> CorpusVersion | None:
@@ -97,6 +109,106 @@ class FirestoreCorpusVersionStore:
             return existing
         self.versions.document(version.version_id).set(version.model_dump(mode="json"))
         return version
+
+    def begin_staging(self, version_id: str) -> None:
+        """Reserve one staged version so cleanup cannot race a running job."""
+
+        run_ref = self.ingestion_runs.document(version_id)
+        version_ref = self.versions.document(version_id)
+
+        def reserve(transaction: Any) -> None:
+            version_snapshot = version_ref.get(transaction=transaction)
+            if not version_snapshot.exists:
+                raise CorpusVersionError(f"unknown corpus version: {version_id}")
+            if version_snapshot.to_dict().get("status") != "staged":
+                raise CorpusVersionError("only staged corpus versions can be ingested")
+            run_snapshot = run_ref.get(transaction=transaction)
+            run_status = run_snapshot.to_dict().get("status") if run_snapshot.exists else None
+            if run_status in {"running", "cleaning"}:
+                raise CorpusVersionError("corpus staging is already running or being cleaned")
+            transaction.set(
+                run_ref,
+                {"status": "running", "updated_at": datetime.now(timezone.utc).isoformat()},
+            )
+
+        self._transaction_runner(self.client.transaction(), reserve)
+
+    def finish_staging(self, version_id: str, *, status: str) -> None:
+        if status not in {"completed", "failed", "interrupted"}:
+            raise ValueError("invalid corpus staging completion status")
+        self.ingestion_runs.document(version_id).set(
+            {"status": status, "updated_at": datetime.now(timezone.utc).isoformat()}
+        )
+
+    def cleanup_staging(self, version_id: str, *, dry_run: bool = True) -> CorpusCleanupResult:
+        """Remove exactly one abandoned staged corpus after safety checks.
+
+        The active pointer and its rollback predecessor are durable serving
+        resources and are never cleanup candidates. A separate run record
+        prevents deletion while ingestion owns the staged version.
+        """
+
+        version_ref = self.versions.document(version_id)
+        run_ref = self.ingestion_runs.document(version_id)
+
+        def prepare(transaction: Any) -> CorpusVersion:
+            version_snapshot = version_ref.get(transaction=transaction)
+            if not version_snapshot.exists:
+                raise CorpusVersionError(f"unknown corpus version: {version_id}")
+            version_data = version_snapshot.to_dict()
+            if version_data.get("status") != "staged":
+                raise CorpusVersionError("only abandoned staged corpus versions can be cleaned")
+            pointer_snapshot = self.pointer.get(transaction=transaction)
+            pointer_data = pointer_snapshot.to_dict() if pointer_snapshot.exists else {}
+            protected_ids = {
+                pointer_data.get("version_id"),
+                pointer_data.get("previous_version_id"),
+            }
+            if version_id in protected_ids:
+                raise CorpusVersionError("active and rollback-retained corpus versions cannot be cleaned")
+            run_snapshot = run_ref.get(transaction=transaction)
+            if run_snapshot.exists and run_snapshot.to_dict().get("status") == "running":
+                raise CorpusVersionError("a running corpus version cannot be cleaned")
+            if not dry_run:
+                transaction.set(
+                    run_ref,
+                    {"status": "cleaning", "updated_at": datetime.now(timezone.utc).isoformat()},
+                )
+            return CorpusVersion.model_validate(version_data)
+
+        version = self._transaction_runner(self.client.transaction(), prepare)
+        binding = version.serving_binding or legacy_serving_binding(
+            version, vector_collection=self.vector_collection_id
+        )
+        snapshots = self.client.collection(binding.vector_collection).where(
+            filter=FieldFilter("metadata.corpus_version_id", "==", version_id)
+        ).stream()
+        references = [snapshot.reference for snapshot in snapshots]
+        targets = tuple(
+            sorted(
+                [version_ref.path, *(reference.path for reference in references)]
+            )
+        )
+        if dry_run:
+            return CorpusCleanupResult(version_id=version_id, dry_run=True, targets=targets)
+
+        # The first commit also removes the version and reservation records,
+        # so it may contain at most 498 vector documents. Subsequent commits
+        # remain below Firestore's 500-operation limit as well.
+        for start in range(0, len(references), 498):
+            batch = self.client.batch()
+            for reference in references[start : start + 498]:
+                batch.delete(reference)
+            if start == 0:
+                batch.delete(version_ref)
+                batch.delete(run_ref)
+            batch.commit()
+        if not references:
+            batch = self.client.batch()
+            batch.delete(version_ref)
+            batch.delete(run_ref)
+            batch.commit()
+        return CorpusCleanupResult(version_id=version_id, dry_run=False, targets=targets)
 
     def validate(self, version_id: str, chunks: Any) -> CorpusVersion:
         version = self.get(version_id)

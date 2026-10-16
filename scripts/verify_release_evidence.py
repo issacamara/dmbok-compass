@@ -18,7 +18,8 @@ def main(path: Path) -> int:
         return 1
     state = "promotable" if result.promotable else "not promotable"
     exception_text = f"; approved exceptions: {', '.join(result.exceptions)}" if result.exceptions else ""
-    print(f"{result.release_id}: {state}{exception_text}")
+    blocker_text = f"; blockers: {', '.join(result.blockers)}" if result.blockers else ""
+    print(f"{result.release_id}: {state}{exception_text}{blocker_text}")
     return 0
 
 

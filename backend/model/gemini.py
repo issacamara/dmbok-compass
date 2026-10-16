@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from collections.abc import Callable
 from typing import Any
 
@@ -149,7 +148,9 @@ class GeminiAdapter(ModelAdapter):
                 output_tokens=_usage_value(usage, "output_tokens"),
                 total_tokens=_usage_value(usage, "total_tokens"),
             ),
-            raw_output=_raw_output(raw),
+            # Provider messages can contain the full response body. Keep the
+            # trace contract, but never copy provider content into it.
+            raw_output=None,
         )
 
     def _build_chain(
@@ -193,13 +194,6 @@ def create_gemini_adapter(
 def _usage_value(usage: dict[str, Any], name: str) -> int | None:
     value = usage.get(name)
     return value if isinstance(value, int) and value >= 0 else None
-
-
-def _raw_output(message: Any) -> str | None:
-    content = getattr(message, "content", None)
-    if isinstance(content, str):
-        return content[:20_000]
-    return json.dumps(content, default=str)[:20_000] if content is not None else None
 
 
 def _normalize_gemini_error(error: BaseException) -> GenerationError:

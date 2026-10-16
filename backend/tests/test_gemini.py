@@ -59,6 +59,7 @@ def test_gemini_adapter_maps_structured_output_and_usage() -> None:
     result = asyncio.run(GeminiAdapter(chain_factory=models).generate(request()))
 
     assert result.candidate.answer_text == "Grounded."
+    assert result.raw_output is None
     assert result.usage.model_dump() == {
         "provider": "google-gemini",
         "model": PRIMARY_MODEL,

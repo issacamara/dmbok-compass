@@ -35,7 +35,9 @@ function authError(error: unknown): string {
   return errors[code] ?? "Authentication could not be completed. Please try again.";
 }
 
-export function AuthPanel() {
+type AuthPanelProps = { onAuthenticationChange: (authenticated: boolean) => void };
+
+export function AuthPanel({ onAuthenticationChange }: AuthPanelProps) {
   const [mode, setMode] = useState<Mode>("sign-in");
   const [user, setUser] = useState<User | null>(null);
   const [profile, setProfile] = useState<UserProfile | null>(null);
@@ -72,6 +74,7 @@ export function AuthPanel() {
     const unsubscribe = onAuthStateChanged(auth, async (currentUser) => {
       if (currentUser?.emailVerified) setLoading(true);
       setUser(currentUser);
+      onAuthenticationChange(Boolean(currentUser?.emailVerified));
       setProfile(null);
       setProfileMissing(false);
       if (currentUser?.emailVerified) {

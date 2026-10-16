@@ -1,5 +1,12 @@
 # Final release evidence bundle
 
+Before approving a provider configuration, run `PYTHONPATH=backend python -m model.smoke`
+with `OPENROUTER_API_KEY` set in the shell. The check sends only synthetic
+evidence and must pass for both configured routes. Set
+`OPENROUTER_PRIMARY_MODEL` and `OPENROUTER_FALLBACK_MODEL` to the same values
+used by the API revision under review. Record its pass/fail result in the
+provider availability evidence; do not record the key.
+
 The evidence bundle is the promotion record for one immutable release. It
 must be assembled from the exact Cloud Build commit, API image digest,
 frontend digest, preview revision, corpus version, evaluation dataset, model,

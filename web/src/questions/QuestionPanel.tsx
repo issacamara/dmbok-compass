@@ -100,7 +100,6 @@ export function QuestionPanel({ token, onSignOut }: QuestionPanelProps) {
               {answer.citations.map((citation, index) => <div className="citation" key={citation.citation_id}>
                 <strong>[{index + 1}] {citation.section}</strong>
                 <span> · p. {citation.page}</span>
-                <p>“{citation.excerpt}”</p>
               </div>)}
             </div>}
           </article> : <p className="empty-answer">Ask a definition, relationship, or scenario question to see grounded evidence here.</p>}
@@ -135,9 +134,8 @@ export function QuestionPanel({ token, onSignOut }: QuestionPanelProps) {
               <span>Model attempt {index + 1}</span><strong>{attempt.model} · {attempt.outcome}{attempt.status_code ? ` (${attempt.status_code})` : ""}</strong>
             </div>)}
             {Object.entries(answer.trace.timings_ms).map(([name, value]) => <div className="trace-row" key={name}><span>{name.replaceAll("_", " ")}</span><strong>{Math.round(value)} ms</strong></div>)}
-            {answer.trace.model_output && <details className="passage-details"><summary>View model output</summary><pre>{answer.trace.model_output}</pre></details>}
             <details className="passage-details"><summary>View passage details</summary>
-              {answer.trace.retrieved_passages.map((passage) => <p key={passage.chunk_id}>p. {passage.page} · {passage.section}: {passage.excerpt}</p>)}
+              {answer.trace.retrieved_passages.map((passage) => <p key={passage.chunk_id}>p. {passage.page} · {passage.section}</p>)}
             </details>
           </> : <p className="helper-text">The evidence and model trace will appear after your question is answered.</p>}
           {quota && <p className="quota-reset">Quota resets {resetLabel(quota)}.</p>}

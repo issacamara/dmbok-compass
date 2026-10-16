@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from fastapi import status
 from fastapi.testclient import TestClient
+import pytest
 
 from app.api.evaluations import evaluation_service
 from app.contracts import CorpusServingBinding, EvaluationCandidateSnapshot, EvaluationDataset, EvaluationItem, EvaluationRun, UserProfile
@@ -11,6 +12,7 @@ from app.evaluation import (
     InMemoryEvaluationJobDispatcher,
     InMemoryEvaluationRunStore,
     EvaluationOutcome,
+    EvaluationInterrupted,
     EvaluationWorker,
 )
 from app.identity import IdentityError, get_admin_user
@@ -275,6 +277,27 @@ def test_worker_failure_is_content_free_and_persisted() -> None:
 
     assert failed.status == "failed"
     assert failed.error == "RuntimeError: evaluation failed"
+
+
+def test_worker_interruption_is_persisted_and_rethrown_for_cloud_run_retry() -> None:
+    job, _ = service()
+    run = job.launch(
+        corpus_version_id="corpus-v2",
+        configuration_version_id="config-v3", model_version_id="model-v4", item_ids=None,
+    )
+
+    with pytest.raises(EvaluationInterrupted, match="interrupted"):
+        EvaluationWorker(job.runs).execute(
+            run.run_id,
+            dataset(),
+            lambda _: EvaluationOutcome(True, True, True, True, True, 10),
+            termination_requested=lambda: True,
+        )
+
+    interrupted = job.runs.get(run.run_id)
+    assert interrupted is not None
+    assert interrupted.status == "failed"
+    assert interrupted.error == "EvaluationInterrupted: evaluation interrupted"
 
 
 def test_worker_rejects_a_dataset_other_than_the_run_pinned_generation() -> None:

@@ -54,8 +54,11 @@ from app.evaluation import (
 )
 from app.evaluation.worker import FirestoreEvaluationCandidateSnapshotResolver
 from app.release import ReleaseDecisionError, ReleaseDecisionRequest, ReleaseDecisionService
+from app.lifecycle import ShutdownCoordinator, configured_shutdown_timeout, lifespan, lifecycle_middleware
 
-app = FastAPI(title="DMBOK Compass API", version="0.1.0")
+app = FastAPI(title="DMBOK Compass API", version="0.1.0", lifespan=lifespan)
+app.state.shutdown_coordinator = ShutdownCoordinator(configured_shutdown_timeout())
+app.middleware("http")(lifecycle_middleware)
 app.include_router(evaluations_router)
 app.include_router(evaluation_datasets_router)
 

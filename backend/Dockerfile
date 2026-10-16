@@ -14,4 +14,4 @@ RUN echo "9ced9b491908b453a31a4b2598c1ec5fbbddf106dff868adcfe36bd5e60124c2  vend
     && pip install --no-cache-dir . \
     && pip check
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--timeout-graceful-shutdown", "25"]

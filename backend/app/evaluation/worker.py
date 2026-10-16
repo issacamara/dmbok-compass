@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import signal
 from datetime import datetime, timedelta, timezone
+from threading import Event
 from typing import Callable
 
 from google.cloud import firestore
@@ -25,6 +28,7 @@ from app.evaluation.job import (
     EvaluationOutcome,
     EvaluationRunError,
     EvaluationRunStore,
+    EvaluationInterrupted,
     EvaluationWorker,
 )
 from app.evaluation.job import FirestoreEvaluationRunStore
@@ -70,6 +74,7 @@ def execute_run(
     datasets: FirestoreEvaluationGenerationStore,
     runs: EvaluationRunStore,
     evaluate: Callable[[str], EvaluationOutcome],
+    termination_requested: Callable[[], bool] | None = None,
 ) -> None:
     """Reload the run-pinned generation and persist its terminal outcome."""
 
@@ -80,7 +85,9 @@ def execute_run(
     if dataset is None:
         runs.update(run.model_copy(update={"status": "failed", "error": "evaluation dataset is unavailable"}))
         return
-    EvaluationWorker(runs).execute(run_id, dataset, evaluate)
+    EvaluationWorker(runs).execute(
+        run_id, dataset, evaluate, termination_requested=termination_requested
+    )
 
 
 class EvaluationAnswerEvaluator:
@@ -120,6 +127,8 @@ class EvaluationAnswerEvaluator:
 
 
 def main() -> None:
+    termination_requested = Event()
+    previous_handler = signal.signal(signal.SIGTERM, lambda *_: termination_requested.set())
     project = _required("GOOGLE_CLOUD_PROJECT")
     run_id = _required("EVALUATION_RUN_ID")
     client = firestore.Client(project=project)
@@ -131,7 +140,13 @@ def main() -> None:
     try:
         dataset = datasets.get(run.dataset_version_id)
         if dataset is None:
-            execute_run(run_id, datasets=datasets, runs=runs, evaluate=lambda _: _unavailable())
+            execute_run(
+                run_id,
+                datasets=datasets,
+                runs=runs,
+                evaluate=lambda _: _unavailable(),
+                termination_requested=termination_requested.is_set,
+            )
             return
         execute_run(
             run_id,
@@ -140,12 +155,18 @@ def main() -> None:
             evaluate=EvaluationAnswerEvaluator(
                 dataset, _pinned_answerer(project, run), scorer_version=run.candidate_snapshot.scorer_version
             ),
+            termination_requested=termination_requested.is_set,
         )
+    except EvaluationInterrupted:
+        print(json.dumps({"event": "dmbok_evaluation_interrupted", "exit_code": 1}))
+        raise SystemExit(1) from None
     except Exception:
         # Configuration and provider setup failures must be durable, but may
         # still exit non-zero so Cloud Run applies its bounded retry policy.
         runs.update(run.model_copy(update={"status": "failed", "error": "evaluation worker setup failed"}))
         raise
+    finally:
+        signal.signal(signal.SIGTERM, previous_handler)
 
 
 def _pinned_answerer(project: str, run) -> RetrievedAnswerService:

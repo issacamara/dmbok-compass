@@ -1,6 +1,34 @@
-# LangChain compatibility gate
+# LangChain compatibility and retirement audit
 
-The files here validate the candidate stack before the application replaces its custom RAG modules. `backend/requirements-compat.lock` pins the complete backend runtime resolution used by the isolated spike, including the maintained Firestore wheel. The current `backend/pyproject.toml` and Docker image still describe the legacy application; promote the candidate lock into the actual build only after the live gate passes.
+The application now uses the validated native LangChain stack in its production-shaped API, ingestion, evaluation, and maintenance callers. `backend/requirements-compat.lock` pins the complete backend runtime resolution, including the maintained Firestore wheel; `backend/pyproject.toml` and the application image install that same stack. The checks here are regression and target-environment compatibility gates, not a pending migration.
+
+## Native caller inventory (2026-10-16)
+
+The retirement audit found no superseded live RAG engine to remove. The six
+mechanisms below have one native implementation path; application policy and
+provenance helpers remain intentionally in place around those boundaries.
+
+| Mechanism | Live caller | Native boundary | Audit result |
+| --- | --- | --- | --- |
+| PDF loading | `app.ingestion.extract.extract_pdf` | `langchain_community.document_loaders.PyPDFLoader` | retained page/section provenance policy |
+| Page-bounded splitting | `app.corpus.chunking.chunk_pages` | `langchain_text_splitters.CharacterTextSplitter` | retained deterministic page-boundary policy |
+| Embedding | `app.corpus.embedding.VertexEmbeddings` | `langchain_google_genai.GoogleGenerativeAIEmbeddings` | native document/query task types and 768 dimensions |
+| Vector writes | `app.corpus.indexing.CorpusEmbeddingWriter` | `langchain_google_firestore.FirestoreVectorStore.add_documents` | native persistence with deterministic IDs |
+| Retrieval | `app.retrieval.search.FirestorePassageRetriever` | `FirestoreVectorStore.similarity_search_with_score` | native filtered top-five search with preserved scores |
+| Generation | `app.rag.LangChainRagFactory` | native Vertex/OpenRouter adapters via `model.langchain` | native structured generation and bounded fallback |
+
+`app.answering` continues to own grounding, refusal, citation reconstruction,
+privacy, quota, and response contracts. Those are product-policy boundaries,
+not obsolete RAG engines, and were not deleted. `app.main`, the ingestion
+entrypoint, and the evaluation worker all construct their services through
+`LangChainRagFactory`; no direct legacy RAG caller remains.
+
+This is a verified no-op runtime removal: no evidenced obsolete path remained
+after the audit. The prior `document_chunks` artifact/index and release
+evidence remain retained for the owner-approved rollback period. Promotion
+and rollback signoff continue to be recorded by
+`documents/release/langchain-rollback.md`; this audit does not promote traffic
+or expire retained resources.
 
 From `backend/`, create a disposable Python 3.11 environment and install `requirements-compat.lock` through the normal package resolver. Verify the wheel SHA-256 in the vendored package README first, then run `python -m pip check` and `python compat/check_local.py`. The same check is packaged in `compat/Dockerfile` for the target Linux Python 3.11 image: `docker build -f compat/Dockerfile -t dmbok-langchain-compat .`. The local check covers PDF loading, word-sized chunking, Vertex embedding task/dimension configuration, 501 native vector writes, nested metadata, filtered cosine scores, native chat structured-output construction and restricted fallback composition. It uses no cloud credentials.
 

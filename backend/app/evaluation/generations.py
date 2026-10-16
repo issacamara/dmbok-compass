@@ -22,6 +22,7 @@ from app.contracts import (
     EvaluationReportEligibility,
     GoldAnnotation,
 )
+from app.evaluation.dataset import CandidateGoldReview, candidate_review_fingerprint
 
 
 class EvaluationGenerationError(ValueError):
@@ -95,12 +96,13 @@ class FirestoreEvaluationGenerationStore:
         self.pointer = client.collection(self.active_pointer_collection_id).document(self.active_pointer_id)
         self._transaction_runner = transaction_runner
 
-    def stage(self, dataset: EvaluationDataset) -> str:
+    def stage(self, dataset: EvaluationDataset, *, candidate_review: CandidateGoldReview | None = None) -> str:
         """Durably write one immutable generation without changing visibility."""
 
         generation = self.generations.document(dataset.dataset_version_id)
-        fingerprint = _dataset_fingerprint(dataset)
-        payload = _generation_payload(dataset, fingerprint, status="staging")
+        _validate_candidate_review(dataset, candidate_review)
+        fingerprint = _dataset_fingerprint(dataset, candidate_review)
+        payload = _generation_payload(dataset, fingerprint, status="staging", candidate_review=candidate_review)
         existing = generation.get()
         if existing.exists:
             existing_payload = existing.to_dict()
@@ -124,10 +126,13 @@ class FirestoreEvaluationGenerationStore:
         for item in dataset.items:
             writes.append((generation.collection("items").document(item.item_id), item.model_dump(mode="json")))
         for annotation in dataset.gold_annotations:
+            annotation_payload = annotation.model_dump(mode="json")
+            if candidate_review is not None:
+                annotation_payload["candidate_review"] = candidate_review.remap_for(annotation.item_id).model_dump()
             writes.append(
                 (
                     generation.collection("annotations").document(annotation.item_id),
-                    annotation.model_dump(mode="json"),
+                    annotation_payload,
                 )
             )
         self._commit_staged_writes(writes)
@@ -200,7 +205,7 @@ class FirestoreEvaluationGenerationStore:
         if not items:
             raise EvaluationGenerationError("evaluation generation has no staged items")
         annotations = sorted(
-            (GoldAnnotation.model_validate(annotation.to_dict()) for annotation in generation.collection("annotations").stream()),
+            (_annotation_from_payload(annotation.to_dict()) for annotation in generation.collection("annotations").stream()),
             key=lambda annotation: annotation.item_id,
         )
         return EvaluationDataset(
@@ -267,9 +272,14 @@ class FirestoreEvaluationGenerationStore:
             annotation_snapshot = annotation.get(transaction=transaction)
             if not annotation_snapshot.exists:
                 raise EvaluationGenerationError(f"unknown annotation item: {item_id}")
-            current = GoldAnnotation.model_validate(annotation_snapshot.to_dict())
+            annotation_payload = annotation_snapshot.to_dict()
+            current = _annotation_from_payload(annotation_payload)
             if current.review_status != "candidate":
                 raise ReviewStateError("annotation review is already final")
+            candidate_review = annotation_payload.get("candidate_review")
+            if review_status == "approved" and isinstance(candidate_review, dict):
+                if candidate_review.get("remap_status") != "matched":
+                    raise ReviewStateError("unresolved candidate support cannot be approved")
 
             updated = current.model_copy(update={"review_status": review_status})
             approved_count = int(generation_snapshot.to_dict().get("approved_gold_count", 0))
@@ -287,13 +297,22 @@ class FirestoreEvaluationGenerationStore:
             batch.commit()
 
 
-def _dataset_fingerprint(dataset: EvaluationDataset) -> str:
-    encoded = json.dumps(dataset.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+def _dataset_fingerprint(dataset: EvaluationDataset, candidate_review: CandidateGoldReview | None = None) -> str:
+    content: dict[str, object] = {"dataset": dataset.model_dump(mode="json")}
+    if candidate_review is not None:
+        content["candidate_review"] = candidate_review.model_dump()
+    encoded = json.dumps(content, sort_keys=True, separators=(",", ":"))
     return sha256(encoded.encode()).hexdigest()
 
 
-def _generation_payload(dataset: EvaluationDataset, fingerprint: str, *, status: str) -> dict[str, Any]:
-    return {
+def _generation_payload(
+    dataset: EvaluationDataset,
+    fingerprint: str,
+    *,
+    status: str,
+    candidate_review: CandidateGoldReview | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
         "generation_id": dataset.dataset_version_id,
         "item_count": len(dataset.items),
         "approved_gold_count": sum(
@@ -303,6 +322,23 @@ def _generation_payload(dataset: EvaluationDataset, fingerprint: str, *, status:
         "content_sha256": fingerprint,
         "created_at": datetime.now(timezone.utc).isoformat(),
     }
+    if candidate_review is not None:
+        payload["candidate_review"] = candidate_review.model_dump()
+        payload["candidate_review_sha256"] = candidate_review_fingerprint(candidate_review)
+    return payload
+
+
+def _validate_candidate_review(
+    dataset: EvaluationDataset, candidate_review: CandidateGoldReview | None
+) -> None:
+    if candidate_review is None:
+        return
+    annotation_ids = {annotation.item_id for annotation in dataset.gold_annotations}
+    remap_ids = {remap.item_id for remap in candidate_review.remaps}
+    if annotation_ids != remap_ids:
+        raise GenerationIntegrityError("candidate review must bind every and only dataset annotation")
+    if any(annotation.review_status != "candidate" for annotation in dataset.gold_annotations):
+        raise GenerationIntegrityError("candidate review cannot carry forward annotation approval")
 
 
 def _active_generation(payload: dict[str, Any]) -> ActiveEvaluationGeneration:
@@ -314,3 +350,9 @@ def _active_generation(payload: dict[str, Any]) -> ActiveEvaluationGeneration:
         approved_gold_count=payload["approved_gold_count"],
         status="active",
     )
+
+
+def _annotation_from_payload(payload: dict[str, Any]) -> GoldAnnotation:
+    """Remove durable remap metadata before validating the public annotation contract."""
+
+    return GoldAnnotation.model_validate({key: value for key, value in payload.items() if key != "candidate_review"})

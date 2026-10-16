@@ -6,12 +6,13 @@ from dataclasses import dataclass, field
 import pytest
 from google.api_core.exceptions import AlreadyExists
 
-from app.contracts import EvaluationDataset, EvaluationItem, EvaluationRun, GoldAnnotation
+from app.contracts import DocumentChunk, EvaluationDataset, EvaluationItem, EvaluationRun, GoldAnnotation
 from app.evaluation.generations import (
     ConcurrentActivationError,
     FirestoreEvaluationGenerationStore,
     GenerationIntegrityError,
 )
+from app.evaluation.dataset import CandidateGoldBinding, remap_gold_annotations
 from app.evaluation.job import EvaluationRunError, FirestoreEvaluationRunStore
 
 
@@ -235,6 +236,82 @@ def test_generation_ids_are_immutable_and_retrying_identical_stage_is_safe() -> 
     changed = original.model_copy(update={"items": [original.items[0].model_copy(update={"question": "Changed"})]})
     with pytest.raises(GenerationIntegrityError, match="already bound"):
         repository.stage(changed)
+
+
+def _candidate_review(dataset: EvaluationDataset, *, support: str = "Candidate support"):
+    candidate = DocumentChunk(
+        chunk_id="candidate-chunk",
+        corpus_version_id="candidate-corpus",
+        page=1,
+        section="Candidate",
+        chunk_ordinal=0,
+        content_hash="a" * 64,
+        text=support,
+        embedding=[0.0] * 768,
+    )
+    return remap_gold_annotations(
+        dataset,
+        [candidate],
+        CandidateGoldBinding(
+            corpus_version_id="candidate-corpus",
+            candidate_snapshot_sha256="b" * 64,
+            source_provenance_sha256="c" * 64,
+        ),
+    )
+
+
+def test_candidate_review_is_persisted_with_its_binding_and_requires_matching_support() -> None:
+    client = FakeFirestore()
+    repository = store(client)
+    candidate_dataset = dataset("generation-1").model_copy(
+        update={
+            "gold_annotations": [
+                GoldAnnotation(
+                    item_id="item-1",
+                    expected_answer_or_rubric="A definition.",
+                    relevant_chunk_ids=["legacy-chunk"],
+                    review_status="candidate",
+                    supporting_passage="Candidate support",
+                )
+            ]
+        }
+    )
+    review = _candidate_review(candidate_dataset)
+
+    repository.stage(candidate_dataset, candidate_review=review)
+    generation = client.data["evaluation_generations/generation-1"]
+    annotation = client.data["evaluation_generations/generation-1/annotations/item-1"]
+    assert generation["candidate_review"]["binding"]["corpus_version_id"] == "candidate-corpus"  # type: ignore[index]
+    assert annotation["candidate_review"]["review_status"] == "candidate"  # type: ignore[index]
+
+    repository.activate("generation-1", expected_active_generation_id=None)
+    assert repository.review("generation-1", "item-1", "approved").review_status == "approved"
+
+
+def test_candidate_review_rejects_legacy_approval_and_unresolved_support() -> None:
+    client = FakeFirestore()
+    repository = store(client)
+    approved = dataset("generation-approved", approved=True)
+    with pytest.raises(GenerationIntegrityError, match="cannot carry forward"):
+        repository.stage(approved, candidate_review=_candidate_review(approved))
+
+    unresolved = dataset("generation-unresolved").model_copy(
+        update={
+            "gold_annotations": [
+                GoldAnnotation(
+                    item_id="item-1",
+                    expected_answer_or_rubric="A definition.",
+                    relevant_chunk_ids=["legacy-chunk"],
+                    review_status="candidate",
+                    supporting_passage="No candidate support",
+                )
+            ]
+        }
+    )
+    repository.stage(unresolved, candidate_review=_candidate_review(unresolved))
+    repository.activate("generation-unresolved", expected_active_generation_id=None)
+    with pytest.raises(Exception, match="unresolved candidate support"):
+        repository.review("generation-unresolved", "item-1", "approved")
 
 
 def test_run_records_survive_a_new_firestore_store_and_reject_hash_collisions() -> None:

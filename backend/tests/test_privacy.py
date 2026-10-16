@@ -98,6 +98,7 @@ def test_native_call_disables_environment_tracing_debug_verbose_and_callbacks(mo
     result = asyncio.run(adapter.generate(request()))
 
     assert result.candidate.answer_text == SENTINELS["answer"]
+    assert result.raw_output is None
     assert all(os.environ[name] == "false" for name in PRIVATE_ENVIRONMENT)
     assert get_debug() is False
     assert get_verbose() is False
@@ -108,7 +109,7 @@ def test_native_call_disables_environment_tracing_debug_verbose_and_callbacks(mo
 
 
 def test_success_and_failure_sentinels_never_reach_telemetry_or_in_memory_stores(caplog) -> None:
-    caplog.set_level(logging.INFO, logger="dmbok_compass.telemetry")
+    caplog.set_level(logging.DEBUG, logger="dmbok_compass")
     success = asyncio.run(
         OpenRouterAdapter(
             SENTINELS["credential"],

@@ -241,7 +241,7 @@ def test_openrouter_trace_output_contains_only_structured_output() -> None:
 
     result = asyncio.run(OpenRouterAdapter("test-key", transport=httpx.MockTransport(handler)).generate(request()))
 
-    assert result.raw_output == structured_output
+    assert result.raw_output is None
 
 
 def test_openrouter_removes_think_block_from_answer_text() -> None:

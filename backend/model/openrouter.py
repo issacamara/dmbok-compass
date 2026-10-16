@@ -196,7 +196,9 @@ class OpenRouterAdapter(ModelAdapter):
         return GenerationResult(
             candidate=candidate,
             usage=_usage_metadata(raw, model),
-            raw_output=_raw_output(raw),
+            # Provider messages can contain the full response body. Keep the
+            # trace contract, but never copy provider content into it.
+            raw_output=None,
         )
 
     def _build_chain(
@@ -278,15 +280,6 @@ def _usage_metadata(message: Any, model: str) -> UsageMetadata:
         output_tokens=_non_negative_int(usage.get("output_tokens")),
         total_tokens=_non_negative_int(usage.get("total_tokens")),
     )
-
-
-def _raw_output(message: Any) -> str | None:
-    content = getattr(message, "content", None)
-    if isinstance(content, str):
-        return content[:20_000]
-    if content is None:
-        return None
-    return json.dumps(content, default=str)[:20_000]
 
 
 def _non_negative_int(value: Any) -> int | None:

@@ -3,7 +3,14 @@ from fastapi import status
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from app.contracts import EvaluationMetric, EvaluationReportEligibility, EvaluationRun, UserProfile
+from app.contracts import (
+    CorpusServingBinding,
+    EvaluationCandidateSnapshot,
+    EvaluationMetric,
+    EvaluationReportEligibility,
+    EvaluationRun,
+    UserProfile,
+)
 from app.evaluation import InMemoryEvaluationRunStore
 from app.identity import IdentityError, get_admin_user
 from app.main import app, release_decision_service
@@ -34,11 +41,29 @@ def completed_run(*, passed: bool = True) -> EvaluationRun:
         corpus_version_id="corpus-v1",
         configuration_version_id="config-v1",
         model_version_id="model-v1",
+        candidate_snapshot=EvaluationCandidateSnapshot(
+            corpus_binding=CorpusServingBinding(
+                corpus_version_id="corpus-v1", vector_collection="chunks-v2",
+                vector_schema_version="2", embedding_model="gemini-embedding-001",
+                ingestion_fingerprint="a" * 64, configuration_fingerprint="b" * 64,
+            ),
+            project="project", location="europe-west1", answer_provider="openrouter",
+            primary_model="model-v1", json_schema_supported=True,
+            request_timeout_ms=1000, generation_timeout_ms=1000,
+            prompt_version="prompt-v1", retrieval_policy_version="retrieval-v1",
+            evidence_policy_version="evidence-v1", scorer_version="scorer-v1",
+            dependency_lock_sha256="c" * 64, integration_artifact="wheel-v1",
+            runtime_version="image@sha256:" + "d" * 64,
+        ),
         status="completed",
         selected_item_ids=["item-1"],
         metrics=[EvaluationMetric(
             metric_name=name, numerator=1 if passed else 0, denominator=1,
-            percentage=100 if passed else 0, threshold=90, passed=passed,
+            percentage=100 if passed else 0,
+            threshold={"retrieval_success": 90, "grounded_claims": 95,
+                       "citation_correctness": 95, "answer_quality": 85,
+                       "refusal_correctness": 95, "response_time": 95}[name],
+            passed=passed,
         ) for name in REQUIRED_METRICS],
     )
 
@@ -76,6 +101,23 @@ def test_stale_or_missing_evidence_is_rejected() -> None:
         release_service.record(ReleaseDecisionRequest(**request(dataset_version_id="dataset-old")))
     with pytest.raises(ValidationError):
         ReleaseDecisionRequest(**request(gate_report_ids=[]))
+
+
+def test_approval_requires_the_complete_candidate_binding() -> None:
+    run = completed_run()
+    release_service = service(run)
+    with pytest.raises(ValueError, match="scorer"):
+        release_service.record(ReleaseDecisionRequest(**request(scorer_version_id="legacy-scorer")))
+    with pytest.raises(ValueError, match="provider"):
+        release_service.record(ReleaseDecisionRequest(**request(provider_version_id="vertex-v1")))
+
+
+def test_approval_rejects_proxy_or_inconsistent_metric_scoring() -> None:
+    run = completed_run().model_copy(update={
+        "metrics": [run_metric.model_copy(update={"threshold": 90}) for run_metric in completed_run().metrics]
+    })
+    with pytest.raises(ValueError, match="incompatible metric scoring"):
+        service(run).record(ReleaseDecisionRequest(**request()))
 
 
 def test_release_id_cannot_be_reused_for_different_evidence() -> None:

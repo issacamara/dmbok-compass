@@ -47,6 +47,8 @@ class ReleaseEvidenceStore(Protocol):
 
     def report_eligibility(self, generation_id: str) -> EvaluationReportEligibility: ...
 
+    def candidate_binding(self, generation_id: str) -> object | None: ...
+
 
 class InMemoryReleaseDecisionStore:
     """Reference store with create-once semantics for immutable decisions."""
@@ -122,6 +124,17 @@ class ReleaseDecisionService:
             raise ReleaseDecisionError("release evidence is stale or does not match the evaluation run")
         if run.status != "completed":
             raise ReleaseDecisionError("release evidence is missing or the evaluation run is not complete")
+        snapshot = run.candidate_snapshot
+        if snapshot is None:
+            raise ReleaseDecisionError("release evidence is missing the complete candidate snapshot")
+        if snapshot.corpus_binding.corpus_version_id != run.corpus_version_id:
+            raise ReleaseDecisionError("candidate corpus binding does not match the evaluation run")
+        if request.scorer_version_id != snapshot.scorer_version:
+            raise ReleaseDecisionError("release evidence scorer does not match the candidate snapshot")
+        if not request.provider_version_id.startswith(f"{snapshot.answer_provider}-"):
+            raise ReleaseDecisionError("release evidence provider does not match the candidate snapshot")
+        if not snapshot.integration_artifact or not snapshot.runtime_version:
+            raise ReleaseDecisionError("candidate snapshot is missing immutable runtime identity")
         if not request.gate_report_ids or len(request.gate_report_ids) != len(set(request.gate_report_ids)):
             raise ReleaseDecisionError("release gate report evidence is missing or duplicated")
 
@@ -135,10 +148,45 @@ class ReleaseDecisionService:
             or not 30 <= eligibility.approved_gold_count <= 50
         ):
             raise ReleaseDecisionError("release evidence is exploratory, superseded, or lacks 30–50 approved gold items")
+        binding_reader = getattr(self.evidence, "candidate_binding", None)
+        if binding_reader is not None:
+            binding = binding_reader(run.dataset_version_id)
+            if binding is None:
+                raise ReleaseDecisionError("release evidence is missing the reviewed candidate binding")
+            snapshot = run.candidate_snapshot
+            if (
+                getattr(binding, "corpus_version_id", None) != run.corpus_version_id
+                or getattr(binding, "candidate_snapshot_sha256", None) != _candidate_snapshot_sha256(snapshot)
+            ):
+                raise ReleaseDecisionError("release evidence candidate binding does not match the run snapshot")
 
     def _validate_gates(self, request: ReleaseDecisionRequest, run: EvaluationRun) -> None:
         metrics = {metric.metric_name: metric for metric in run.metrics}
         if len(run.metrics) != len(self._REQUIRED_METRICS) or set(metrics) != self._REQUIRED_METRICS:
             raise ReleaseDecisionError("release evidence must include all six required metrics")
+        thresholds = {
+            "retrieval_success": 90.0,
+            "grounded_claims": 95.0,
+            "citation_correctness": 95.0,
+            "answer_quality": 85.0,
+            "refusal_correctness": 95.0,
+            "response_time": 95.0,
+        }
+        for name, metric in metrics.items():
+            if metric.denominator <= 0 or metric.threshold != thresholds[name]:
+                raise ReleaseDecisionError("release evidence contains incomplete or incompatible metric scoring")
+            expected_percentage = round(100 * metric.numerator / metric.denominator, 2)
+            if metric.percentage != expected_percentage or metric.passed != (metric.percentage >= metric.threshold):
+                raise ReleaseDecisionError("release evidence contains inconsistent metric scoring")
         if not all(metric.passed for metric in metrics.values()) and not request.exception_approved:
             raise ReleaseDecisionError("one or more release gates failed")
+
+
+def _candidate_snapshot_sha256(snapshot: object) -> str:
+    """Hash the complete non-secret candidate identity deterministically."""
+
+    from hashlib import sha256
+
+    if snapshot is None or not hasattr(snapshot, "model_dump"):
+        return ""
+    return sha256(snapshot.model_dump_json().encode("utf-8")).hexdigest()

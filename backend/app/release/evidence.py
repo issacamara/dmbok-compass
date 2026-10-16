@@ -117,6 +117,45 @@ def _validate_evaluation(value: Any) -> None:
         gate = by_name[name]
         if gate.get("threshold") != threshold or gate.get("passed") is not True:
             raise ReleaseEvidenceError(f"evaluation gate {name!r} is not passing at its required threshold")
+    snapshot = value.get("candidate_snapshot")
+    _validate_candidate_snapshot(snapshot)
+    binding = value.get("candidate_gold_binding")
+    if not isinstance(binding, dict):
+        raise ReleaseEvidenceError("evaluation.candidate_gold_binding must be an object")
+    for key in ("corpus_version_id", "candidate_snapshot_sha256", "source_provenance_sha256"):
+        _required_string(binding, key)
+    if not HEX_DIGEST.fullmatch(binding["candidate_snapshot_sha256"]):
+        raise ReleaseEvidenceError("candidate gold binding snapshot digest must be SHA-256")
+    if not HEX_DIGEST.fullmatch(binding["source_provenance_sha256"]):
+        raise ReleaseEvidenceError("candidate gold binding provenance digest must be SHA-256")
+    if binding["corpus_version_id"] != value["corpus_version_id"]:
+        raise ReleaseEvidenceError("candidate gold binding corpus must match the evaluation")
+
+
+def _validate_candidate_snapshot(value: Any) -> None:
+    if not isinstance(value, dict):
+        raise ReleaseEvidenceError("evaluation.candidate_snapshot must be an object")
+    for key in (
+        "project", "location", "answer_provider", "primary_model", "prompt_version",
+        "retrieval_policy_version", "evidence_policy_version", "scorer_version",
+        "dependency_lock_sha256", "integration_artifact", "runtime_version",
+    ):
+        _required_string(value, key)
+    if value["answer_provider"] not in {"openrouter", "vertex"}:
+        raise ReleaseEvidenceError("candidate snapshot provider is invalid")
+    if not HEX_DIGEST.fullmatch(value["dependency_lock_sha256"]):
+        raise ReleaseEvidenceError("candidate snapshot lock digest must be SHA-256")
+    binding = value.get("corpus_binding")
+    if not isinstance(binding, dict):
+        raise ReleaseEvidenceError("candidate snapshot corpus binding must be an object")
+    for key in (
+        "corpus_version_id", "vector_collection", "vector_schema_version", "embedding_model",
+        "ingestion_fingerprint", "configuration_fingerprint",
+    ):
+        _required_string(binding, key)
+    for key in ("ingestion_fingerprint", "configuration_fingerprint"):
+        if not HEX_DIGEST.fullmatch(binding[key]):
+            raise ReleaseEvidenceError(f"candidate snapshot {key} must be SHA-256")
 
 
 def _validate_evidence_section(name: str, value: Any) -> list[str]:

@@ -33,6 +33,22 @@ def evidence_document() -> dict:
             "model_version_id": "model-v1",
             "status": "completed",
             "gates": gates,
+            "candidate_snapshot": {
+                "corpus_binding": {
+                    "corpus_version_id": "corpus-v1", "vector_collection": "chunks-v2",
+                    "vector_schema_version": "2", "embedding_model": "gemini-embedding-001",
+                    "ingestion_fingerprint": "a" * 64, "configuration_fingerprint": "b" * 64,
+                },
+                "project": "project", "location": "europe-west1", "answer_provider": "openrouter",
+                "primary_model": "model-v1", "prompt_version": "prompt-v1",
+                "retrieval_policy_version": "retrieval-v1", "evidence_policy_version": "evidence-v1",
+                "scorer_version": "scorer-v1", "dependency_lock_sha256": "c" * 64,
+                "integration_artifact": "wheel-v1", "runtime_version": "image@sha256:" + "d" * 64,
+            },
+            "candidate_gold_binding": {
+                "corpus_version_id": "corpus-v1", "candidate_snapshot_sha256": "e" * 64,
+                "source_provenance_sha256": "f" * 64,
+            },
         },
         "evidence": {
             name: {"status": "pass", "references": [f"{name}-evidence"]}

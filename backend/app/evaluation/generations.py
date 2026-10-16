@@ -22,7 +22,12 @@ from app.contracts import (
     EvaluationReportEligibility,
     GoldAnnotation,
 )
-from app.evaluation.dataset import CandidateGoldReview, candidate_review_fingerprint
+from app.evaluation.dataset import (
+    CandidateBindingError,
+    CandidateGoldBinding,
+    CandidateGoldReview,
+    candidate_review_fingerprint,
+)
 
 
 class EvaluationGenerationError(ValueError):
@@ -244,6 +249,19 @@ class FirestoreEvaluationGenerationStore:
             )
 
         return self._transaction_runner(self.client.transaction(), apply)
+
+    def candidate_binding(self, generation_id: str) -> CandidateGoldBinding | None:
+        """Return the immutable candidate binding recorded with a generation."""
+
+        payload = self.generations.document(generation_id).get().to_dict()
+        review = payload.get("candidate_review")
+        binding = review.get("binding") if isinstance(review, dict) else None
+        if not isinstance(binding, dict):
+            return None
+        try:
+            return CandidateGoldBinding(**binding)
+        except (TypeError, CandidateBindingError):
+            raise GenerationIntegrityError("candidate binding is invalid") from None
 
     def generation_status(self, generation_id: str) -> str | None:
         """Return a persisted lifecycle status for audit and reproduction queries."""

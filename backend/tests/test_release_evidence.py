@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import pytest
 
 from app.release import ReleaseEvidenceError, validate_release_evidence
@@ -82,7 +85,7 @@ def test_missing_evidence_blocks_bundle(section: str) -> None:
 def test_failed_evidence_cannot_be_hidden_as_an_exception() -> None:
     document = evidence_document()
     document["evidence"]["privacy"] = {"status": "failed", "references": ["privacy-check"]}
-    with pytest.raises(ReleaseEvidenceError, match="must pass or have an approved exception"):
+    with pytest.raises(ReleaseEvidenceError, match="must pass, be blocked, or have an approved exception"):
         validate_release_evidence(document)
 
 
@@ -101,3 +104,15 @@ def test_approved_exception_is_traceable_but_not_promotable() -> None:
     result = validate_release_evidence(document)
     assert result.promotable is True
     assert result.exceptions == ("cost",)
+
+
+def test_candidate_bundle_records_blockers_without_claiming_promotion() -> None:
+    path = Path(__file__).parents[2] / "documents/release/langchain/release-evidence.json"
+    result = validate_release_evidence(json.loads(path.read_text(encoding="utf-8")))
+
+    assert result.promotable is False
+    assert set(result.blockers) == {
+        "artifact", "evaluation", "gates", "provider", "privacy", "accessibility",
+        "recovery", "performance", "cost", "rollback", "decisions",
+    }
+    assert result.exceptions == ()

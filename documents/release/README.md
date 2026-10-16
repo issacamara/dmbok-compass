@@ -27,10 +27,13 @@ The validator requires passing evidence for:
 - rollback evidence for the API, frontend, and corpus pointer; and
 - publisher-rights acceptance plus the sponsor's release decision.
 
-An absent, failed, or stale record blocks promotion. An exception is only
-acceptable when it includes the approver, rationale, and ISO-8601 approval
-time; the validator reports it so the sponsor's accepted risk remains
-distinguishable from a clean gate.
+An absent, failed, or stale record blocks promotion. A known unresolved gate
+is recorded with `status: "blocked"`, an owner, rationale, timestamp, and
+stable references; the validator accepts the bundle while reporting the
+blocker and keeping it non-promotable. An exception is only acceptable when
+it includes the approver, rationale, and ISO-8601 approval time; the validator
+reports it so the sponsor's accepted risk remains distinguishable from a clean
+gate.
 
 ## Verification
 

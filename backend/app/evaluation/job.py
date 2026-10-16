@@ -282,7 +282,9 @@ class EvaluationJobService:
             configuration_version_id=configuration_version_id,
             model_version_id=model_version_id,
             candidate_snapshot=snapshot,
-            report_eligibility=self.datasets.report_eligibility(dataset_version_id),
+            report_eligibility=self._eligibility_for_selection(
+                dataset_version_id, selected, len(dataset.items)
+            ),
         )
         stored = self.runs.create_or_get(run)
         if stored.status == "queued":
@@ -293,7 +295,23 @@ class EvaluationJobService:
         run = self.runs.get(run_id)
         if run is None:
             raise EvaluationRunError("unknown evaluation run")
-        return run.model_copy(update={"report_eligibility": self.datasets.report_eligibility(run.dataset_version_id)})
+        return run.model_copy(update={
+            "report_eligibility": self._eligibility_for_selection(
+                run.dataset_version_id,
+                tuple(run.selected_item_ids),
+                len(self.datasets.get(run.dataset_version_id).items),  # type: ignore[union-attr]
+            )
+        })
+
+    def _eligibility_for_selection(
+        self, dataset_version_id: str, selected_item_ids: tuple[str, ...], item_count: int
+    ) -> EvaluationReportEligibility:
+        eligibility = self.datasets.report_eligibility(dataset_version_id)
+        if len(selected_item_ids) == item_count:
+            return eligibility
+        return eligibility.model_copy(update={
+            "eligibility": "exploratory",
+        })
 
 
 def _metric(

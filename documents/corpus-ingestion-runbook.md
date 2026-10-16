@@ -58,3 +58,9 @@ Before production promotion, rebuild the full candidate corpus, verify filtered
 retrieval from the active version, run the approved evaluation and load gates,
 and record a rollback drill. The exposed development OpenRouter key must be
 rotated before any further shared-provider validation or deployment.
+
+The API uses the same 25-second graceful-shutdown budget as its Uvicorn
+container setting. On shutdown it stops admitting new requests, cancels
+in-flight request tasks, and waits for their cleanup before the process exits.
+Provider and database calls must retain their existing bounded timeouts; an
+interrupted request is never written as a successful answer.

@@ -19,6 +19,10 @@ class EvaluationRunError(ValueError):
     """Raised when a run request cannot be bound to immutable inputs."""
 
 
+class EvaluationInterrupted(RuntimeError):
+    """Raised when a worker receives termination before a run completes."""
+
+
 class EvaluationRunStore(Protocol):
     def create_or_get(self, run: EvaluationRun) -> EvaluationRun: ...
     def get(self, run_id: str) -> EvaluationRun | None: ...
@@ -150,7 +154,14 @@ class EvaluationWorker:
         self.runs = runs
         self.response_time_threshold_ms = response_time_threshold_ms
 
-    def execute(self, run_id: str, dataset: EvaluationDataset, evaluate: Callable[[str], EvaluationOutcome]) -> EvaluationRun:
+    def execute(
+        self,
+        run_id: str,
+        dataset: EvaluationDataset,
+        evaluate: Callable[[str], EvaluationOutcome],
+        *,
+        termination_requested: Callable[[], bool] | None = None,
+    ) -> EvaluationRun:
         run = self.runs.get(run_id)
         if run is None:
             raise EvaluationRunError("unknown evaluation run")
@@ -173,7 +184,13 @@ class EvaluationWorker:
             item_ids = set(run.selected_item_ids)
             if item_ids - {item.item_id for item in dataset.items}:
                 raise EvaluationRunError("run contains items outside its dataset version")
-            results = [evaluate(item_id) for item_id in run.selected_item_ids]
+            results = []
+            for item_id in run.selected_item_ids:
+                if termination_requested is not None and termination_requested():
+                    raise EvaluationInterrupted("evaluation interrupted before next item")
+                results.append(evaluate(item_id))
+            if termination_requested is not None and termination_requested():
+                raise EvaluationInterrupted("evaluation interrupted after item")
             metrics = [
                 _metric("retrieval_success", results, lambda result: result.retrieval_success, threshold=90),
                 _metric("grounded_claims", results, lambda result: result.grounded, threshold=95),
@@ -202,6 +219,13 @@ class EvaluationWorker:
             return self.runs.update(
                 running.model_copy(update={"status": "completed", "metrics": metrics, "item_results": item_results})
             )
+        except EvaluationInterrupted as exc:
+            self.runs.update(
+                running.model_copy(
+                    update={"status": "failed", "error": f"{type(exc).__name__}: evaluation interrupted"}
+                )
+            )
+            raise
         except Exception as exc:
             # Provider and evaluator errors can include question or answer text;
             # keep durable run state content-free.

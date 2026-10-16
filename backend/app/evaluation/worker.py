@@ -18,11 +18,49 @@ from app.answering import (
 )
 from app.contracts import EvaluationDataset, QuotaStatus
 from app.corpus.firestore import FirestoreCorpusVersionStore
-from app.corpus.versions import legacy_serving_binding
 from app.evaluation.generations import FirestoreEvaluationGenerationStore
-from app.evaluation.job import EvaluationOutcome, EvaluationRunError, EvaluationRunStore, EvaluationWorker
+from app.evaluation.job import (
+    EvaluationCandidateSnapshotResolver,
+    EvaluationOutcome,
+    EvaluationRunError,
+    EvaluationRunStore,
+    EvaluationWorker,
+)
 from app.evaluation.job import FirestoreEvaluationRunStore
 from app.rag import LangChainRagFactory
+
+
+class FirestoreEvaluationCandidateSnapshotResolver(EvaluationCandidateSnapshotResolver):
+    """Resolve an evaluation candidate once, before durable dispatch."""
+
+    def __init__(self, client: firestore.Client) -> None:
+        self.client = client
+
+    def resolve(
+        self,
+        *,
+        corpus_version_id: str,
+        configuration_version_id: str,
+        model_version_id: str,
+    ):
+        factory = LangChainRagFactory.from_environment(self.client)
+        corpus = FirestoreCorpusVersionStore(
+            self.client, vector_collection=factory.settings.vector_collection
+        ).get(corpus_version_id)
+        if corpus is None or corpus.serving_binding is None:
+            raise EvaluationRunError("candidate corpus serving binding is unavailable")
+        request_timeout_ms, generation_timeout_ms = timeout_settings(
+            os.environ.get("ANSWER_REQUEST_TIMEOUT_MS", str(DEFAULT_REQUEST_TIMEOUT_MS)),
+            os.environ.get("ANSWER_GENERATION_TIMEOUT_MS", str(DEFAULT_GENERATION_TIMEOUT_MS)),
+        )
+        try:
+            return factory.candidate_snapshot(
+                corpus.serving_binding,
+                request_timeout_ms=request_timeout_ms,
+                generation_timeout_ms=generation_timeout_ms,
+            )
+        except ValueError as exc:
+            raise EvaluationRunError(str(exc)) from exc
 
 
 def execute_run(
@@ -95,9 +133,7 @@ def main() -> None:
             run_id,
             datasets=datasets,
             runs=runs,
-            evaluate=EvaluationAnswerEvaluator(
-                dataset, _pinned_answerer(project, run.corpus_version_id)
-            ),
+            evaluate=EvaluationAnswerEvaluator(dataset, _pinned_answerer(project, run)),
         )
     except Exception:
         # Configuration and provider setup failures must be durable, but may
@@ -106,38 +142,48 @@ def main() -> None:
         raise
 
 
-def _pinned_answerer(project: str, corpus_version_id: str) -> RetrievedAnswerService:
+def _pinned_answerer(project: str, run) -> RetrievedAnswerService:
+    snapshot = run.candidate_snapshot
+    if snapshot is None:
+        raise EvaluationRunError("evaluation run has no immutable candidate snapshot")
+    if snapshot.project != project:
+        raise EvaluationRunError("evaluation worker project does not match the candidate snapshot")
     client = firestore.Client(project=project)
-    factory = LangChainRagFactory.from_environment(client)
+    from app.rag import LangChainRagSettings
+
+    factory = LangChainRagFactory(
+        client,
+        LangChainRagSettings(
+            project=snapshot.project,
+            location=snapshot.location,
+            vector_collection=snapshot.corpus_binding.vector_collection,
+            answer_provider=snapshot.answer_provider,
+        ),
+    )
     corpus = FirestoreCorpusVersionStore(
-        client, vector_collection=factory.settings.vector_collection
-    ).get(corpus_version_id)
+        client, vector_collection=snapshot.corpus_binding.vector_collection
+    ).get(run.corpus_version_id)
     if corpus is None:
         raise EvaluationRunError("run references an unavailable corpus version")
-    adapter = factory.generation_adapter()
+    if corpus.serving_binding != snapshot.corpus_binding:
+        raise EvaluationRunError("candidate corpus binding no longer matches the run snapshot")
+    adapter = factory.generation_adapter_for_snapshot(snapshot)
 
     class _PinnedCorpus:
         def active(self):
             return corpus
 
-    request_timeout_ms, generation_timeout_ms = timeout_settings(
-        os.environ.get("ANSWER_REQUEST_TIMEOUT_MS", str(DEFAULT_REQUEST_TIMEOUT_MS)),
-        os.environ.get("ANSWER_GENERATION_TIMEOUT_MS", str(DEFAULT_GENERATION_TIMEOUT_MS)),
-    )
     return RetrievedAnswerService(
         factory.retriever(),
         _PinnedCorpus(),
         GroundedAnswerPolicy(
             adapter,
-            model_name=factory.selected_model(),
-            timeout_ms=generation_timeout_ms,
+            model_name=snapshot.primary_model,
+            timeout_ms=snapshot.generation_timeout_ms,
         ),
-        request_timeout_ms=request_timeout_ms,
+        request_timeout_ms=snapshot.request_timeout_ms,
         retriever_for_binding=lambda pinned: factory.retriever_for_binding(
-            pinned.serving_binding
-            or legacy_serving_binding(
-                pinned, vector_collection=factory.settings.vector_collection
-            )
+            snapshot.corpus_binding
         ),
     )
 

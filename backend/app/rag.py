@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from hashlib import sha256
+from pathlib import Path
 from typing import Any
 
-from app.contracts import CorpusServingBinding
+from app.contracts import CorpusServingBinding, EvaluationCandidateSnapshot
 from app.corpus.embedding import create_vertex_embeddings
 from app.corpus.indexing import (
     VECTOR_COLLECTION,
@@ -122,7 +124,86 @@ class LangChainRagFactory:
         )
         return FallbackAdapter(vertex, secondary)
 
+    def generation_adapter_for_snapshot(
+        self, snapshot: EvaluationCandidateSnapshot
+    ) -> ModelAdapter:
+        """Build generation with a run's recorded route, never current model env."""
+
+        provider = snapshot.answer_provider
+        primary_model = snapshot.primary_model
+        fallback_model = snapshot.fallback_model
+        if provider == "openrouter":
+            return OpenRouterAdapter(
+                os.environ.get("OPENROUTER_API_KEY", ""),
+                primary_model=primary_model,
+                fallback_model=fallback_model,
+                json_schema_supported=snapshot.json_schema_supported,
+            )
+        vertex = create_gemini_adapter(
+            project=self.settings.project,
+            location=self.settings.location,
+            vertexai=True,
+            primary_model=primary_model,
+            fallback_model=None,
+        )
+        secondary = OpenRouterAdapter(
+            os.environ.get("OPENROUTER_API_KEY", ""),
+            primary_model=fallback_model or "mistralai/mistral-nemo",
+            fallback_model=None,
+                json_schema_supported=snapshot.json_schema_supported,
+        )
+        return FallbackAdapter(vertex, secondary)
+
+    def candidate_snapshot(
+        self,
+        binding: CorpusServingBinding,
+        *,
+        request_timeout_ms: int,
+        generation_timeout_ms: int,
+    ) -> EvaluationCandidateSnapshot:
+        """Capture all non-secret inputs needed to reconstruct an evaluation."""
+
+        if binding.vector_collection != self.settings.vector_collection:
+            raise ValueError("candidate corpus binding does not match the configured vector collection")
+        if self.settings.answer_provider == "openrouter":
+            primary = os.environ.get("OPENROUTER_PRIMARY_MODEL", "mistralai/mistral-nemo")
+            fallback = os.environ.get(
+                "OPENROUTER_FALLBACK_MODEL", "meta-llama/llama-3.1-8b-instruct"
+            )
+        else:
+            primary = os.environ.get("VERTEX_PRIMARY_MODEL", "gemini-2.5-flash-lite")
+            fallback = os.environ.get("OPENROUTER_PRIMARY_MODEL", "mistralai/mistral-nemo")
+        return EvaluationCandidateSnapshot(
+            corpus_binding=binding,
+            project=self.settings.project,
+            location=self.settings.location,
+            answer_provider=self.settings.answer_provider,
+            primary_model=primary,
+            fallback_model=fallback or None,
+            json_schema_supported=parse_json_schema_supported(
+                os.environ.get("OPENROUTER_JSON_SCHEMA_SUPPORTED", "true")
+            ),
+            request_timeout_ms=request_timeout_ms,
+            generation_timeout_ms=generation_timeout_ms,
+            prompt_version="grounded-answer-policy-v1",
+            retrieval_policy_version="top-five-cosine-v1",
+            evidence_policy_version="grounded-evidence-v1",
+            scorer_version="evaluation-gates-v1",
+            dependency_lock_sha256=_dependency_lock_sha256(),
+            integration_artifact="langchain-google-firestore==0.5.0.post2",
+            runtime_version=os.environ.get("K_REVISION", "unversioned").strip() or "unversioned",
+        )
+
     def selected_model(self) -> str:
         if self.settings.answer_provider == "openrouter":
             return os.environ.get("OPENROUTER_PRIMARY_MODEL", "answer-model")
         return os.environ.get("VERTEX_PRIMARY_MODEL", "gemini-2.5-flash-lite")
+
+
+def _dependency_lock_sha256() -> str:
+    """Bind the packaged compatibility lock without persisting its contents."""
+
+    lock = Path(__file__).resolve().parents[1] / "requirements-compat.lock"
+    if not lock.is_file():
+        raise ValueError("candidate dependency lock is unavailable")
+    return sha256(lock.read_bytes()).hexdigest()

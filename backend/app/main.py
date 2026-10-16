@@ -52,6 +52,7 @@ from app.evaluation import (
     FirestoreEvaluationGenerationStore,
     FirestoreEvaluationRunStore,
 )
+from app.evaluation.worker import FirestoreEvaluationCandidateSnapshotResolver
 from app.release import ReleaseDecisionError, ReleaseDecisionRequest, ReleaseDecisionService
 
 app = FastAPI(title="DMBOK Compass API", version="0.1.0")
@@ -86,7 +87,10 @@ def get_evaluation_service() -> EvaluationJobService:
         ),
     )
     return EvaluationJobService(
-        FirestoreEvaluationGenerationStore(client), FirestoreEvaluationRunStore(client), dispatcher
+        FirestoreEvaluationGenerationStore(client),
+        FirestoreEvaluationRunStore(client),
+        dispatcher,
+        FirestoreEvaluationCandidateSnapshotResolver(client),
     )
 
 

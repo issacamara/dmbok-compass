@@ -44,6 +44,7 @@ class ReleaseEvidenceResult:
     release_id: str
     promotable: bool
     exceptions: tuple[str, ...]
+    blockers: tuple[str, ...] = ()
 
 
 def validate_release_evidence(document: dict[str, Any]) -> ReleaseEvidenceResult:
@@ -67,8 +68,11 @@ def validate_release_evidence(document: dict[str, Any]) -> ReleaseEvidenceResult
         raise ReleaseEvidenceError(f"missing evidence sections: {', '.join(missing)}")
 
     exceptions: list[str] = []
+    blockers: list[str] = []
     for name in REQUIRED_EVIDENCE_SECTIONS:
-        exceptions.extend(_validate_evidence_section(name, sections[name]))
+        section_exceptions, section_blockers = _validate_evidence_section(name, sections[name])
+        exceptions.extend(section_exceptions)
+        blockers.extend(section_blockers)
 
     decision = document.get("release_decision")
     if not isinstance(decision, dict):
@@ -82,8 +86,9 @@ def validate_release_evidence(document: dict[str, Any]) -> ReleaseEvidenceResult
 
     return ReleaseEvidenceResult(
         release_id=release_id,
-        promotable=decision.get("decision") == "approved",
+        promotable=decision.get("decision") == "approved" and not blockers,
         exceptions=tuple(exceptions),
+        blockers=tuple(blockers),
     )
 
 
@@ -158,7 +163,7 @@ def _validate_candidate_snapshot(value: Any) -> None:
             raise ReleaseEvidenceError(f"candidate snapshot {key} must be SHA-256")
 
 
-def _validate_evidence_section(name: str, value: Any) -> list[str]:
+def _validate_evidence_section(name: str, value: Any) -> tuple[list[str], list[str]]:
     if not isinstance(value, dict):
         raise ReleaseEvidenceError(f"evidence.{name} must be an object")
     status = value.get("status")
@@ -166,9 +171,20 @@ def _validate_evidence_section(name: str, value: Any) -> list[str]:
     if not isinstance(references, list) or not references or not all(isinstance(item, str) and item for item in references):
         raise ReleaseEvidenceError(f"evidence.{name}.references must contain at least one identifier")
     if status == "pass":
-        return []
+        return [], []
+    if status == "blocked":
+        blocker = value.get("blocker")
+        if not isinstance(blocker, dict):
+            raise ReleaseEvidenceError(f"evidence.{name} blocked status requires a blocker")
+        for key in ("owner", "rationale", "recorded_at"):
+            _required_string(blocker, key)
+        try:
+            datetime.fromisoformat(blocker["recorded_at"].replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ReleaseEvidenceError(f"evidence.{name}.blocker.recorded_at must be ISO-8601") from exc
+        return [], [name]
     if status != "exception":
-        raise ReleaseEvidenceError(f"evidence.{name} must pass or have an approved exception")
+        raise ReleaseEvidenceError(f"evidence.{name} must pass, be blocked, or have an approved exception")
     exception = value.get("exception")
     if not isinstance(exception, dict) or exception.get("approved") is not True:
         raise ReleaseEvidenceError(f"evidence.{name} exception must be explicitly approved")
@@ -178,7 +194,7 @@ def _validate_evidence_section(name: str, value: Any) -> list[str]:
         datetime.fromisoformat(exception["approved_at"].replace("Z", "+00:00"))
     except ValueError as exc:
         raise ReleaseEvidenceError(f"evidence.{name}.exception.approved_at must be ISO-8601") from exc
-    return [name]
+    return [name], []
 
 
 def _required_string(value: Any, key: str) -> str:

@@ -140,6 +140,8 @@ class ReleaseDecisionService:
 
     def _validate_current_evidence(self, run: EvaluationRun) -> None:
         eligibility = self.evidence.report_eligibility(run.dataset_version_id)
+        if run.report_eligibility is not None and run.report_eligibility.eligibility != "release_evidence":
+            raise ReleaseDecisionError("release evidence is exploratory and cannot support a release decision")
         if (
             eligibility.generation_id != run.dataset_version_id
             or eligibility.eligibility != "release_evidence"

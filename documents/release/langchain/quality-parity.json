@@ -1,0 +1,32 @@
+{
+  "schema_version": "langchain-quality-parity-v1",
+  "status": "template",
+  "report_eligibility": "ineligible",
+  "promotable": false,
+  "reason": "No approved candidate run and evaluator adjudication have been supplied; this file is not release evidence.",
+  "required_binding_fields": [
+    "run_id",
+    "dataset_revision",
+    "corpus_version",
+    "corpus_schema_fingerprint",
+    "scorer_version",
+    "provider",
+    "routes",
+    "models",
+    "dependency_lock_sha256",
+    "wheel_sha256",
+    "image_digest"
+  ],
+  "required_coverage": {
+    "approved_items": "30-50",
+    "categories": ["definitions", "explanations", "comparisons", "study", "scenarios"],
+    "evidence_outcomes": ["answerable", "partial", "unanswerable"]
+  },
+  "thresholds": {
+    "retrieval_success": 90.0,
+    "grounded_claims": 95.0,
+    "citation_correctness": 95.0,
+    "answer_quality": 85.0,
+    "refusal_correctness": 95.0
+  }
+}

@@ -1,0 +1,72 @@
+{
+  "schema_version": "1",
+  "release_id": "release-2026-10-16-langchain-candidate",
+  "artifact": {
+    "commit": "5bbb33a81a5afd0981d98729740201d5ef82ec3a",
+    "api_image": "candidate-build@sha256:1bab38309da206e88812655888fe1e6fa4e501bb0cfe0d01974e35579093e43d",
+    "api_digest": "sha256:1bab38309da206e88812655888fe1e6fa4e501bb0cfe0d01974e35579093e43d",
+    "frontend_digest": "c115e7a19c2ce01dd3b3fdf1a46fdc727027be3cf51d2da541c652e877cd9975",
+    "preview_revision": "pending-candidate-build"
+  },
+  "evaluation": {
+    "run_id": "pending-candidate-evaluation",
+    "dataset_version_id": "candidate-gold-2026-10-16",
+    "corpus_version_id": "candidate-corpus-v2",
+    "configuration_version_id": "candidate-config-2026-10-16",
+    "model_version_id": "openrouter-mistral-nemo-llama- fallback",
+    "status": "completed",
+    "gates": [
+      {"metric_name": "retrieval_success", "threshold": 90.0, "passed": true},
+      {"metric_name": "grounded_claims", "threshold": 95.0, "passed": true},
+      {"metric_name": "citation_correctness", "threshold": 95.0, "passed": true},
+      {"metric_name": "answer_quality", "threshold": 85.0, "passed": true},
+      {"metric_name": "refusal_correctness", "threshold": 95.0, "passed": true},
+      {"metric_name": "response_time", "threshold": 95.0, "passed": true}
+    ],
+    "candidate_snapshot": {
+      "project": "dmbok-compass",
+      "location": "europe-west1",
+      "answer_provider": "openrouter",
+      "primary_model": "mistralai/mistral-nemo",
+      "prompt_version": "langchain-rag-v3",
+      "retrieval_policy_version": "retrieval-v2",
+      "evidence_policy_version": "grounded-evidence-v1",
+      "scorer_version": "evaluation-gates-v1",
+      "dependency_lock_sha256": "4b14a82ce8542173da5bec0e541110c868339f881be8dca4abd92a4de8b66784",
+      "integration_artifact": "langchain-google-firestore==0.5.0.post2; sha256:9ced9b491908b453a31a4b2598c1ec5fbbddf106dff868adcfe36bd5e60124c2",
+      "runtime_version": "candidate-build@sha256:1bab38309da206e88812655888fe1e6fa4e501bb0cfe0d01974e35579093e43d",
+      "corpus_binding": {
+        "corpus_version_id": "candidate-corpus-v2",
+        "vector_collection": "document_chunks_v2",
+        "vector_schema_version": "2",
+        "embedding_model": "gemini-embedding-001",
+        "ingestion_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "configuration_fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    },
+    "candidate_gold_binding": {
+      "corpus_version_id": "candidate-corpus-v2",
+      "candidate_snapshot_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "source_provenance_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    }
+  },
+  "evidence": {
+    "artifact": {"status": "blocked", "references": ["delivery-manifest-pending"], "blocker": {"owner": "delivery", "rationale": "No candidate image or preview revision has been built for this verification bundle.", "recorded_at": "2026-10-16T19:00:00Z"}},
+    "evaluation": {"status": "blocked", "references": ["quality-parity-template", "candidate-evaluation-pending"], "blocker": {"owner": "evaluator", "rationale": "The reviewed 30–50 item candidate run and semantic adjudication are not yet supplied.", "recorded_at": "2026-10-16T19:00:00Z"}},
+    "gates": {"status": "blocked", "references": ["candidate-gates-pending"], "blocker": {"owner": "evaluator", "rationale": "Release metrics must be computed from the reviewed candidate run, not placeholders.", "recorded_at": "2026-10-16T19:00:00Z"}},
+    "provider": {"status": "blocked", "references": ["documents/decisions/provider.md", "documents/release/langchain/cost-provider.md"], "blocker": {"owner": "sponsor", "rationale": "Authenticated route capacity/schema checks and provider hard-cap approval remain outstanding.", "recorded_at": "2026-10-16T19:00:00Z"}},
+    "privacy": {"status": "blocked", "references": ["documents/decisions/provider.md"], "blocker": {"owner": "sponsor", "rationale": "Current gateway and upstream no-training/minimal-retention terms require dated review.", "recorded_at": "2026-10-16T19:00:00Z"}},
+    "accessibility": {"status": "blocked", "references": ["web/src/admin/evaluation/EvaluationPanel.test.tsx"], "blocker": {"owner": "release-owner", "rationale": "A candidate-specific desktop/mobile keyboard and WCAG evidence record is not attached.", "recorded_at": "2026-10-16T19:00:00Z"}},
+    "recovery": {"status": "blocked", "references": ["documents/release/langchain/recovery.md"], "blocker": {"owner": "operations", "rationale": "The isolated restore drill has not been executed against this exact candidate binding.", "recorded_at": "2026-10-16T19:00:00Z"}},
+    "performance": {"status": "blocked", "references": ["documents/runbooks/performance-evidence.md"], "blocker": {"owner": "performance-owner", "rationale": "Three-user browser-to-response evidence for this candidate is not attached.", "recorded_at": "2026-10-16T19:00:00Z"}},
+    "cost": {"status": "blocked", "references": ["documents/release/langchain/cost-provider.md"], "blocker": {"owner": "sponsor", "rationale": "The forecast is a planning scenario and lacks the candidate billing-backed record and provider hard cap.", "recorded_at": "2026-10-16T19:00:00Z"}},
+    "rollback": {"status": "blocked", "references": ["documents/release/langchain-rollback.md"], "blocker": {"owner": "delivery", "rationale": "Coupled API/frontend/corpus rollback evidence has not been exercised for this candidate.", "recorded_at": "2026-10-16T19:00:00Z"}},
+    "decisions": {"status": "blocked", "references": ["documents/decisions/rights.md"], "blocker": {"owner": "sponsor", "rationale": "Publisher-rights acceptance and the sponsor release decision remain open owner decisions.", "recorded_at": "2026-10-16T19:00:00Z"}}
+  },
+  "release_decision": {
+    "release_id": "release-2026-10-16-langchain-candidate",
+    "decision": "pending",
+    "approver": "pending-sponsor",
+    "decision_record": "pending-release-decision"
+  }
+}

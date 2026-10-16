@@ -73,7 +73,7 @@ Reviewed 2026-10-06:
 - Vertex AI remains in use only for the existing `gemini-embedding-001`
   corpus/query embedding path; it is not the answer-model gateway.
 
-## Production validation evidence
+## Historical non-candidate validation evidence
 
 Environment validated 2026-10-06:
 
@@ -85,18 +85,41 @@ Environment validated 2026-10-06:
   `billingAccounts/014869-D92661-32A1E6/budgets/eab851fe-bfb4-4bd5-95f9-5140e990b638`.
 - APIs: Cloud Billing Budget API and Vertex AI API are enabled in the
   production project.
-- Model metadata: both selected model IDs resolved successfully through the
-  Google Gen AI SDK using production-project ADC.
-- Structured smoke generation: both models returned `{"ok":true}` with
-  `STOP` completion using a synthetic 10-token prompt. Observed latency was
-  approximately 1.42 seconds for `gemini-2.5-flash-lite` and 0.96 seconds for
-  `gemini-2.5-flash`.
+- Model metadata: `gemini-2.5-flash-lite` and `gemini-2.5-flash` resolved
+  successfully through the Google Gen AI SDK using production-project ADC.
+- Structured smoke generation: those Gemini models returned `{"ok":true}`
+  with `STOP` completion using a synthetic 10-token prompt. Observed latency
+  was approximately 1.42 seconds and 0.96 seconds respectively.
 
-These checks validate credentials, model availability, and a minimal runtime
-path only. They do not replace the full corpus-grounding, citation, fallback,
-load, or end-to-end evaluation gates. Google Cloud budgets are alerting
-controls, not automatic spending cutoffs; the application’s daily quota and
-the configured provider budget must both remain enforced operationally.
+These historical checks validate credentials, model availability, and a
+minimal Gemini runtime path only. They do not validate the configured OpenRouter
+answer routes, corpus-grounding, load, or end-to-end release readiness. Google
+Cloud budgets are alerting controls, not automatic spending cutoffs; the
+application’s daily quota and the configured provider budget must both remain
+enforced operationally.
+
+## Candidate revalidation — promotion blocked
+
+**Revalidated:** 2026-10-16 · **Decision owner:** sponsor / release approver
+
+The effective candidate answer configuration is OpenRouter primary
+`mistralai/mistral-nemo` with fallback
+`meta-llama/llama-3.1-8b-instruct`; see the dated
+[cost and provider-route record](../release/langchain/cost-provider.md).
+The 2026-10-06 Gemini observations above are not valid substitute evidence for
+these routes.
+
+On 2026-10-16, public OpenRouter model metadata listed both exact IDs and their
+structured-output parameters. It does not attest to account capacity, active
+routing, or retention/training terms. No authenticated candidate smoke result,
+sponsor-approved provider hard cap, or sponsor-reviewed current OpenRouter and
+selected-upstream no-training/minimal-retention terms has been recorded.
+
+Accordingly, promotion is **blocked**. The sponsor must record the route review
+URLs, reviewer and decision time; the provider hard-cap amount; and the two
+sanitized synthetic route results. A 429 or other capacity/rate-limit response
+is failure evidence, not a passing route result. This does not alter the
+separate publisher-rights gate in [`rights.md`](rights.md).
 
 ## Contract impact
 

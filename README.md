@@ -32,8 +32,8 @@ From `backend/`, create a virtual environment and install the test extra:
 ```bash
 python -m venv .venv
 source .venv/bin/activate
-pip install -r requirements-compat.lock
-pip install -e '.[test]'
+pip install --require-hashes -r requirements.lock
+pip install --no-deps -e '.[test]'
 pytest
 uvicorn app.main:app --reload
 ```
@@ -90,11 +90,13 @@ Run the same checks locally before opening a pull request:
 
 ```bash
 cd backend
-python -m pip install -r requirements-compat.lock
-python -m pip install -e '.[test]' pip-audit 'setuptools>=83.0.0'
+python -m pip install --require-hashes -r requirements.lock
+python -m pip install --no-deps -e '.[test]'
+python -m pip install --no-deps pip-audit==2.10.1 setuptools==83.0.0
 pytest
 python -m pip uninstall --yes dmbok-compass-backend
-pip-audit --strict
+sed '/^--find-links /d; /^langchain-google-firestore==/,/^    # via /d' requirements.lock > /tmp/backend-requirements-audit.lock
+pip-audit --strict --no-deps -r /tmp/backend-requirements-audit.lock
 
 cd ../web
 npm ci

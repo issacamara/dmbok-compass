@@ -31,13 +31,17 @@ jobs:
           cache: pip
           cache-dependency-path: |
             backend/pyproject.toml
-            backend/requirements-compat.lock
+            backend/requirements.lock
 
       - name: Install backend test dependencies
         run: |
           echo "9ced9b491908b453a31a4b2598c1ec5fbbddf106dff868adcfe36bd5e60124c2  vendor/langchain-google-firestore/dist/langchain_google_firestore-0.5.0.post2-py3-none-any.whl" | sha256sum -c -
-          python -m pip install -r requirements-compat.lock
-          python -m pip install -e ".[test]" pip-audit "setuptools>=83.0.0"
+          python -m pip install --require-hashes -r requirements.lock
+          python -m pip install --no-deps -e .
+          python -m pip install pip-audit==2.10.1 setuptools==83.0.0
+
+      - name: Check active lock is self-contained
+        run: python -m pip install --dry-run --ignore-installed --require-hashes -r requirements.lock
 
       - name: Run backend tests
         run: pytest
@@ -49,8 +53,8 @@ jobs:
         run: |
           # The maintained Firestore wheel is checksum-verified above but its
           # post-release version is intentionally absent from PyPI. Audit
-          # every registry dependency in the universal lock independently.
-          grep -v '^\./vendor/langchain-google-firestore/' requirements-compat.lock > "$RUNNER_TEMP/requirements-audit.lock"
+          # every registry dependency in the active lock independently.
+          sed '/^--find-links /d; /^langchain-google-firestore==/,/^    # via /d' requirements.lock > "$RUNNER_TEMP/requirements-audit.lock"
           pip-audit --strict --no-deps -r "$RUNNER_TEMP/requirements-audit.lock"
 
   frontend:

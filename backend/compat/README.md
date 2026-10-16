@@ -1,6 +1,6 @@
 # LangChain compatibility and retirement audit
 
-The application now uses the validated native LangChain stack in its production-shaped API, ingestion, evaluation, and maintenance callers. `backend/requirements-compat.lock` pins the complete backend runtime resolution, including the maintained Firestore wheel; `backend/pyproject.toml` and the application image install that same stack. The checks here are regression and target-environment compatibility gates, not a pending migration.
+The application now uses the validated native LangChain stack in its production-shaped API, ingestion, evaluation, and maintenance callers. `backend/requirements-compat.lock` is the compatibility-only lock for this isolated spike, including the maintained Firestore wheel; the active application image and CI use `backend/requirements.lock`, generated from `backend/pyproject.toml` with the test extra. These locks must not be substituted for one another. The checks here are regression and target-environment compatibility gates, not a pending migration.
 
 ## Native caller inventory (2026-10-16)
 

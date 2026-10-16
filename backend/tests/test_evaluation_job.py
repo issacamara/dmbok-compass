@@ -215,6 +215,51 @@ def test_worker_marks_each_release_gate_from_gold_evidence_scores() -> None:
     ]
 
 
+def test_worker_uses_metric_specific_denominators_and_never_passes_an_empty_gate() -> None:
+    job, _ = service()
+    run = job.launch(
+        corpus_version_id="corpus-v2",
+        configuration_version_id="config-v3", model_version_id="model-v4", item_ids=None,
+    )
+    result = EvaluationWorker(job.runs).execute(
+        run.run_id,
+        dataset(),
+        lambda item_id: EvaluationOutcome(
+            retrieval_success=True,
+            grounded=True,
+            citation_correct=True,
+            answer_quality=True,
+            refusal_correct=item_id == "item-2",
+            response_time_ms=100,
+            applicable_metrics=(
+                frozenset({"refusal_correctness"}) if item_id == "item-2"
+                else frozenset({"retrieval_success", "grounded_claims", "citation_correctness", "answer_quality"})
+            ),
+        ),
+    )
+    metrics = {metric.metric_name: metric for metric in result.metrics}
+
+    assert (metrics["refusal_correctness"].numerator, metrics["refusal_correctness"].denominator) == (1, 1)
+    assert (metrics["grounded_claims"].numerator, metrics["grounded_claims"].denominator) == (2, 2)
+    assert metrics["refusal_correctness"].passed is True
+
+    refusal_only = job.launch(
+        corpus_version_id="corpus-v2",
+        configuration_version_id="config-v3", model_version_id="model-v4", item_ids=["item-2"],
+    )
+    empty_gate = EvaluationWorker(job.runs).execute(
+        refusal_only.run_id,
+        dataset(),
+        lambda _: EvaluationOutcome(
+            retrieval_success=False, grounded=False, citation_correct=False, answer_quality=False,
+            refusal_correct=True, response_time_ms=100,
+            applicable_metrics=frozenset({"refusal_correctness"}),
+        ),
+    )
+    empty_metrics = {metric.metric_name: metric for metric in empty_gate.metrics}
+    assert (empty_metrics["grounded_claims"].denominator, empty_metrics["grounded_claims"].passed) == (0, False)
+
+
 def test_worker_failure_is_content_free_and_persisted() -> None:
     job, _ = service()
     run = job.launch(

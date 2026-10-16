@@ -19,6 +19,7 @@ from app.answering import (
 from app.contracts import EvaluationDataset, QuotaStatus
 from app.corpus.firestore import FirestoreCorpusVersionStore
 from app.evaluation.generations import FirestoreEvaluationGenerationStore
+from app.evaluation.assessments import score_assessment
 from app.evaluation.job import (
     EvaluationCandidateSnapshotResolver,
     EvaluationOutcome,
@@ -85,10 +86,13 @@ def execute_run(
 class EvaluationAnswerEvaluator:
     """Produce content-free evaluation outcomes from the pinned corpus answer path."""
 
-    def __init__(self, dataset: EvaluationDataset, answerer: RetrievedAnswerService) -> None:
+    def __init__(
+        self, dataset: EvaluationDataset, answerer: RetrievedAnswerService, *, scorer_version: str = "evaluation-gates-v1"
+    ) -> None:
         self._items = {item.item_id: item for item in dataset.items}
         self._annotations = {annotation.item_id: annotation for annotation in dataset.gold_annotations}
         self._answerer = answerer
+        self._scorer_version = scorer_version
 
     def __call__(self, item_id: str) -> EvaluationOutcome:
         item = self._items[item_id]
@@ -96,22 +100,22 @@ class EvaluationAnswerEvaluator:
         annotation = self._annotations.get(item_id)
         retrieved = {passage.chunk_id for passage in response.trace.retrieved_passages}
         cited = {citation.citation_id for citation in response.citations}
-        expected = set(annotation.relevant_chunk_ids) if annotation is not None else set()
-        is_answer = response.outcome in {"answer", "qualified"}
-        # Candidate-only datasets are explicitly exploratory. Gold annotations
-        # give retrieval and citation scoring a durable human-reviewed oracle.
-        retrieval_success = bool(retrieved & expected) if expected else bool(retrieved)
-        citation_correct = cited <= expected and bool(cited) if expected else bool(cited)
-        grounded = is_answer and bool(cited)
-        answer_quality = is_answer and bool(response.answer_text)
-        refusal_correct = (response.outcome == "refusal") if not expected else is_answer
+        score = score_assessment(
+            annotation,
+            outcome=response.outcome,
+            answer_text=response.answer_text,
+            retrieved_chunk_ids=retrieved,
+            cited_chunk_ids=cited,
+            scorer_version=self._scorer_version,
+        )
         return EvaluationOutcome(
-            retrieval_success=retrieval_success,
-            grounded=grounded,
-            citation_correct=citation_correct,
-            answer_quality=answer_quality,
-            refusal_correct=refusal_correct,
+            retrieval_success=score.retrieval_success,
+            grounded=score.grounded,
+            citation_correct=score.citation_correct,
+            answer_quality=score.answer_quality,
+            refusal_correct=score.refusal_correct,
             response_time_ms=float(response.trace.timings_ms.get("total_ms", 0)),
+            applicable_metrics=score.applicable_metrics,
         )
 
 
@@ -133,7 +137,9 @@ def main() -> None:
             run_id,
             datasets=datasets,
             runs=runs,
-            evaluate=EvaluationAnswerEvaluator(dataset, _pinned_answerer(project, run)),
+            evaluate=EvaluationAnswerEvaluator(
+                dataset, _pinned_answerer(project, run), scorer_version=run.candidate_snapshot.scorer_version
+            ),
         )
     except Exception:
         # Configuration and provider setup failures must be durable, but may

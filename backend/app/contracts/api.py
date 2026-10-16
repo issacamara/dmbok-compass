@@ -264,12 +264,31 @@ class EvaluationItem(ContractModel):
 class GoldAnnotation(ContractModel):
     item_id: str = Field(min_length=1, max_length=128)
     expected_answer_or_rubric: str = Field(min_length=1, max_length=10000)
-    relevant_chunk_ids: list[str] = Field(min_length=1)
+    # Refusal cases deliberately have no relevant passage.  They remain
+    # applicable to the refusal gate, but not the retrieval gate.
+    relevant_chunk_ids: list[str] = Field(default_factory=list)
     review_status: Literal["candidate", "approved", "rejected"]
     # Imported evaluator-authored passages are durable evaluation evidence, not
     # production interaction data. Existing generated candidates may not have
     # one until they are imported or reviewed, hence the compatibility default.
     supporting_passage: str | None = Field(default=None, min_length=1, max_length=20000)
+    semantic_assessment: "ReviewedSemanticAssessment | None" = None
+
+
+class ReviewedSemanticAssessment(ContractModel):
+    """Frozen human judgement for one evaluator-authored response.
+
+    The response itself is never retained in a run.  Its digest lets the
+    worker reject a different generated response instead of reusing a human
+    judgement for content that was never reviewed.
+    """
+
+    response_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    scorer_version: str = Field(min_length=1, max_length=128)
+    claim_support: bool | None = None
+    claim_citation_support: bool | None = None
+    rubric_passed: bool | None = None
+    expected_refusal: bool | None = None
 
 
 class EvaluationDataset(ContractModel):

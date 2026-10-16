@@ -138,6 +138,9 @@ class EvaluationOutcome:
     answer_quality: bool
     refusal_correct: bool
     response_time_ms: float
+    applicable_metrics: frozenset[str] = frozenset({
+        "retrieval_success", "grounded_claims", "citation_correctness", "answer_quality", "refusal_correctness",
+    })
 
 
 class EvaluationWorker:
@@ -185,7 +188,15 @@ class EvaluationWorker:
                 ),
             ]
             item_results = [
-                EvaluationItemResult(item_id=item_id, **result.__dict__)
+                EvaluationItemResult(
+                    item_id=item_id,
+                    retrieval_success=result.retrieval_success,
+                    grounded=result.grounded,
+                    citation_correct=result.citation_correct,
+                    answer_quality=result.answer_quality,
+                    refusal_correct=result.refusal_correct,
+                    response_time_ms=result.response_time_ms,
+                )
                 for item_id, result in zip(run.selected_item_ids, results, strict=True)
             ]
             return self.runs.update(
@@ -292,8 +303,12 @@ def _metric(
     *,
     threshold: float,
 ) -> EvaluationMetric:
-    numerator = sum(predicate(result) for result in results)
-    denominator = len(results)
+    applicable = [
+        result for result in results
+        if name == "response_time" or name in result.applicable_metrics
+    ]
+    numerator = sum(predicate(result) for result in applicable)
+    denominator = len(applicable)
     percentage = round(100 * numerator / denominator, 2) if denominator else 0.0
     return EvaluationMetric(
         metric_name=name,
@@ -301,7 +316,7 @@ def _metric(
         denominator=denominator,
         percentage=percentage,
         threshold=threshold,
-        passed=percentage >= threshold,
+        passed=denominator > 0 and percentage >= threshold,
     )
 
 

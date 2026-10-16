@@ -4,7 +4,7 @@ from fastapi import status
 from fastapi.testclient import TestClient
 
 from app.api.evaluations import evaluation_service
-from app.contracts import EvaluationDataset, EvaluationItem, UserProfile
+from app.contracts import CorpusServingBinding, EvaluationCandidateSnapshot, EvaluationDataset, EvaluationItem, EvaluationRun, UserProfile
 from app.evaluation import (
     EvaluationJobService,
     InMemoryEvaluationDatasetStore,
@@ -27,11 +27,43 @@ def dataset() -> EvaluationDataset:
     )
 
 
+class SnapshotResolver:
+    runtime_version = "revision-a"
+
+    def resolve(
+        self,
+        *,
+        corpus_version_id: str,
+        configuration_version_id: str,
+        model_version_id: str,
+    ) -> EvaluationCandidateSnapshot:
+        return EvaluationCandidateSnapshot(
+            corpus_binding=CorpusServingBinding(
+                corpus_version_id=corpus_version_id,
+                vector_collection="document_chunks_v2",
+                vector_schema_version="2",
+                embedding_model="gemini-embedding-001",
+                ingestion_fingerprint="a" * 64,
+                configuration_fingerprint="b" * 64,
+            ),
+            project="project", location="europe-west1", answer_provider="openrouter",
+            primary_model="model-primary", fallback_model="model-fallback",
+            json_schema_supported=True,
+            request_timeout_ms=14_000, generation_timeout_ms=8_000,
+            prompt_version="grounded-answer-policy-v1",
+            retrieval_policy_version="top-five-cosine-v1",
+            evidence_policy_version="grounded-evidence-v1", scorer_version="evaluation-gates-v1",
+            dependency_lock_sha256="c" * 64,
+            integration_artifact="langchain-google-firestore==0.5.0.post2",
+            runtime_version=self.runtime_version,
+        )
+
+
 def service() -> tuple[EvaluationJobService, InMemoryEvaluationJobDispatcher]:
     datasets = InMemoryEvaluationDatasetStore()
     datasets.create(dataset())
     dispatcher = InMemoryEvaluationJobDispatcher()
-    return EvaluationJobService(datasets, InMemoryEvaluationRunStore(), dispatcher), dispatcher
+    return EvaluationJobService(datasets, InMemoryEvaluationRunStore(), dispatcher, SnapshotResolver()), dispatcher
 
 
 def test_full_and_subset_runs_are_version_bound_and_retry_idempotent() -> None:
@@ -54,12 +86,14 @@ def test_full_and_subset_runs_are_version_bound_and_retry_idempotent() -> None:
     assert set(dispatcher.dispatched) == {full.run_id, subset.run_id}
     assert full.report_eligibility is not None
     assert full.report_eligibility.eligibility == "exploratory"
+    assert full.candidate_snapshot is not None
+    assert full.candidate_snapshot.corpus_binding.corpus_version_id == "corpus-v2"
 
 
 def test_run_status_reclassifies_a_superseded_generation_as_exploratory() -> None:
     datasets = InMemoryEvaluationDatasetStore()
     datasets.create(dataset())
-    job = EvaluationJobService(datasets, InMemoryEvaluationRunStore(), InMemoryEvaluationJobDispatcher())
+    job = EvaluationJobService(datasets, InMemoryEvaluationRunStore(), InMemoryEvaluationJobDispatcher(), SnapshotResolver())
     run = job.launch(
         corpus_version_id="corpus-v2", configuration_version_id="config-v3", model_version_id="model-v4", item_ids=None,
     )
@@ -210,3 +244,37 @@ def test_worker_rejects_a_dataset_other_than_the_run_pinned_generation() -> None
 
     assert failed.status == "failed"
     assert failed.error == "EvaluationRunError: evaluation failed"
+
+
+def test_launch_persists_snapshot_and_configuration_drift_creates_a_new_run() -> None:
+    datasets = InMemoryEvaluationDatasetStore()
+    datasets.create(dataset())
+    resolver = SnapshotResolver()
+    job = EvaluationJobService(datasets, InMemoryEvaluationRunStore(), InMemoryEvaluationJobDispatcher(), resolver)
+
+    first = job.launch(
+        corpus_version_id="corpus-v2", configuration_version_id="config-v3", model_version_id="model-v4", item_ids=None,
+    )
+    resolver.runtime_version = "revision-b"
+    second = job.launch(
+        corpus_version_id="corpus-v2", configuration_version_id="config-v3", model_version_id="model-v4", item_ids=None,
+    )
+
+    assert first.run_id != second.run_id
+    assert first.candidate_snapshot is not None
+    assert first.candidate_snapshot.runtime_version == "revision-a"
+    assert second.candidate_snapshot is not None
+    assert second.candidate_snapshot.runtime_version == "revision-b"
+
+
+def test_worker_marks_legacy_run_without_a_snapshot_as_failed() -> None:
+    runs = InMemoryEvaluationRunStore()
+    runs.create_or_get(EvaluationRun(
+        run_id="legacy", dataset_version_id="dataset-v1", corpus_version_id="corpus-v1", status="queued",
+        selected_item_ids=["item-0"], configuration_version_id="config-v1", model_version_id="model-v1",
+    ))
+
+    failed = EvaluationWorker(runs).execute("legacy", dataset(), lambda _: EvaluationOutcome(True, True, True, True, True, 1))
+
+    assert failed.status == "failed"
+    assert failed.error == "EvaluationRunError: immutable candidate snapshot is unavailable"

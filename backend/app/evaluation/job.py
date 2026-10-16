@@ -11,7 +11,7 @@ from collections.abc import Callable
 
 from google.api_core.exceptions import AlreadyExists
 
-from app.contracts import EvaluationDataset, EvaluationItemResult, EvaluationMetric, EvaluationReportEligibility, EvaluationRun
+from app.contracts import EvaluationCandidateSnapshot, EvaluationDataset, EvaluationItemResult, EvaluationMetric, EvaluationReportEligibility, EvaluationRun
 from app.evaluation.dataset import EvaluationDatasetStore
 
 
@@ -35,6 +35,18 @@ class ActiveEvaluationDatasetStore(EvaluationDatasetStore, Protocol):
 
 class EvaluationJobDispatcher(Protocol):
     def dispatch(self, run: EvaluationRun, dataset: EvaluationDataset) -> None: ...
+
+
+class EvaluationCandidateSnapshotResolver(Protocol):
+    """Resolves the complete candidate identity before a run is persisted."""
+
+    def resolve(
+        self,
+        *,
+        corpus_version_id: str,
+        configuration_version_id: str,
+        model_version_id: str,
+    ) -> EvaluationCandidateSnapshot: ...
 
 
 class InMemoryEvaluationRunStore:
@@ -141,6 +153,15 @@ class EvaluationWorker:
             raise EvaluationRunError("unknown evaluation run")
         if run.status == "completed":
             return run
+        if run.candidate_snapshot is None:
+            return self.runs.update(
+                run.model_copy(
+                    update={
+                        "status": "failed",
+                        "error": "EvaluationRunError: immutable candidate snapshot is unavailable",
+                    }
+                )
+            )
         running = run.model_copy(update={"status": "running"})
         self.runs.update(running)
         try:
@@ -193,20 +214,33 @@ def select_items(dataset: EvaluationDataset, item_ids: list[str] | None) -> tupl
 
 def stable_run_id(
     dataset_version_id: str,
-    corpus_version_id: str,
     configuration_version_id: str,
     model_version_id: str,
+    candidate_snapshot: EvaluationCandidateSnapshot,
     selected_item_ids: tuple[str, ...],
 ) -> str:
-    material = "|".join((dataset_version_id, corpus_version_id, configuration_version_id, model_version_id, *selected_item_ids))
+    material = "|".join((
+        dataset_version_id,
+        configuration_version_id,
+        model_version_id,
+        candidate_snapshot.model_dump_json(),
+        *selected_item_ids,
+    ))
     return "eval-" + sha256(material.encode("utf-8")).hexdigest()[:32]
 
 
 class EvaluationJobService:
-    def __init__(self, datasets: ActiveEvaluationDatasetStore, runs: EvaluationRunStore, dispatcher: EvaluationJobDispatcher) -> None:
+    def __init__(
+        self,
+        datasets: ActiveEvaluationDatasetStore,
+        runs: EvaluationRunStore,
+        dispatcher: EvaluationJobDispatcher,
+        snapshots: EvaluationCandidateSnapshotResolver,
+    ) -> None:
         self.datasets = datasets
         self.runs = runs
         self.dispatcher = dispatcher
+        self.snapshots = snapshots
 
     def launch(
         self,
@@ -221,14 +255,22 @@ class EvaluationJobService:
             raise EvaluationRunError("no active evaluation dataset")
         dataset_version_id = dataset.dataset_version_id
         selected = select_items(dataset, item_ids)
+        snapshot = self.snapshots.resolve(
+            corpus_version_id=corpus_version_id,
+            configuration_version_id=configuration_version_id,
+            model_version_id=model_version_id,
+        )
+        if snapshot.corpus_binding.corpus_version_id != corpus_version_id:
+            raise EvaluationRunError("candidate snapshot does not match the requested corpus version")
         run = EvaluationRun(
-            run_id=stable_run_id(dataset_version_id, corpus_version_id, configuration_version_id, model_version_id, selected),
+            run_id=stable_run_id(dataset_version_id, configuration_version_id, model_version_id, snapshot, selected),
             dataset_version_id=dataset_version_id,
             corpus_version_id=corpus_version_id,
             status="queued",
             selected_item_ids=list(selected),
             configuration_version_id=configuration_version_id,
             model_version_id=model_version_id,
+            candidate_snapshot=snapshot,
             report_eligibility=self.datasets.report_eligibility(dataset_version_id),
         )
         stored = self.runs.create_or_get(run)

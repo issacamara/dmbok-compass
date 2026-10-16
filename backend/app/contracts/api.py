@@ -290,6 +290,27 @@ class EvaluationItemResult(ContractModel):
     response_time_ms: float = Field(ge=0)
 
 
+class EvaluationCandidateSnapshot(ContractModel):
+    """Server-resolved, content-free configuration for one evaluation run."""
+
+    corpus_binding: CorpusServingBinding
+    project: str = Field(min_length=1, max_length=128)
+    location: str = Field(min_length=1, max_length=128)
+    answer_provider: Literal["openrouter", "vertex"]
+    primary_model: str = Field(min_length=1, max_length=128)
+    fallback_model: str | None = Field(default=None, min_length=1, max_length=128)
+    json_schema_supported: bool
+    request_timeout_ms: int = Field(ge=1, le=60_000)
+    generation_timeout_ms: int = Field(ge=1, le=60_000)
+    prompt_version: str = Field(min_length=1, max_length=128)
+    retrieval_policy_version: str = Field(min_length=1, max_length=128)
+    evidence_policy_version: str = Field(min_length=1, max_length=128)
+    scorer_version: str = Field(min_length=1, max_length=128)
+    dependency_lock_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    integration_artifact: str = Field(min_length=1, max_length=256)
+    runtime_version: str = Field(min_length=1, max_length=256)
+
+
 class EvaluationRun(ContractModel):
     run_id: str = Field(min_length=1, max_length=128)
     dataset_version_id: str = Field(min_length=1, max_length=128)
@@ -300,6 +321,7 @@ class EvaluationRun(ContractModel):
     selected_item_ids: list[str] = Field(default_factory=list, max_length=10000)
     configuration_version_id: str = Field(min_length=1, max_length=128)
     model_version_id: str = Field(min_length=1, max_length=128)
+    candidate_snapshot: EvaluationCandidateSnapshot | None = None
     error: str | None = Field(default=None, max_length=500)
     report_eligibility: EvaluationReportEligibility | None = None
 

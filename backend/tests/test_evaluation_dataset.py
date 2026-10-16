@@ -3,12 +3,16 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from app.contracts import EvaluationDataset, EvaluationItem, GoldAnnotation
+from app.contracts import DocumentChunk, EvaluationDataset, EvaluationItem, GoldAnnotation
 from app.evaluation.dataset import (
+    CandidateBindingError,
+    CandidateChunk,
+    CandidateGoldBinding,
     EvaluationDatasetError,
     GoldSubsetError,
     InMemoryEvaluationDatasetStore,
     ReviewTransitionError,
+    remap_gold_annotations,
 )
 
 
@@ -87,3 +91,103 @@ def test_gold_subset_requires_30_to_50_human_approvals() -> None:
         store.review_annotation("dataset-v1", f"item-{index}", "approved")
     store.approve_gold_subset("dataset-v1")
     assert store.is_gold_subset_approved("dataset-v1")
+
+
+def _candidate_chunk(
+    chunk_id: str,
+    text: str,
+    *,
+    page: int,
+    section: str,
+    section_origin: str = "explicit",
+) -> CandidateChunk:
+    return CandidateChunk(
+        chunk=DocumentChunk(
+            chunk_id=chunk_id,
+            corpus_version_id="candidate-corpus",
+            page=page,
+            section=section,
+            chunk_ordinal=0,
+            content_hash="a" * 64,
+            text=text,
+            embedding=[0.0] * 768,
+        ),
+        section_origin=section_origin,  # type: ignore[arg-type]
+    )
+
+
+def _candidate_binding() -> CandidateGoldBinding:
+    return CandidateGoldBinding(
+        corpus_version_id="candidate-corpus",
+        candidate_snapshot_sha256="b" * 64,
+        source_provenance_sha256="c" * 64,
+    )
+
+
+def test_remap_uses_candidate_provenance_and_never_carries_approval_forward() -> None:
+    categories = ("definitions", "explanations", "comparisons", "study", "scenarios")
+    supports = ("definition support", "carried support", "unclassified support", "ambiguous support", "missing support")
+    dataset = EvaluationDataset(
+        dataset_version_id="dataset-v2",
+        items=[
+            EvaluationItem(
+                item_id=f"item-{index}",
+                question=f"Question {index}",
+                dataset_version_id="dataset-v2",
+                category=category,
+            )
+            for index, category in enumerate(categories)
+        ],
+        gold_annotations=[
+            GoldAnnotation(
+                item_id=f"item-{index}",
+                expected_answer_or_rubric=f"Oracle outcome: {('answerable', 'partial', 'unanswerable')[index % 3]}",
+                relevant_chunk_ids=[f"legacy-{index}"],
+                review_status="candidate",
+                supporting_passage=support,
+            )
+            for index, support in enumerate(supports)
+        ],
+    )
+    review = remap_gold_annotations(
+        dataset,
+        [
+            _candidate_chunk("chunk-definition", "A definition support appears here.", page=1, section="Definitions"),
+            _candidate_chunk("chunk-carried", "A carried support appears here.", page=2, section="Context", section_origin="carried"),
+            _candidate_chunk("chunk-unclassified", "An unclassified support appears here.", page=3, section="Unclassified"),
+            _candidate_chunk("chunk-ambiguous-a", "An ambiguous support appears here.", page=4, section="A"),
+            _candidate_chunk("chunk-ambiguous-b", "An ambiguous support appears here.", page=5, section="B"),
+            _candidate_chunk("legacy-4", "The prior supporting text was changed.", page=6, section="Changed"),
+        ],
+        _candidate_binding(),
+    )
+
+    by_item = {remap.item_id: remap for remap in review.remaps}
+    assert by_item["item-0"].remap_status == "matched"
+    assert by_item["item-0"].relevant_chunk_ids == ("chunk-definition",)
+    assert (by_item["item-0"].page, by_item["item-0"].section) == (1, "Definitions")
+    assert "review_carried_heading" in by_item["item-1"].review_reasons
+    assert "review_unclassified_section" in by_item["item-2"].review_reasons
+    assert by_item["item-3"].remap_status == "ambiguous"
+    assert by_item["item-4"].remap_status == "changed"
+    assert all(remap.model_dump()["review_status"] == "candidate" for remap in review.remaps)
+
+
+def test_remap_rejects_chunks_from_another_corpus() -> None:
+    chunk = _candidate_chunk("chunk-1", "support", page=1, section="Section")
+    wrong_chunk = CandidateChunk(chunk=chunk.chunk.model_copy(update={"corpus_version_id": "legacy-corpus"}))
+    with pytest.raises(CandidateBindingError, match="bound candidate corpus"):
+        remap_gold_annotations(make_dataset(), [wrong_chunk], _candidate_binding())
+
+
+def test_remap_flags_missing_and_unknown_support_for_review() -> None:
+    missing = make_dataset().model_copy(
+        update={"gold_annotations": [make_dataset().gold_annotations[0].model_copy(update={"supporting_passage": None})]}
+    )
+    unknown = make_dataset().model_copy(
+        update={"gold_annotations": [make_dataset().gold_annotations[0].model_copy(update={"supporting_passage": "Unknown support"})]}
+    )
+    chunk = _candidate_chunk("candidate", "Different candidate text", page=1, section="Section")
+
+    assert remap_gold_annotations(missing, [chunk], _candidate_binding()).remaps[0].remap_status == "missing"
+    assert remap_gold_annotations(unknown, [chunk], _candidate_binding()).remaps[0].remap_status == "unknown"

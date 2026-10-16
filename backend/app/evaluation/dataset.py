@@ -9,10 +9,13 @@ for retaining user interactions.
 from __future__ import annotations
 
 from copy import deepcopy
+from dataclasses import dataclass
+from hashlib import sha256
+import json
 from threading import RLock
-from typing import Protocol
+from typing import Iterable, Literal, Protocol
 
-from app.contracts import EvaluationDataset, EvaluationReportEligibility, GoldAnnotation
+from app.contracts import DocumentChunk, EvaluationDataset, EvaluationReportEligibility, GoldAnnotation
 
 
 class EvaluationDatasetError(ValueError):
@@ -25,6 +28,180 @@ class ReviewTransitionError(EvaluationDatasetError):
 
 class GoldSubsetError(EvaluationDatasetError):
     """Raised when a dataset does not have an approvable gold subset."""
+
+
+class CandidateBindingError(EvaluationDatasetError):
+    """Raised when remapping data is not bound to one candidate assessment."""
+
+
+@dataclass(frozen=True)
+class CandidateGoldBinding:
+    """Immutable candidate identities required before a gold item can be reviewed."""
+
+    corpus_version_id: str
+    candidate_snapshot_sha256: str
+    source_provenance_sha256: str
+
+    def __post_init__(self) -> None:
+        if not self.corpus_version_id:
+            raise CandidateBindingError("candidate corpus version is required")
+        for name, value in (
+            ("candidate snapshot", self.candidate_snapshot_sha256),
+            ("source provenance", self.source_provenance_sha256),
+        ):
+            if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+                raise CandidateBindingError(f"{name} must be a lowercase SHA-256 digest")
+
+    def model_dump(self) -> dict[str, str]:
+        return {
+            "corpus_version_id": self.corpus_version_id,
+            "candidate_snapshot_sha256": self.candidate_snapshot_sha256,
+            "source_provenance_sha256": self.source_provenance_sha256,
+        }
+
+
+@dataclass(frozen=True)
+class CandidateChunk:
+    """A candidate chunk plus the provenance needed for sponsor review."""
+
+    chunk: DocumentChunk
+    section_origin: Literal["explicit", "carried"] = "explicit"
+
+    def __post_init__(self) -> None:
+        if self.section_origin not in {"explicit", "carried"}:
+            raise CandidateBindingError("section origin must be explicit or carried")
+
+
+@dataclass(frozen=True)
+class GoldAnnotationRemap:
+    """A non-final proposal that an administrator must review explicitly."""
+
+    item_id: str
+    relevant_chunk_ids: tuple[str, ...]
+    remap_status: Literal["matched", "ambiguous", "missing", "changed", "unknown"]
+    page: int | None
+    section: str | None
+    section_origin: Literal["explicit", "carried"] | None
+    review_reasons: tuple[str, ...]
+
+    def model_dump(self) -> dict[str, object]:
+        return {
+            "item_id": self.item_id,
+            "relevant_chunk_ids": list(self.relevant_chunk_ids),
+            "remap_status": self.remap_status,
+            "review_status": "candidate",
+            "page": self.page,
+            "section": self.section,
+            "section_origin": self.section_origin,
+            "review_reasons": list(self.review_reasons),
+        }
+
+
+@dataclass(frozen=True)
+class CandidateGoldReview:
+    """Candidate-specific remap output; it deliberately has no approval state."""
+
+    binding: CandidateGoldBinding
+    remaps: tuple[GoldAnnotationRemap, ...]
+
+    def model_dump(self) -> dict[str, object]:
+        return {
+            "binding": self.binding.model_dump(),
+            "remaps": [remap.model_dump() for remap in self.remaps],
+        }
+
+    def remap_for(self, item_id: str) -> GoldAnnotationRemap:
+        try:
+            return next(remap for remap in self.remaps if remap.item_id == item_id)
+        except StopIteration as exc:
+            raise CandidateBindingError(f"candidate review is missing annotation {item_id}") from exc
+
+
+def remap_gold_annotations(
+    dataset: EvaluationDataset,
+    candidate_chunks: Iterable[DocumentChunk | CandidateChunk],
+    binding: CandidateGoldBinding,
+) -> CandidateGoldReview:
+    """Propose candidate-corpus mappings without carrying approval forward.
+
+    A supporting passage can map only when it occurs in exactly one candidate
+    chunk for the bound corpus.  Every output remains a ``candidate`` for the
+    existing administrator review flow; ambiguous, missing, and changed
+    support have no candidate chunk IDs to approve accidentally.
+    """
+
+    chunks = tuple(_candidate_chunk(chunk) for chunk in candidate_chunks)
+    if any(chunk.chunk.corpus_version_id != binding.corpus_version_id for chunk in chunks):
+        raise CandidateBindingError("candidate chunks must all belong to the bound candidate corpus")
+
+    remaps = tuple(_remap_annotation(annotation, chunks) for annotation in dataset.gold_annotations)
+    return CandidateGoldReview(binding=binding, remaps=remaps)
+
+
+def candidate_review_fingerprint(review: CandidateGoldReview) -> str:
+    """Return a stable binding fingerprint for durable generation metadata."""
+
+    encoded = json.dumps(review.model_dump(), sort_keys=True, separators=(",", ":")).encode()
+    return sha256(encoded).hexdigest()
+
+
+def _candidate_chunk(chunk: DocumentChunk | CandidateChunk) -> CandidateChunk:
+    return chunk if isinstance(chunk, CandidateChunk) else CandidateChunk(chunk=chunk)
+
+
+def _remap_annotation(
+    annotation: GoldAnnotation, chunks: tuple[CandidateChunk, ...]
+) -> GoldAnnotationRemap:
+    support = _normalise(annotation.supporting_passage or "")
+    matches = tuple(chunk for chunk in chunks if support and support in _normalise(chunk.chunk.text))
+    if len(matches) == 1:
+        match = matches[0]
+        reasons = ["verify_one_based_page_and_section"]
+        if match.section_origin == "carried":
+            reasons.append("review_carried_heading")
+        if match.chunk.section == "Unclassified":
+            reasons.append("review_unclassified_section")
+        return GoldAnnotationRemap(
+            item_id=annotation.item_id,
+            relevant_chunk_ids=(match.chunk.chunk_id,),
+            remap_status="matched",
+            page=match.chunk.page,
+            section=match.chunk.section,
+            section_origin=match.section_origin,
+            review_reasons=tuple(reasons),
+        )
+    if len(matches) > 1:
+        return GoldAnnotationRemap(
+            item_id=annotation.item_id,
+            relevant_chunk_ids=(),
+            remap_status="ambiguous",
+            page=None,
+            section=None,
+            section_origin=None,
+            review_reasons=("ambiguous_support",),
+        )
+    if not support:
+        status: Literal["missing", "changed", "unknown"] = "missing"
+        reason = "missing_supporting_passage"
+    elif any(chunk.chunk.chunk_id in annotation.relevant_chunk_ids for chunk in chunks):
+        status = "changed"
+        reason = "changed_support"
+    else:
+        status = "unknown"
+        reason = "unknown_support"
+    return GoldAnnotationRemap(
+        item_id=annotation.item_id,
+        relevant_chunk_ids=(),
+        remap_status=status,
+        page=None,
+        section=None,
+        section_origin=None,
+        review_reasons=(reason,),
+    )
+
+
+def _normalise(value: str) -> str:
+    return " ".join(value.casefold().split())
 
 
 class EvaluationDatasetStore(Protocol):

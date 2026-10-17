@@ -231,10 +231,11 @@ def test_strong_answer_uses_stored_citation_provenance_and_labels_synthesis() ->
     assert response.outcome == "answer"
     assert response.synthesis is True
     assert response.trace.selected_model == "primary-model"
-    assert [(item.page, item.section, item.excerpt) for item in response.citations] == [
-        (4, "Governance", "Stored excerpt chunk-1"),
-        (4, "Governance", "Stored excerpt chunk-2"),
+    assert [(item.page, item.section) for item in response.citations] == [
+        (4, "Governance"),
+        (4, "Governance"),
     ]
+    assert all("excerpt" not in item.model_dump() for item in response.citations)
     assert response.trace.timings_ms["generation_ms"] >= 0
     assert response.trace.timings_ms["total_ms"] >= response.trace.timings_ms["generation_ms"]
 

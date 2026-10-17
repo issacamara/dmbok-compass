@@ -57,7 +57,7 @@ def test_answer_contract_supports_all_outcomes_and_requires_safe_shape() -> None
     answered = AnswerResponse(
         outcome="answer",
         answer_text="Grounded answer.",
-        citations=[Citation(citation_id="c1", page=1, section="Intro", excerpt="Evidence")],
+        citations=[Citation(citation_id="c1", page=1, section="Intro")],
         trace=trace(),
         quota=quota(),
     )

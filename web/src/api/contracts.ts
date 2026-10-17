@@ -63,7 +63,6 @@ export interface Citation {
   citation_id: string;
   page: number;
   section: string;
-  excerpt: string;
 }
 
 export interface RetrievedPassage {

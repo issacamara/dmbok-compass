@@ -26,7 +26,6 @@ resource "google_firestore_index" "document_chunks_vector" {
     prevent_destroy = true
   }
 }
-
 resource "google_firestore_index" "document_chunks_v2_vector" {
   project    = var.project_id
   database   = "(default)"
@@ -53,3 +52,4 @@ resource "google_firestore_index" "document_chunks_v2_vector" {
     prevent_destroy = true
   }
 }
+

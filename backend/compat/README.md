@@ -29,7 +29,6 @@ evidence remain retained for the owner-approved rollback period. Promotion
 and rollback signoff continue to be recorded by
 `documents/release/langchain-rollback.md`; this audit does not promote traffic
 or expire retained resources.
-
 From `backend/`, create a disposable Python 3.11 environment and install `requirements-compat.lock` through the normal package resolver. Verify the wheel SHA-256 in the vendored package README first, then run `python -m pip check` and `python compat/check_local.py`. The same check is packaged in `compat/Dockerfile` for the target Linux Python 3.11 image: `docker build -f compat/Dockerfile -t dmbok-langchain-compat .`. The local check covers PDF loading, word-sized chunking, Vertex embedding task/dimension configuration, 501 native vector writes, nested metadata, filtered cosine scores, native chat structured-output construction and restricted fallback composition. It uses no cloud credentials.
 
 For the Firestore check, set `DMBOK_COMPAT_PROJECT_ID` and `DMBOK_COMPAT_COLLECTION` to an explicitly approved **development** project and indexed collection, with application default credentials that can read/write/delete in that collection. Run `python compat/check_live_firestore.py`. It writes three uniquely named documents, verifies filtered native scores against a direct Firestore distance query, and deletes those documents in a `finally` block. The collection needs a 768-dimensional cosine vector index and a composite `metadata.corpus_version_id` filter index.

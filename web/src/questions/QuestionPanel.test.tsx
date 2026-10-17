@@ -51,6 +51,10 @@ describe("QuestionPanel", () => {
 
     expect(await screen.findByText(label)).toBeInTheDocument();
     expect(screen.getByText(response(outcome).answer_text!)).toBeInTheDocument();
+    if (outcome !== "refusal") {
+      expect(screen.getByLabelText("Citations")).toHaveTextContent("Data Governance");
+      expect(screen.queryByText("Governance evidence.")).not.toBeInTheDocument();
+    }
     if (outcome === "refusal") expect(screen.queryByLabelText("Citations")).not.toBeInTheDocument();
   });
 

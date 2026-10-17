@@ -43,7 +43,7 @@ The initial thresholds may be recalibrated after the first baseline run, but any
 | SM-05 | Correct refusal behavior | At least 95% | Questions designated unanswerable from the corpus trigger the required refusal. |
 | SM-06 | End-to-end response time | At least 95% within 15 seconds | Complete answer and citations under normal test conditions with up to three simultaneous users. |
 | SM-07 | Approved-user ceiling | 100% compliance | No more than 10 approved user accounts can access question answering. |
-| SM-08 | Infrastructure cost | No more than €5 per month for GCP infrastructure, plus an approved provider budget | Sponsor review of infrastructure and provider usage; production provider calls use OpenRouter with the configured free fallback. |
+| SM-08 | Infrastructure cost | No more than €5 per month for GCP infrastructure, plus an approved provider budget | Sponsor review of infrastructure and provider usage; production provider calls use OpenRouter with a free model preferred for both primary and fallback, subject to release gates. |
 
 ## 3. Stakeholders and user groups
 
@@ -83,6 +83,7 @@ An approved user signs in, asks a question in English, and receives a complete a
 - Minimal administration for users, limits, aggregate usage, and evaluations.
 - Offline ingestion of one searchable DMBOK PDF through an administrator maintenance procedure.
 - Repeatable pre-release evaluation using approximately 200 questions and a human-reviewed gold subset.
+- Administrator import and management of a prepared JSON evaluation dataset, with exploratory evaluation available before gold-subset approval.
 - Daily backup of persistent application data and tested restoration.
 
 ### 5.2 Out of scope for the first release
@@ -108,6 +109,7 @@ An approved user signs in, asks a question in English, and receives a complete a
 | BPR-004 | Pre-release evaluation | Evaluator | Must | A release candidate can be evaluated against the versioned evaluation set, with each release-gate metric reported as pass or fail. |
 | BPR-005 | Release decision | Sponsor | Must | The sponsor can approve release only after reviewing evaluation results, accepted risks, and unresolved exceptions. |
 | BPR-006 | Backup and recovery | Administrator | Must | Persistent data is backed up daily and a documented restore test demonstrates recovery within 24 hours. |
+| BPR-007 | Evaluation dataset import and replacement | Evaluator / administrator | Must | The administrator can import a prepared JSON dataset, review validation results, run an exploratory evaluation from any non-empty valid import, and use a later-approved 30–50-item gold subset for release evidence. |
 
 ## 7. Functional requirements
 
@@ -135,6 +137,17 @@ An approved user signs in, asks a question in English, and receives a complete a
 | FR-020 | Evaluation shall calculate retrieval success, grounding, citation correctness, answer quality, refusal correctness, and response-time metrics. | Sponsor / evaluator | Must | The report shows a numerator, denominator, percentage, threshold, and pass/fail result for each applicable release gate. |
 | FR-021 | The evaluation workflow shall support generated candidate annotations and explicit human approval of a 30–50-question gold subset. | Sponsor / evaluator | Must | Each gold item records its question, expected answer or rubric, relevant passage(s), review status, and dataset version. |
 | FR-022 | The system shall persist evaluation datasets, approved annotations, run configuration, aggregate results, and release-gate decisions. | Sponsor / evaluator | Must | A prior evaluation can be identified and reproduced from the stored dataset version, configuration metadata, and result record without storing user chats. |
+| FR-023 | The administrator shall be able to import a prepared JSON evaluation dataset from the administration area. | Evaluator / administrator | Must | An approved administrator can submit a JSON file and receives a validation result without using a developer-only operation. |
+| FR-024 | Each evaluation record shall contain a question, one approved category, an expected answer or rubric, and a supporting passage. | Evaluator / administrator | Must | A record missing a required field is identified as invalid and is not imported. |
+| FR-025 | The system shall accept only the evaluation categories definitions, explanations, comparisons, study, and scenarios. | Existing product requirements; evaluator | Must | A record with another category is skipped and the validation result identifies the invalid category. |
+| FR-026 | The system shall import valid records while skipping invalid records from the same JSON file. | Evaluator / administrator | Must | A mixed file imports all valid records, skips invalid records, and reports both counts. |
+| FR-027 | The system shall reject an import if no valid records remain. | Evaluator / administrator | Must | A file with zero valid records does not replace the active dataset or evaluation history. |
+| FR-028 | The system shall display the number of submitted, imported, and skipped records and the reason for each skipped record. | Evaluator / administrator | Must | After validation, the Admin page displays counts and record-level reasons in plain language. |
+| FR-029 | A successful import shall replace the active evaluation dataset and its prior evaluation history. | Evaluator / administrator | Must | After replacement, evaluations use the new dataset and previous dataset results are no longer presented as available evidence. |
+| FR-030 | The system shall make the active imported dataset available for full or selected-subset evaluation without requiring a hard-coded dataset identifier. | Evaluator / administrator | Must | The evaluation form displays the active dataset automatically and a full evaluation requires no item IDs. |
+| FR-031 | The system shall allow an imported non-empty dataset to run immediately for exploratory evaluation. | Evaluator / administrator | Must | A full exploratory run can start before gold-subset approval. |
+| FR-032 | The system shall support review and approval of individual evaluation records as gold annotations. | Evaluator / administrator | Must | An administrator can approve or reject a record and its status is visible in the dataset view. |
+| FR-033 | The system shall block release approval unless 30–50 records in the active dataset have approved gold annotations. | Evaluator / release approver | Must | A release decision with fewer than 30 or more than 50 approved gold records is rejected with an explanatory message. |
 
 ## 8. Nonfunctional requirements
 
@@ -154,6 +167,9 @@ An approved user signs in, asks a question in English, and receives a complete a
 | NFR-012 | Evaluation results shall be reproducible and traceable to dataset, corpus, retrieval, prompt, model, and scoring configuration versions where those identifiers are available. | Product objective | Must | An evaluation report lists the available version identifiers needed to distinguish the tested release candidate. |
 | NFR-013 | Availability shall be best-effort within the approved provider budget and €5-per-month GCP constraint; operational failures shall be reported clearly. | Sponsor | Must | Provider or infrastructure failure produces a clear, non-misleading service message and does not produce an ungrounded answer. |
 | NFR-014 | The system shall prevent one authenticated user from accessing another user's account data or administrative functions. | Product objective | Must | Authorization tests demonstrate user isolation and reject non-admin access to administration endpoints. |
+| NFR-015 | A failed dataset import shall not change the active dataset or its evaluation history. | Evaluator / administrator | Must | If validation produces no valid records or storage fails, the prior dataset and history remain unchanged. |
+| NFR-016 | Imported datasets, annotations, and evaluation runs shall persist across application restarts. | Product objective | Must | After a restart, the active dataset and eligible evaluation records remain available to the administrator. |
+| NFR-017 | Evaluation reports shall be explicitly labeled as exploratory or release evidence according to gold-subset eligibility. | Evaluator / release approver | Must | An exploratory result cannot be mistaken for release evidence when the gold-subset requirement is not met. |
 
 ## 9. Data, reporting, integration, security, privacy, and compliance
 
@@ -165,7 +181,7 @@ An approved user signs in, asks a question in English, and receives a complete a
 | Derived corpus data | Parsed structure, chunks, metadata, and retrieval index. Page and chapter/section provenance must be preserved. |
 | Account data | Email, username, password hash, verification and approval state, role, and quota counters. |
 | Interaction content | Question, retrieved passages, trace, and answer are transient and must not be persisted by the application. |
-| Evaluation data | Approximately 200 questions, generated annotations, 30–50 human-approved gold items, scoring rubrics, dataset versions, and run results. |
+| Evaluation data | Administrator-imported JSON records containing questions, one of the approved categories, expected answers or rubrics, supporting passages, generated annotations, 30–50 human-approved gold items for release evidence, and evaluation results. A successful import replaces the active dataset and prior evaluation history. |
 | Operational data | Anonymous aggregate counts, quota consumption, provider failures, infrastructure indicators, configuration, and backup records. |
 
 ### 9.2 Reporting requirements
@@ -200,7 +216,7 @@ The sponsor has explicitly decided to proceed without publisher permission and a
 ### 10.1 Assumptions and constraints
 
 - The €5 infrastructure limit is monthly.
-- Production hosted LLMs will use the approved paid tier; free-tier use is limited to isolated, non-sensitive development experiments.
+- Free OpenRouter models are preferred for production primary and fallback answers, but are not mandatory. A paid model may be used within the sponsor-approved provider budget if its privacy, availability, quality, and cost gates pass.
 - The source PDF is searchable and contains sufficient structural information to recover pages and chapter/section labels.
 - The sponsor will provide approximately 200 representative evaluation questions.
 - The sponsor can review and approve generated annotations for 30–50 representative questions.

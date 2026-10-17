@@ -57,10 +57,32 @@ describe("Firebase email and password identity", () => {
   it("renders the workspace and email sign-in form", async () => {
     render(<App />);
     expect(screen.getByRole("main")).toHaveAttribute("id", "main-content");
-    expect(screen.getByRole("heading", { name: /grounded data management guidance/i })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /welcome to dmbok compass/i })).toBeInTheDocument();
     expect(await screen.findByRole("heading", { name: "Sign in" })).toBeInTheDocument();
     expect(screen.getByLabelText("Email")).toHaveAttribute("type", "email");
     expect(screen.getByLabelText("Password")).toHaveAttribute("type", "password");
+  });
+
+  it("hides the welcome shell after a verified user signs in", async () => {
+    const signedInUser = {
+      email: "reader@example.com",
+      emailVerified: true,
+      getIdToken: vi.fn().mockResolvedValue("firebase-token"),
+    };
+    authSdk.onAuthStateChanged.mockImplementation((_auth, callback) => {
+      void callback(signedInUser);
+      return vi.fn();
+    });
+    identityApi.getCurrentProfile.mockResolvedValue({
+      user_id: "uid-1", email: "reader@example.com", username: "Reader",
+      approval_state: "approved", role: "user", email_verified: true,
+    });
+
+    render(<App />);
+
+    expect(await screen.findByRole("heading", { name: "What are you trying to understand?" })).toBeInTheDocument();
+    expect(screen.queryByText("Sign in with your verified email to continue.")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: /welcome to dmbok compass/i })).not.toBeInTheDocument();
   });
 
   it("creates accounts only through Firebase and requires email verification", async () => {

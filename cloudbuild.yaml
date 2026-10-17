@@ -37,8 +37,8 @@ steps:
             "collection": "document_chunks_v2",
             "schema_version": "v2",
             "index": "document_chunks_v2_vector",
-            "request_timeout_ms": "14000",
-            "generation_timeout_ms": "8000",
+            "request_timeout_ms": "28000",
+            "generation_timeout_ms": "16000",
             "provider": "openrouter",
         }
         manifest = {

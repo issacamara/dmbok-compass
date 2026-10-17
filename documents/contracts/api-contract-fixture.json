@@ -65,8 +65,8 @@
       "location": "europe-west1",
       "vectorCollection": "document_chunks_v2",
       "answerProvider": "openrouter",
-      "answerRequestTimeoutMs": 14000,
-      "answerGenerationTimeoutMs": 8000,
+      "answerRequestTimeoutMs": 28000,
+      "answerGenerationTimeoutMs": 16000,
       "openrouterPrimaryModel": "mistralai/mistral-nemo",
       "openrouterFallbackModel": "meta-llama/llama-3.1-8b-instruct",
       "vertexPrimaryModel": "gemini-2.5-flash-lite"
@@ -74,15 +74,15 @@
     "effectiveEnvironments": {
       "localCompose": {
         "answerProvider": "openrouter",
-        "answerRequestTimeoutMs": 14000,
-        "answerGenerationTimeoutMs": 8000,
+        "answerRequestTimeoutMs": 28000,
+        "answerGenerationTimeoutMs": 16000,
         "openrouterPrimaryModel": "mistralai/mistral-nemo",
         "openrouterFallbackModel": "meta-llama/llama-3.1-8b-instruct"
       },
       "deliveryPreviewAndJobs": {
         "answerProvider": "openrouter",
-        "answerRequestTimeoutMs": 14000,
-        "answerGenerationTimeoutMs": 8000,
+        "answerRequestTimeoutMs": 28000,
+        "answerGenerationTimeoutMs": 16000,
         "vectorCollection": "document_chunks_v2",
         "openrouterPrimaryModel": "mistralai/mistral-nemo",
         "openrouterFallbackModel": "meta-llama/llama-3.1-8b-instruct"

@@ -25,7 +25,6 @@ def validated_citations(
                 citation_id=passage.chunk_id,
                 page=passage.page,
                 section=passage.section,
-                excerpt=passage.excerpt,
             )
         )
     return citations

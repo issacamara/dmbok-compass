@@ -17,7 +17,7 @@ function response(outcome: AnswerResponse["outcome"]): AnswerResponse {
     outcome,
     answer_text: outcome === "refusal" ? "I could not find enough relevant evidence." : `${outcome} answer`,
     synthesis: outcome === "answer",
-    citations: outcome === "refusal" ? [] : [{ citation_id: "cite-1", page: 69, section: "Data Governance", excerpt: "Governance evidence." }],
+    citations: outcome === "refusal" ? [] : [{ citation_id: "cite-1", page: 69, section: "Data Governance" }],
     trace: {
       retrieved_passages: [{ chunk_id: "chunk-1", page: 69, section: "Data Governance", excerpt: "Governance evidence.", relevance_score: .91 }],
       selected_model: "test-model",

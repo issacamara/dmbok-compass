@@ -43,8 +43,8 @@ bundle records the outcome basis and cited chunk IDs. Top-five retrieval
 success is reported as a content-free numerator, denominator, and percentage.
 
 Citation IDs returned by an answer model are accepted only when they match a
-retrieved chunk. The API reconstructs every citation's page, section, and
-excerpt from that chunk's stored provenance; provider-supplied citation
+retrieved chunk. The API reconstructs every citation's page and section from
+that chunk's stored provenance; provider-supplied citation
 metadata is never trusted. The live response trace also contains request-scoped
 retrieval, generation, and total timings.
 

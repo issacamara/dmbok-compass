@@ -12,7 +12,7 @@ from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from app.contracts.api import Citation, ContractModel, ModelAttempt, Outcome
+from app.contracts.api import ContractModel, ModelAttempt, Outcome
 
 
 class Passage(BaseModel):
@@ -44,13 +44,22 @@ class GenerationRequest(BaseModel):
     timeout: TimeoutBudget = Field(default_factory=TimeoutBudget)
 
 
+class GenerationCitation(ContractModel):
+    """Ephemeral provider citation data before public response shaping."""
+
+    citation_id: str = Field(min_length=1, max_length=128)
+    page: int = Field(ge=1)
+    section: str = Field(min_length=1, max_length=500)
+    excerpt: str = Field(min_length=1, max_length=5000)
+
+
 class GenerationCandidate(ContractModel):
     """The only structured content an adapter may return."""
 
     outcome: Outcome
     answer_text: str | None = Field(default=None, max_length=20_000)
     synthesis: bool = False
-    citations: list[Citation] = Field(default_factory=list, max_length=20)
+    citations: list[GenerationCitation] = Field(default_factory=list, max_length=20)
 
 
 class UsageMetadata(BaseModel):

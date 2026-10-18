@@ -52,7 +52,6 @@ env:
   API_SERVICE: dmbok-compass-api
   INGESTION_JOB: dmbok-compass-ingestion
   EVALUATION_JOB: dmbok-compass-evaluation
-  HOSTING_SITE: dmbok-compass
 
 jobs:
   preview:
@@ -65,7 +64,7 @@ jobs:
       CORPUS_BUCKET_NAME: ${{ vars.CORPUS_BUCKET_NAME }}
       BILLING_ACCOUNT_ID: ${{ vars.GCP_BILLING_ACCOUNT_ID }}
       IMAGE_REPOSITORY: europe-west1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/dmbok-compass
-      HOSTING_SITE: ${{ vars.HOSTING_SITE }}
+      HOSTING_SITE: ${{ vars.GCP_PROJECT_ID }}
       CORPUS_VERSION_ID: ${{ inputs.corpus_version_id || vars.CORPUS_VERSION_ID }}
       CORPUS_COLLECTION: document_chunks_v2
       CORPUS_SCHEMA_VERSION: v2
@@ -132,6 +131,7 @@ jobs:
           terraform plan -input=false -refresh=false -out="$RUNNER_TEMP/delivery.tfplan" \
             -var="project_id=${PROJECT_ID}" -var="corpus_bucket_name=${CORPUS_BUCKET_NAME}" \
             -var="billing_account_id=${BILLING_ACCOUNT_ID}" \
+            -var="hosting_site_id=${HOSTING_SITE}" \
             -var="api_image=$(jq -r .api_image "$RUNNER_TEMP/delivery-manifest.json")" \
             -var="corpus_version_id=${CORPUS_VERSION_ID}"
           terraform show -no-color "$RUNNER_TEMP/delivery.tfplan" > "$RUNNER_TEMP/delivery.tfplan.txt"
@@ -149,9 +149,8 @@ jobs:
             > "$RUNNER_TEMP/delivery-manifest.updated.json"
           mv "$RUNNER_TEMP/delivery-manifest.updated.json" "$RUNNER_TEMP/delivery-manifest.json"
 
-      - name: Deploy Firebase preview channel
+      - name: Deploy Firebase stable development site
         run: |
-          preview_channel="commit-${GITHUB_SHA:0:7}"
           mkdir -p web/dist
           tar -xf "$RUNNER_TEMP/frontend.tar" -C web/dist
           firebase_dir="$RUNNER_TEMP/firebase-deploy"
@@ -163,8 +162,8 @@ jobs:
           jq -n --arg project "$PROJECT_ID" --arg site "$HOSTING_SITE" \
             '{projects: {default: $project}, targets: {($project): {hosting: {app: [$site]}}}}' \
             > "$firebase_dir/.firebaserc"
-          (cd "$firebase_dir" && npx --yes firebase-tools@13 hosting:channel:deploy "$preview_channel" \
-            --project="$PROJECT_ID" --expires 7d --non-interactive)
+          (cd "$firebase_dir" && npx --yes firebase-tools@13 deploy --only hosting \
+            --project="$PROJECT_ID" --non-interactive)
 
       - name: Deploy preview jobs
         run: |
@@ -201,7 +200,7 @@ jobs:
     env:
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
       IMAGE_REPOSITORY: europe-west1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/dmbok-compass
-      HOSTING_SITE: ${{ vars.HOSTING_SITE }}
+      HOSTING_SITE: ${{ vars.GCP_PROJECT_ID }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4

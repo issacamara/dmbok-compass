@@ -71,6 +71,8 @@ jobs:
       CORPUS_INDEX: document_chunks_v2_vector
       OPENROUTER_PRIMARY_MODEL: ${{ (inputs.target_environment || 'development') == 'development' && 'meta-llama/llama-3.1-8b-instruct' || 'mistralai/mistral-nemo' }}
       OPENROUTER_FALLBACK_MODEL: ${{ (inputs.target_environment || 'development') == 'development' && 'mistralai/mistral-nemo' || 'meta-llama/llama-3.1-8b-instruct' }}
+      ANSWER_REQUEST_TIMEOUT_MS: ${{ (inputs.target_environment || 'development') == 'development' && '30000' || '28000' }}
+      ANSWER_GENERATION_TIMEOUT_MS: ${{ (inputs.target_environment || 'development') == 'development' && '25000' || '16000' }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -117,7 +119,7 @@ jobs:
           test -n "$api_digest"
           frontend_digest="$(cat "$RUNNER_TEMP/frontend.sha256")"
           test -n "$CORPUS_VERSION_ID"
-          configuration="$(jq -cn --arg collection "$CORPUS_COLLECTION" --arg schema "$CORPUS_SCHEMA_VERSION" --arg index "$CORPUS_INDEX" --arg request_timeout "28000" --arg generation_timeout "16000" --arg provider "openrouter" '{collection: $collection, schema_version: $schema, index: $index, request_timeout_ms: $request_timeout, generation_timeout_ms: $generation_timeout, provider: $provider}')"
+          configuration="$(jq -cn --arg collection "$CORPUS_COLLECTION" --arg schema "$CORPUS_SCHEMA_VERSION" --arg index "$CORPUS_INDEX" --arg request_timeout "$ANSWER_REQUEST_TIMEOUT_MS" --arg generation_timeout "$ANSWER_GENERATION_TIMEOUT_MS" --arg provider "openrouter" '{collection: $collection, schema_version: $schema, index: $index, request_timeout_ms: $request_timeout, generation_timeout_ms: $generation_timeout, provider: $provider}')"
           configuration_digest="$(printf '%s' "$configuration" | sha256sum | cut -d' ' -f1)"
           jq -n --arg commit "$GITHUB_SHA" --arg image "${IMAGE_REPOSITORY}/api@${api_digest}" \
             --arg digest "$api_digest" --arg frontend_digest "$frontend_digest" \
@@ -142,7 +144,7 @@ jobs:
         run: |
           api_image="$(jq -r .api_image "$RUNNER_TEMP/delivery-manifest.json")"
           gcloud run deploy "$API_SERVICE" --image="$api_image" --region="$REGION" \
-            --update-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${REGION},RAG_VECTOR_COLLECTION=${CORPUS_COLLECTION},RAG_CORPUS_VERSION_ID=${CORPUS_VERSION_ID},RAG_SCHEMA_VERSION=${CORPUS_SCHEMA_VERSION},RAG_VECTOR_INDEX=${CORPUS_INDEX},EVALUATION_JOB_NAME=${EVALUATION_JOB},ANSWER_PROVIDER=openrouter,ANSWER_REQUEST_TIMEOUT_MS=28000,ANSWER_GENERATION_TIMEOUT_MS=16000,OPENROUTER_PRIMARY_MODEL=${OPENROUTER_PRIMARY_MODEL},OPENROUTER_FALLBACK_MODEL=${OPENROUTER_FALLBACK_MODEL}" \
+            --update-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${REGION},RAG_VECTOR_COLLECTION=${CORPUS_COLLECTION},RAG_CORPUS_VERSION_ID=${CORPUS_VERSION_ID},RAG_SCHEMA_VERSION=${CORPUS_SCHEMA_VERSION},RAG_VECTOR_INDEX=${CORPUS_INDEX},EVALUATION_JOB_NAME=${EVALUATION_JOB},ANSWER_PROVIDER=openrouter,ANSWER_REQUEST_TIMEOUT_MS=${ANSWER_REQUEST_TIMEOUT_MS},ANSWER_GENERATION_TIMEOUT_MS=${ANSWER_GENERATION_TIMEOUT_MS},OPENROUTER_PRIMARY_MODEL=${OPENROUTER_PRIMARY_MODEL},OPENROUTER_FALLBACK_MODEL=${OPENROUTER_FALLBACK_MODEL}" \
             --platform=managed --no-traffic --quiet --format='value(status.latestCreatedRevisionName)' \
             > "$RUNNER_TEMP/preview_revision"
           revision="$(cat "$RUNNER_TEMP/preview_revision")"
@@ -173,7 +175,7 @@ jobs:
           gcloud run jobs deploy "$INGESTION_JOB" --image="$api_image" --region="$REGION" \
             --update-env-vars="RAG_VECTOR_COLLECTION=${CORPUS_COLLECTION},RAG_CORPUS_VERSION_ID=${CORPUS_VERSION_ID},RAG_SCHEMA_VERSION=${CORPUS_SCHEMA_VERSION},RAG_VECTOR_INDEX=${CORPUS_INDEX}" --quiet
           gcloud run jobs deploy "$EVALUATION_JOB" --image="$api_image" --region="$REGION" \
-            --update-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${REGION},RAG_VECTOR_COLLECTION=${CORPUS_COLLECTION},RAG_CORPUS_VERSION_ID=${CORPUS_VERSION_ID},RAG_SCHEMA_VERSION=${CORPUS_SCHEMA_VERSION},RAG_VECTOR_INDEX=${CORPUS_INDEX},ANSWER_PROVIDER=openrouter,ANSWER_REQUEST_TIMEOUT_MS=28000,ANSWER_GENERATION_TIMEOUT_MS=16000,OPENROUTER_PRIMARY_MODEL=${OPENROUTER_PRIMARY_MODEL},OPENROUTER_FALLBACK_MODEL=${OPENROUTER_FALLBACK_MODEL}" \
+            --update-env-vars="GOOGLE_CLOUD_PROJECT=${PROJECT_ID},GOOGLE_CLOUD_LOCATION=${REGION},RAG_VECTOR_COLLECTION=${CORPUS_COLLECTION},RAG_CORPUS_VERSION_ID=${CORPUS_VERSION_ID},RAG_SCHEMA_VERSION=${CORPUS_SCHEMA_VERSION},RAG_VECTOR_INDEX=${CORPUS_INDEX},ANSWER_PROVIDER=openrouter,ANSWER_REQUEST_TIMEOUT_MS=${ANSWER_REQUEST_TIMEOUT_MS},ANSWER_GENERATION_TIMEOUT_MS=${ANSWER_GENERATION_TIMEOUT_MS},OPENROUTER_PRIMARY_MODEL=${OPENROUTER_PRIMARY_MODEL},OPENROUTER_FALLBACK_MODEL=${OPENROUTER_FALLBACK_MODEL}" \
             --quiet
 
       - name: Validate and upload release evidence

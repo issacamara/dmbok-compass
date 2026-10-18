@@ -36,6 +36,8 @@ from .protocol import (
 
 OPENROUTER_PRIMARY_MODEL = "mistralai/mistral-nemo"
 OPENROUTER_FALLBACK_MODEL = "meta-llama/llama-3.1-8b-instruct"
+PRIMARY_ATTEMPT_MAX_MS = 16_000
+FALLBACK_ATTEMPT_MAX_MS = 9_000
 PROVIDER = "openrouter"
 _SYSTEM_PROMPT = (
     "Return only the final grounded answer in the required schema. "
@@ -112,7 +114,10 @@ class OpenRouterAdapter(ModelAdapter):
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 break
-            attempt_seconds = remaining / (len(models) - index)
+            attempt_max_ms = (
+                PRIMARY_ATTEMPT_MAX_MS if index == 0 else FALLBACK_ATTEMPT_MAX_MS
+            )
+            attempt_seconds = min(remaining, attempt_max_ms / 1000)
             try:
                 async with asyncio.timeout(attempt_seconds):
                     result = await self._generate_model(

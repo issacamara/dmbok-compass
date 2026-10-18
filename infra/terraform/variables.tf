@@ -21,7 +21,7 @@ variable "billing_account_id" {
 variable "fallback_model" {
   description = "Configured fallback model identifier used by the content-free fallback log counter."
   type        = string
-  default     = "mistralai/mistral-nemo"
+  default     = "google/gemma-4-26b-a4b-it:free"
 
   validation {
     condition     = length(trimspace(var.fallback_model)) > 0

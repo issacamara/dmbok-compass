@@ -200,7 +200,7 @@ def example_payload() -> dict[str, Any]:
                 "output_eur_per_million": "0.030",
             },
             "fallback": {
-                "id": "mistralai/mistral-nemo",
+                "id": "google/gemma-4-26b-a4b-it:free",
                 "input_eur_per_million": "0.050",
                 "output_eur_per_million": "0.080",
             },

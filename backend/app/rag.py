@@ -168,7 +168,7 @@ class LangChainRagFactory:
         if self.settings.answer_provider == "openrouter":
             primary = os.environ.get("OPENROUTER_PRIMARY_MODEL", "meta-llama/llama-3.1-8b-instruct")
             fallback = os.environ.get(
-                "OPENROUTER_FALLBACK_MODEL", "mistralai/mistral-nemo"
+                "OPENROUTER_FALLBACK_MODEL", "google/gemma-4-26b-a4b-it:free"
             )
         else:
             primary = os.environ.get("VERTEX_PRIMARY_MODEL", "gemini-2.5-flash-lite")

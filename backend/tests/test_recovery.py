@@ -52,7 +52,7 @@ def evidence() -> dict[str, object]:
         "location": "europe-west1",
         "answer_provider": "openrouter",
         "primary_model": "openai/gpt-4.1-mini",
-        "fallback_model": "mistralai/mistral-nemo",
+        "fallback_model": "google/gemma-4-26b-a4b-it:free",
         "json_schema_supported": True,
         "request_timeout_ms": 28000,
         "generation_timeout_ms": 16000,

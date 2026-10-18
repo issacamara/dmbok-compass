@@ -44,7 +44,7 @@ def _snapshot(corpus_version_id: str) -> EvaluationCandidateSnapshot:
         location="europe-west1",
         answer_provider="openrouter",
         primary_model="meta-llama/llama-3.1-8b-instruct",
-        fallback_model="mistralai/mistral-nemo",
+        fallback_model="google/gemma-4-26b-a4b-it:free",
         json_schema_supported=True,
         request_timeout_ms=14_000,
         generation_timeout_ms=8_000,

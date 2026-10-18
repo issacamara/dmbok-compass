@@ -53,7 +53,6 @@ env:
   INGESTION_JOB: dmbok-compass-ingestion
   EVALUATION_JOB: dmbok-compass-evaluation
   HOSTING_SITE: dmbok-compass
-  PREVIEW_CHANNEL: commit-${{ github.sha }}
 
 jobs:
   preview:
@@ -152,6 +151,7 @@ jobs:
 
       - name: Deploy Firebase preview channel
         run: |
+          preview_channel="commit-${GITHUB_SHA:0:7}"
           mkdir -p web/dist
           tar -xf "$RUNNER_TEMP/frontend.tar" -C web/dist
           firebase_dir="$RUNNER_TEMP/firebase-deploy"
@@ -163,7 +163,7 @@ jobs:
           jq -n --arg project "$PROJECT_ID" --arg site "$HOSTING_SITE" \
             '{projects: {default: $project}, targets: {($project): {hosting: {app: [$site]}}}}' \
             > "$firebase_dir/.firebaserc"
-          (cd "$firebase_dir" && npx --yes firebase-tools@13 hosting:channel:deploy "$PREVIEW_CHANNEL" \
+          (cd "$firebase_dir" && npx --yes firebase-tools@13 hosting:channel:deploy "$preview_channel" \
             --project="$PROJECT_ID" --expires 7d --non-interactive)
 
       - name: Deploy preview jobs

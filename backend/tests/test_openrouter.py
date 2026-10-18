@@ -4,8 +4,21 @@ import json
 import httpx
 import pytest
 
-from model.openrouter import OpenRouterAdapter, parse_json_schema_supported
-from model.protocol import GenerationError, GenerationErrorCode, GenerationRequest, TimeoutBudget
+from model.openrouter import (
+    FALLBACK_ATTEMPT_MAX_MS,
+    PRIMARY_ATTEMPT_MAX_MS,
+    OpenRouterAdapter,
+    parse_json_schema_supported,
+)
+from model.protocol import (
+    GenerationCandidate,
+    GenerationError,
+    GenerationErrorCode,
+    GenerationRequest,
+    GenerationResult,
+    TimeoutBudget,
+    UsageMetadata,
+)
 
 
 def request(**kwargs: object) -> GenerationRequest:
@@ -73,6 +86,38 @@ def test_openrouter_parses_candidate_and_usage() -> None:
         "attempts": [{"model": "mistralai/mistral-nemo", "outcome": "success", "status_code": 200}],
     }
     assert calls == ["mistralai/mistral-nemo"]
+
+
+def test_openrouter_allocates_primary_and_fallback_caps() -> None:
+    calls: list[tuple[str, int]] = []
+
+    async def fake_generate(
+        _: GenerationRequest, model: str, *, timeout_ms: int
+    ) -> GenerationResult:
+        calls.append((model, timeout_ms))
+        if model == "primary":
+            raise GenerationError(
+                GenerationErrorCode.RATE_LIMITED,
+                "primary route is rate limited",
+                retryable=True,
+            )
+        return GenerationResult(
+            candidate=GenerationCandidate(outcome="answer", answer_text="Fallback answer."),
+            usage=UsageMetadata(provider="openrouter", model=model),
+        )
+
+    adapter = OpenRouterAdapter(
+        "test-key", primary_model="primary", fallback_model="fallback"
+    )
+    adapter._generate_model = fake_generate  # type: ignore[method-assign]
+
+    result = asyncio.run(adapter.generate(request(timeout=TimeoutBudget(total_ms=25_000))))
+
+    assert result.candidate.answer_text == "Fallback answer."
+    assert calls == [
+        ("primary", PRIMARY_ATTEMPT_MAX_MS),
+        ("fallback", FALLBACK_ATTEMPT_MAX_MS),
+    ]
 
 
 def test_openrouter_requests_strict_candidate_schema() -> None:
@@ -311,8 +356,9 @@ def test_openrouter_respects_total_timeout() -> None:
     assert raised.value.code is GenerationErrorCode.TIMEOUT
 
 
-def test_openrouter_allows_fallback_after_primary_timeout() -> None:
+def test_openrouter_allows_fallback_after_primary_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     models: list[str] = []
+    monkeypatch.setattr("model.openrouter.PRIMARY_ATTEMPT_MAX_MS", 100)
 
     async def handler(request: httpx.Request) -> httpx.Response:
         model = json.loads(request.content)["model"]
@@ -322,7 +368,7 @@ def test_openrouter_allows_fallback_after_primary_timeout() -> None:
         return httpx.Response(200, json=response_payload("Fallback answer."))
 
     adapter = OpenRouterAdapter("test-key", transport=httpx.MockTransport(handler))
-    result = asyncio.run(adapter.generate(request(timeout=TimeoutBudget(total_ms=200))))
+    result = asyncio.run(adapter.generate(request(timeout=TimeoutBudget(total_ms=300))))
 
     assert models == ["mistralai/mistral-nemo", "meta-llama/llama-3.1-8b-instruct"]
     assert result.candidate.answer_text == "Fallback answer."

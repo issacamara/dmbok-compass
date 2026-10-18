@@ -27,7 +27,7 @@
       "project": "dmbok-compass",
       "location": "europe-west1",
       "answer_provider": "openrouter",
-      "primary_model": "mistralai/mistral-nemo",
+      "primary_model": "meta-llama/llama-3.1-8b-instruct",
       "prompt_version": "langchain-rag-v3",
       "retrieval_policy_version": "retrieval-v2",
       "evidence_policy_version": "grounded-evidence-v1",

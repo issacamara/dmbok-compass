@@ -195,12 +195,12 @@ def example_payload() -> dict[str, Any]:
         },
         "provider": {
             "primary": {
-                "id": "mistralai/mistral-nemo",
+                "id": "meta-llama/llama-3.1-8b-instruct",
                 "input_eur_per_million": "0.029",
                 "output_eur_per_million": "0.030",
             },
             "fallback": {
-                "id": "meta-llama/llama-3.1-8b-instruct",
+                "id": "mistralai/mistral-nemo",
                 "input_eur_per_million": "0.050",
                 "output_eur_per_million": "0.080",
             },

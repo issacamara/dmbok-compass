@@ -11,8 +11,8 @@ provider-neutral adapter with these model identifiers:
 
 | Role | Model ID | Rationale |
 | --- | --- | --- |
-| Primary | `mistralai/mistral-nemo` | OpenRouter chat model for the normal answer path. |
-| Fallback | `meta-llama/llama-3.1-8b-instruct` | A distinct OpenRouter chat model for fallback. |
+| Primary | `meta-llama/llama-3.1-8b-instruct` | OpenRouter chat model for the normal answer path. |
+| Fallback | `mistralai/mistral-nemo` | A distinct OpenRouter chat model for fallback. |
 
 The fallback is only for configured model-level unavailability, timeout,
 capacity, or rate-limit failures. It is not a gateway-failure fallback: an
@@ -103,8 +103,8 @@ enforced operationally.
 **Revalidated:** 2026-10-16 · **Decision owner:** sponsor / release approver
 
 The effective candidate answer configuration is OpenRouter primary
-`mistralai/mistral-nemo` with fallback
-`meta-llama/llama-3.1-8b-instruct`; see the dated
+`meta-llama/llama-3.1-8b-instruct` with fallback
+`mistralai/mistral-nemo`; see the dated
 [cost and provider-route record](../release/langchain/cost-provider.md).
 The 2026-10-06 Gemini observations above are not valid substitute evidence for
 these routes.

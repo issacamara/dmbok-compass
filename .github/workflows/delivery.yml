@@ -69,8 +69,8 @@ jobs:
       CORPUS_COLLECTION: document_chunks_v2
       CORPUS_SCHEMA_VERSION: v2
       CORPUS_INDEX: document_chunks_v2_vector
-      OPENROUTER_PRIMARY_MODEL: ${{ (inputs.target_environment || 'development') == 'development' && 'meta-llama/llama-3.1-8b-instruct' || 'mistralai/mistral-nemo' }}
-      OPENROUTER_FALLBACK_MODEL: ${{ (inputs.target_environment || 'development') == 'development' && 'mistralai/mistral-nemo' || 'meta-llama/llama-3.1-8b-instruct' }}
+      OPENROUTER_PRIMARY_MODEL: meta-llama/llama-3.1-8b-instruct
+      OPENROUTER_FALLBACK_MODEL: mistralai/mistral-nemo
       ANSWER_REQUEST_TIMEOUT_MS: ${{ (inputs.target_environment || 'development') == 'development' && '30000' || '28000' }}
       ANSWER_GENERATION_TIMEOUT_MS: ${{ (inputs.target_environment || 'development') == 'development' && '25000' || '16000' }}
     steps:

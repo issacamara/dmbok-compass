@@ -51,9 +51,12 @@ def test_json_schema_support_configuration_rejects_unknown_values() -> None:
 
 
 def test_openrouter_parses_candidate_and_usage() -> None:
+    calls: list[str] = []
+
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.headers["authorization"] == "Bearer test-key"
         body = json.loads(request.content)
+        calls.append(body["model"])
         assert body["model"] == "mistralai/mistral-nemo"
         return httpx.Response(200, json=response_payload())
 
@@ -69,6 +72,7 @@ def test_openrouter_parses_candidate_and_usage() -> None:
         "total_tokens": 16,
         "attempts": [{"model": "mistralai/mistral-nemo", "outcome": "success", "status_code": 200}],
     }
+    assert calls == ["mistralai/mistral-nemo"]
 
 
 def test_openrouter_requests_strict_candidate_schema() -> None:

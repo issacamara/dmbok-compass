@@ -33,9 +33,9 @@ def test_runnable_preserves_primary_result_and_safe_usage() -> None:
     result = asyncio.run(adapter.as_langchain_runnable().ainvoke(request()))
 
     assert result.candidate.answer_text == "Grounded answer."
-    assert result.usage.model == "mistralai/mistral-nemo"
+    assert result.usage.model == "meta-llama/llama-3.1-8b-instruct"
     assert result.usage.model_dump(exclude={"attempts"}) == {
-        "provider": "openrouter", "model": "mistralai/mistral-nemo",
+        "provider": "openrouter", "model": "meta-llama/llama-3.1-8b-instruct",
         "input_tokens": 3, "output_tokens": 2, "total_tokens": 5,
     }
 

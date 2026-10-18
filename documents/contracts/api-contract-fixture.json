@@ -67,8 +67,8 @@
       "answerProvider": "openrouter",
       "answerRequestTimeoutMs": 28000,
       "answerGenerationTimeoutMs": 16000,
-      "openrouterPrimaryModel": "mistralai/mistral-nemo",
-      "openrouterFallbackModel": "meta-llama/llama-3.1-8b-instruct",
+      "openrouterPrimaryModel": "meta-llama/llama-3.1-8b-instruct",
+      "openrouterFallbackModel": "mistralai/mistral-nemo",
       "vertexPrimaryModel": "gemini-2.5-flash-lite"
     },
     "effectiveEnvironments": {
@@ -76,16 +76,16 @@
         "answerProvider": "openrouter",
         "answerRequestTimeoutMs": 28000,
         "answerGenerationTimeoutMs": 16000,
-        "openrouterPrimaryModel": "mistralai/mistral-nemo",
-        "openrouterFallbackModel": "meta-llama/llama-3.1-8b-instruct"
+        "openrouterPrimaryModel": "meta-llama/llama-3.1-8b-instruct",
+        "openrouterFallbackModel": "mistralai/mistral-nemo"
       },
       "deliveryPreviewAndJobs": {
         "answerProvider": "openrouter",
         "answerRequestTimeoutMs": 28000,
         "answerGenerationTimeoutMs": 16000,
         "vectorCollection": "document_chunks_v2",
-        "openrouterPrimaryModel": "mistralai/mistral-nemo",
-        "openrouterFallbackModel": "meta-llama/llama-3.1-8b-instruct"
+        "openrouterPrimaryModel": "meta-llama/llama-3.1-8b-instruct",
+        "openrouterFallbackModel": "mistralai/mistral-nemo"
       },
       "vertexRoute": {
         "enabled": false,

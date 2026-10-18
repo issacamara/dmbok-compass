@@ -25,8 +25,8 @@ The image is CI evidence only; it is not a published production artifact.
 ## Defaults versus effective routes
 
 The code defaults are `europe-west1`, `document_chunks_v2`, OpenRouter,
-60,000 ms, primary `mistralai/mistral-nemo`, and fallback
-`meta-llama/llama-3.1-8b-instruct`. Local Compose and the delivery preview and
+60,000 ms, primary `meta-llama/llama-3.1-8b-instruct`, and fallback
+`mistralai/mistral-nemo`. Local Compose and the delivery preview and
 jobs explicitly select those same OpenRouter values. Explicit deployment
 settings, not these defaults, are the effective route.
 

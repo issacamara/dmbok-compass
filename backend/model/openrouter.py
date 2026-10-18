@@ -34,8 +34,8 @@ from .protocol import (
     parse_candidate,
 )
 
-OPENROUTER_PRIMARY_MODEL = "mistralai/mistral-nemo"
-OPENROUTER_FALLBACK_MODEL = "meta-llama/llama-3.1-8b-instruct"
+OPENROUTER_PRIMARY_MODEL = "meta-llama/llama-3.1-8b-instruct"
+OPENROUTER_FALLBACK_MODEL = "mistralai/mistral-nemo"
 PRIMARY_ATTEMPT_MAX_MS = 16_000
 FALLBACK_ATTEMPT_MAX_MS = 9_000
 PROVIDER = "openrouter"

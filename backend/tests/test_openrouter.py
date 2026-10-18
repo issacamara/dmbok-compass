@@ -70,7 +70,7 @@ def test_openrouter_parses_candidate_and_usage() -> None:
         assert request.headers["authorization"] == "Bearer test-key"
         body = json.loads(request.content)
         calls.append(body["model"])
-        assert body["model"] == "mistralai/mistral-nemo"
+        assert body["model"] == "meta-llama/llama-3.1-8b-instruct"
         return httpx.Response(200, json=response_payload())
 
     adapter = OpenRouterAdapter("test-key", transport=httpx.MockTransport(handler))
@@ -79,13 +79,13 @@ def test_openrouter_parses_candidate_and_usage() -> None:
     assert result.candidate.answer_text == "Grounded answer."
     assert result.usage.model_dump() == {
         "provider": "openrouter",
-        "model": "mistralai/mistral-nemo",
+        "model": "meta-llama/llama-3.1-8b-instruct",
         "input_tokens": 10,
         "output_tokens": 6,
         "total_tokens": 16,
-        "attempts": [{"model": "mistralai/mistral-nemo", "outcome": "success", "status_code": 200}],
+        "attempts": [{"model": "meta-llama/llama-3.1-8b-instruct", "outcome": "success", "status_code": 200}],
     }
-    assert calls == ["mistralai/mistral-nemo"]
+    assert calls == ["meta-llama/llama-3.1-8b-instruct"]
 
 
 def test_openrouter_allocates_primary_and_fallback_caps() -> None:
@@ -239,9 +239,9 @@ def test_openrouter_uses_free_fallback_for_rate_limit() -> None:
     adapter = OpenRouterAdapter("test-key", transport=httpx.MockTransport(handler))
     result = asyncio.run(adapter.generate(request()))
 
-    assert models == ["mistralai/mistral-nemo", "meta-llama/llama-3.1-8b-instruct"]
+    assert models == ["meta-llama/llama-3.1-8b-instruct", "mistralai/mistral-nemo"]
     assert result.candidate.answer_text == "Fallback answer."
-    assert result.usage.model == "meta-llama/llama-3.1-8b-instruct"
+    assert result.usage.model == "mistralai/mistral-nemo"
     assert [attempt.outcome for attempt in result.usage.attempts] == ["rate_limited", "success"]
 
 
@@ -257,8 +257,8 @@ def test_openrouter_reports_both_failed_routes_without_request_content() -> None
         asyncio.run(adapter.generate(request()))
 
     assert [(attempt.model, attempt.outcome, attempt.status_code) for attempt in raised.value.attempts] == [
-        ("mistralai/mistral-nemo", "unavailable", 404),
-        ("meta-llama/llama-3.1-8b-instruct", "unavailable", 503),
+        ("meta-llama/llama-3.1-8b-instruct", "unavailable", 404),
+        ("mistralai/mistral-nemo", "unavailable", 503),
     ]
     assert "Answer from supplied evidence" not in str(raised.value.attempts)
 
@@ -322,7 +322,7 @@ def test_openrouter_uses_free_fallback_when_primary_model_is_missing() -> None:
     adapter = OpenRouterAdapter("test-key", transport=httpx.MockTransport(handler))
     result = asyncio.run(adapter.generate(request()))
 
-    assert models == ["mistralai/mistral-nemo", "meta-llama/llama-3.1-8b-instruct"]
+    assert models == ["meta-llama/llama-3.1-8b-instruct", "mistralai/mistral-nemo"]
     assert result.candidate.answer_text == "Fallback answer."
 
 
@@ -370,6 +370,6 @@ def test_openrouter_allows_fallback_after_primary_timeout(monkeypatch: pytest.Mo
     adapter = OpenRouterAdapter("test-key", transport=httpx.MockTransport(handler))
     result = asyncio.run(adapter.generate(request(timeout=TimeoutBudget(total_ms=300))))
 
-    assert models == ["mistralai/mistral-nemo", "meta-llama/llama-3.1-8b-instruct"]
+    assert models == ["meta-llama/llama-3.1-8b-instruct", "mistralai/mistral-nemo"]
     assert result.candidate.answer_text == "Fallback answer."
     assert [attempt.outcome for attempt in result.usage.attempts] == ["timeout", "success"]

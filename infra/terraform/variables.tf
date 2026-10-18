@@ -21,7 +21,7 @@ variable "billing_account_id" {
 variable "fallback_model" {
   description = "Configured fallback model identifier used by the content-free fallback log counter."
   type        = string
-  default     = "meta-llama/llama-3.1-8b-instruct"
+  default     = "mistralai/mistral-nemo"
 
   validation {
     condition     = length(trimspace(var.fallback_model)) > 0

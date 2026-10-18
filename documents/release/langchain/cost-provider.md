@@ -16,8 +16,8 @@ The checked-in effective settings agree across [`.env.example`](../../../.env.ex
 | Setting | Candidate value |
 | --- | --- |
 | Answer gateway | `openrouter` |
-| Primary route | `mistralai/mistral-nemo` |
-| Fallback route | `meta-llama/llama-3.1-8b-instruct` |
+| Primary route | `meta-llama/llama-3.1-8b-instruct` |
+| Fallback route | `mistralai/mistral-nemo` |
 | Fallback eligibility | timeout, unavailable, capacity, or rate-limit failure only; never an OpenRouter-wide outage |
 | Request/generation limits | 14,000 ms / 8,000 ms |
 | API service resources | 0 minimum, 2 maximum instances; 1 vCPU, 512 MiB, concurrency 8 |

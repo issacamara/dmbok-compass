@@ -84,11 +84,11 @@ resource "google_cloud_run_v2_service" "api" {
       }
       env {
         name  = "OPENROUTER_PRIMARY_MODEL"
-        value = "mistralai/mistral-nemo"
+        value = "meta-llama/llama-3.1-8b-instruct"
       }
       env {
         name  = "OPENROUTER_FALLBACK_MODEL"
-        value = "meta-llama/llama-3.1-8b-instruct"
+        value = "mistralai/mistral-nemo"
       }
       env {
         name = "OPENROUTER_API_KEY"
@@ -235,11 +235,11 @@ resource "google_cloud_run_v2_job" "evaluation" {
         }
         env {
           name  = "OPENROUTER_PRIMARY_MODEL"
-          value = "mistralai/mistral-nemo"
+          value = "meta-llama/llama-3.1-8b-instruct"
         }
         env {
           name  = "OPENROUTER_FALLBACK_MODEL"
-          value = "meta-llama/llama-3.1-8b-instruct"
+          value = "mistralai/mistral-nemo"
         }
         env {
           name = "OPENROUTER_API_KEY"

@@ -115,7 +115,7 @@ class LangChainRagFactory:
         secondary = OpenRouterAdapter(
             os.environ.get("OPENROUTER_API_KEY", ""),
             primary_model=os.environ.get(
-                "OPENROUTER_PRIMARY_MODEL", "mistralai/mistral-nemo"
+                "OPENROUTER_PRIMARY_MODEL", "meta-llama/llama-3.1-8b-instruct"
             ),
             fallback_model=None,
             json_schema_supported=parse_json_schema_supported(
@@ -148,7 +148,7 @@ class LangChainRagFactory:
         )
         secondary = OpenRouterAdapter(
             os.environ.get("OPENROUTER_API_KEY", ""),
-            primary_model=fallback_model or "mistralai/mistral-nemo",
+            primary_model=fallback_model or "meta-llama/llama-3.1-8b-instruct",
             fallback_model=None,
                 json_schema_supported=snapshot.json_schema_supported,
         )
@@ -166,13 +166,13 @@ class LangChainRagFactory:
         if binding.vector_collection != self.settings.vector_collection:
             raise ValueError("candidate corpus binding does not match the configured vector collection")
         if self.settings.answer_provider == "openrouter":
-            primary = os.environ.get("OPENROUTER_PRIMARY_MODEL", "mistralai/mistral-nemo")
+            primary = os.environ.get("OPENROUTER_PRIMARY_MODEL", "meta-llama/llama-3.1-8b-instruct")
             fallback = os.environ.get(
-                "OPENROUTER_FALLBACK_MODEL", "meta-llama/llama-3.1-8b-instruct"
+                "OPENROUTER_FALLBACK_MODEL", "mistralai/mistral-nemo"
             )
         else:
             primary = os.environ.get("VERTEX_PRIMARY_MODEL", "gemini-2.5-flash-lite")
-            fallback = os.environ.get("OPENROUTER_PRIMARY_MODEL", "mistralai/mistral-nemo")
+            fallback = os.environ.get("OPENROUTER_PRIMARY_MODEL", "meta-llama/llama-3.1-8b-instruct")
         return EvaluationCandidateSnapshot(
             corpus_binding=binding,
             project=self.settings.project,

@@ -88,7 +88,7 @@ resource "google_cloud_run_v2_service" "api" {
       }
       env {
         name  = "OPENROUTER_FALLBACK_MODEL"
-        value = "mistralai/mistral-nemo"
+        value = "google/gemma-4-26b-a4b-it:free"
       }
       env {
         name = "OPENROUTER_API_KEY"
@@ -239,7 +239,7 @@ resource "google_cloud_run_v2_job" "evaluation" {
         }
         env {
           name  = "OPENROUTER_FALLBACK_MODEL"
-          value = "mistralai/mistral-nemo"
+          value = "google/gemma-4-26b-a4b-it:free"
         }
         env {
           name = "OPENROUTER_API_KEY"

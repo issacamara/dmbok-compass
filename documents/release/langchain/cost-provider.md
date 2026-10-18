@@ -17,7 +17,7 @@ The checked-in effective settings agree across [`.env.example`](../../../.env.ex
 | --- | --- |
 | Answer gateway | `openrouter` |
 | Primary route | `meta-llama/llama-3.1-8b-instruct` |
-| Fallback route | `mistralai/mistral-nemo` |
+| Fallback route | `google/gemma-4-26b-a4b-it:free` |
 | Fallback eligibility | timeout, unavailable, capacity, or rate-limit failure only; never an OpenRouter-wide outage |
 | Request/generation limits | 14,000 ms / 8,000 ms |
 | API service resources | 0 minimum, 2 maximum instances; 1 vCPU, 512 MiB, concurrency 8 |

@@ -13,11 +13,8 @@ from typing import Callable
 from google.cloud import firestore
 
 from app.answering import (
-    DEFAULT_GENERATION_TIMEOUT_MS,
-    DEFAULT_REQUEST_TIMEOUT_MS,
     GroundedAnswerPolicy,
     RetrievedAnswerService,
-    timeout_settings,
 )
 from app.contracts import EvaluationDataset, QuotaStatus
 from app.corpus.firestore import FirestoreCorpusVersionStore
@@ -32,7 +29,8 @@ from app.evaluation.job import (
     EvaluationWorker,
 )
 from app.evaluation.job import FirestoreEvaluationRunStore
-from app.rag import LangChainRagFactory
+from app.rag import LangChainRagFactory, LangChainRagSettings
+from app.settings import RuntimeConfiguration
 
 
 class FirestoreEvaluationCandidateSnapshotResolver(EvaluationCandidateSnapshotResolver):
@@ -48,16 +46,24 @@ class FirestoreEvaluationCandidateSnapshotResolver(EvaluationCandidateSnapshotRe
         configuration_version_id: str,
         model_version_id: str,
     ):
-        factory = LangChainRagFactory.from_environment(self.client)
+        configuration = RuntimeConfiguration.from_environment()
+        runtime = configuration.runtime
+        factory = LangChainRagFactory(self.client, LangChainRagSettings(
+            project=runtime.project,
+            location=runtime.location,
+            vector_collection=configuration.vector_collection,
+            answer_provider=runtime.provider,
+            primary_model=runtime.primary_model,
+            fallback_model=runtime.fallback_model,
+            json_schema_supported=configuration.json_schema_supported,
+        ))
         corpus = FirestoreCorpusVersionStore(
             self.client, vector_collection=factory.settings.vector_collection
         ).get(corpus_version_id)
         if corpus is None or corpus.serving_binding is None:
             raise EvaluationRunError("candidate corpus serving binding is unavailable")
-        request_timeout_ms, generation_timeout_ms = timeout_settings(
-            os.environ.get("ANSWER_REQUEST_TIMEOUT_MS", str(DEFAULT_REQUEST_TIMEOUT_MS)),
-            os.environ.get("ANSWER_GENERATION_TIMEOUT_MS", str(DEFAULT_GENERATION_TIMEOUT_MS)),
-        )
+        request_timeout_ms = configuration.request_timeout_ms
+        generation_timeout_ms = configuration.generation_timeout_ms
         try:
             return factory.candidate_snapshot(
                 corpus.serving_binding,
@@ -130,7 +136,7 @@ class EvaluationAnswerEvaluator:
 def main() -> None:
     termination_requested = Event()
     previous_handler = signal.signal(signal.SIGTERM, lambda *_: termination_requested.set())
-    project = _required("GOOGLE_CLOUD_PROJECT")
+    project = RuntimeConfiguration.from_environment().runtime.project
     run_id = _required("EVALUATION_RUN_ID")
     client = firestore.Client(project=project)
     datasets = FirestoreEvaluationGenerationStore(client)

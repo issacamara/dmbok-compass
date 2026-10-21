@@ -46,8 +46,8 @@ EvidenceOutcome = Literal["strong", "partial", "absent"]
 STRONG_EVIDENCE_THRESHOLD = 0.75
 PARTIAL_EVIDENCE_THRESHOLD = 0.45
 MAX_EVIDENCE_PASSAGES = 5
-DEFAULT_REQUEST_TIMEOUT_MS = 28_000
-DEFAULT_GENERATION_TIMEOUT_MS = 16_000
+DEFAULT_REQUEST_TIMEOUT_MS = 14_000
+DEFAULT_GENERATION_TIMEOUT_MS = 8_000
 
 REFUSAL_TEXT = "I could not find enough relevant evidence in the DMBOK corpus to answer that question."
 PROMPT_VERSION = "grounded-answer-policy-v2"

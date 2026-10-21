@@ -41,6 +41,8 @@ class CandidateIdentity(ContractModel):
 class RuntimeSettings(ContractModel):
     """Non-secret references needed to reproduce one runtime candidate."""
 
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, frozen=True)
+
     project: str = Field(min_length=1, max_length=128)
     location: str = Field(min_length=1, max_length=128)
     provider: Literal["openrouter", "vertex"]

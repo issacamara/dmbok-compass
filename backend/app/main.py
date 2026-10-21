@@ -9,12 +9,9 @@ from fastapi.responses import JSONResponse
 from app.api.evaluations import evaluation_service, router as evaluations_router
 from app.api.evaluation_datasets import evaluation_generation_store, router as evaluation_datasets_router
 from app.answering import (
-    DEFAULT_GENERATION_TIMEOUT_MS,
-    DEFAULT_REQUEST_TIMEOUT_MS,
     GroundedAnswerPolicy,
     QuestionAnswerer,
     RetrievedAnswerService,
-    timeout_settings,
 )
 from app.contracts.api import (
     AggregateMetric,
@@ -43,7 +40,7 @@ from app.quota import FirestoreQuotaRepository, QuotaExceededError, QuotaReposit
 from app.telemetry import LoggingTelemetryAdapter, TelemetryAdapter, error_event, response_event
 from app.corpus.firestore import FirestoreCorpusVersionStore
 from app.corpus.versions import legacy_serving_binding
-from app.rag import LangChainRagFactory
+from app.rag import LangChainRagFactory, LangChainRagSettings
 from app.evaluation import (
     CloudRunEvaluationJobDispatcher,
     CloudRunJobExecutor,
@@ -61,6 +58,7 @@ from app.release import (
     ReleaseDecisionService,
 )
 from app.lifecycle import ShutdownCoordinator, configured_shutdown_timeout, lifespan, lifecycle_middleware
+from app.settings import startup_configuration
 
 app = FastAPI(title="DMBOK Compass API", version="0.1.0", lifespan=lifespan)
 app.state.shutdown_coordinator = ShutdownCoordinator(configured_shutdown_timeout())
@@ -263,14 +261,21 @@ def configured_question_answerer() -> RetrievedAnswerService:
         firebase_admin.initialize_app()
     client = firestore.client()
     try:
-        factory = LangChainRagFactory.from_environment(client)
+        configuration = getattr(app.state, "runtime_configuration", None) or startup_configuration()
+        factory = LangChainRagFactory(client, LangChainRagSettings(
+            project=configuration.runtime.project,
+            location=configuration.runtime.location,
+            vector_collection=configuration.vector_collection,
+            answer_provider=configuration.runtime.provider,
+            primary_model=configuration.runtime.primary_model,
+            fallback_model=configuration.runtime.fallback_model,
+            json_schema_supported=configuration.json_schema_supported,
+        ))
         adapter = factory.generation_adapter()
     except ValueError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    request_timeout_ms, generation_timeout_ms = timeout_settings(
-        os.environ.get("ANSWER_REQUEST_TIMEOUT_MS", str(DEFAULT_REQUEST_TIMEOUT_MS)),
-        os.environ.get("ANSWER_GENERATION_TIMEOUT_MS", str(DEFAULT_GENERATION_TIMEOUT_MS)),
-    )
+    request_timeout_ms = configuration.request_timeout_ms
+    generation_timeout_ms = configuration.generation_timeout_ms
     policy = GroundedAnswerPolicy(
         adapter,
         model_name=factory.selected_model(),

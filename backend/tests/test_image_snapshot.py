@@ -130,6 +130,7 @@ def test_missing_or_changed_installed_lock_fails(
 ) -> None:
     import app.rag as rag
 
+    canonical_lock = Path(rag.__file__).resolve().parents[1] / "requirements.lock"
     # Redirect only the module location so the production lock lookup is tested.
     module = tmp_path / "app" / "rag.py"
     module.parent.mkdir()
@@ -140,6 +141,4 @@ def test_missing_or_changed_installed_lock_fails(
     lock = tmp_path / "requirements.lock"
     lock.write_bytes(b"changed lock\n")
     assert _dependency_lock_sha256() == sha256(b"changed lock\n").hexdigest()
-    assert _dependency_lock_sha256() != sha256(
-        (Path(__file__).resolve().parents[1] / "requirements.lock").read_bytes()
-    ).hexdigest()
+    assert _dependency_lock_sha256() != sha256(canonical_lock.read_bytes()).hexdigest()

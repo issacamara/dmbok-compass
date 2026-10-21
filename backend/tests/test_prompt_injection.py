@@ -53,5 +53,6 @@ def test_prompt_version_is_explicit_and_parser_failures_are_safe() -> None:
     adapter = SpyAdapter(GenerationError(GenerationErrorCode.INVALID_OUTPUT, "invalid"))
     response = asyncio.run(GroundedAnswerPolicy(adapter).answer("What is true?", [passage()], quota()))
     assert response.outcome == "refusal"
-    assert response.answer_text
-    assert "invalid" not in response.answer_text
+    assert response.error is not None
+    assert response.error.code == "answer_provider_invalid_output"
+    assert response.error.status == 502

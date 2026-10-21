@@ -50,20 +50,12 @@ DEFAULT_REQUEST_TIMEOUT_MS = 28_000
 DEFAULT_GENERATION_TIMEOUT_MS = 16_000
 
 REFUSAL_TEXT = "I could not find enough relevant evidence in the DMBOK corpus to answer that question."
-GROUNDING_PROMPT = """You are a DMBOK Compass answerer.
-Answer the user's question using only the supplied DMBOK evidence.
-Do not use general model knowledge, invent facts, or cite anything outside
-the supplied passages. If the evidence is incomplete, state the limitation
-and return a qualified answer. Mark synthesis when combining passages.
-Every material claim in an answer must be supported by one or more supplied
-passage IDs. Return structured JSON matching the response schema.
-
-User question:
+PROMPT_VERSION = "grounded-answer-policy-v2"
+GROUNDING_PROMPT = """<user_question>
 {question}
+</user_question>
 
-Evidence strength:
-{evidence_outcome}
-"""
+<evidence_strength>{evidence_outcome}</evidence_strength>"""
 
 
 @dataclass(frozen=True)

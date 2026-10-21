@@ -14,6 +14,11 @@ from .indexing import (
     CorpusEmbeddingWriter,
     create_vector_store,
 )
+from .search_probe import (
+    CandidateFilteredVectorProbe,
+    ReadinessSignal,
+    SearchReadinessEvidence,
+)
 from .manifest import RAG_DERIVATION, SourceManifest, create_source_manifest, default_derivation
 from .lexical_artifact import (
     LexicalArtifactError,
@@ -43,6 +48,9 @@ __all__ = [
     "VECTOR_COLLECTION",
     "VECTOR_SCHEMA_VERSION",
     "create_vector_store",
+    "CandidateFilteredVectorProbe",
+    "ReadinessSignal",
+    "SearchReadinessEvidence",
     "create_vertex_embeddings",
     "chunk_pages",
     "create_source_manifest",

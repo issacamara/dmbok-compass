@@ -20,6 +20,7 @@ from .evidence import (
     REQUIRED_EVIDENCE_SECTIONS,
     ReleaseEvidenceError,
     ReleaseEvidenceResult,
+    validate_durable_promotion,
     validate_release_evidence,
 )
 
@@ -39,5 +40,6 @@ __all__ = [
     "REQUIRED_EVIDENCE_SECTIONS",
     "ReleaseEvidenceError",
     "ReleaseEvidenceResult",
+    "validate_durable_promotion",
     "validate_release_evidence",
 ]

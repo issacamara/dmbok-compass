@@ -235,6 +235,21 @@ jobs:
       - name: Set up Google Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
 
+      - name: Validate durable approval and exact candidate evidence
+        env:
+          RELEASE_DECISION: ${{ inputs.release_decision }}
+        run: |
+          test -f delivery-evidence/release-evidence.json
+          test -f delivery-evidence/release-manifest.json
+          test -f delivery-evidence/release-decision.json
+          test "$(jq -r '.release_id' delivery-evidence/release-manifest.json)" = "$RELEASE_DECISION"
+          test "$(jq -r '.decision.release_id' delivery-evidence/release-decision.json)" = "$RELEASE_DECISION"
+          python3 scripts/verify_release_evidence.py \
+            delivery-evidence/release-evidence.json \
+            --manifest delivery-evidence/release-manifest.json \
+            --decision delivery-evidence/release-decision.json \
+            --delivery delivery-evidence/delivery-manifest.json
+
       - name: Promote exact preview artifacts
         env:
           RELEASE_DECISION: ${{ inputs.release_decision }}

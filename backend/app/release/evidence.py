@@ -92,6 +92,79 @@ def validate_release_evidence(document: dict[str, Any]) -> ReleaseEvidenceResult
     )
 
 
+def validate_durable_promotion(
+    document: dict[str, Any],
+    *,
+    manifest: dict[str, Any],
+    decision_record: dict[str, Any],
+    delivery_manifest: dict[str, Any],
+) -> ReleaseEvidenceResult:
+    """Validate evidence against the durable approval and delivery identity.
+
+    The evidence document is an inspection artifact. Promotion additionally
+    requires the immutable manifest and decision retrieved from the release
+    registry, plus the exact delivery manifest produced by the same commit.
+    Keeping this join explicit prevents a release ID or a successful quality
+    report from being used as an authorization by itself.
+    """
+
+    result = validate_release_evidence(document)
+    if not result.promotable:
+        raise ReleaseEvidenceError("release evidence is not promotable")
+
+    decision = decision_record.get("decision")
+    if not isinstance(decision, dict):
+        raise ReleaseEvidenceError("durable release decision is missing")
+    if decision.get("decision") != "approved":
+        raise ReleaseEvidenceError("durable release decision is not approved")
+    if not decision_record.get("actor_user_id") or not decision_record.get("decided_at"):
+        raise ReleaseEvidenceError("durable release decision is missing actor or timestamp")
+
+    release_id = document["release_id"]
+    if decision.get("release_id") != release_id or manifest.get("release_id") != release_id:
+        raise ReleaseEvidenceError("durable release identity does not match the evidence")
+    evidence_keys = {
+        "evaluation_run_id": "run_id",
+        "dataset_version_id": "dataset_version_id",
+        "corpus_version_id": "corpus_version_id",
+        "configuration_version_id": "configuration_version_id",
+        "model_version_id": "model_version_id",
+    }
+    for key, evidence_key in evidence_keys.items():
+        if decision.get(key) != document["evaluation"].get(evidence_key) or manifest.get(key) != decision.get(key):
+            raise ReleaseEvidenceError(f"durable release {key} does not match the evidence")
+
+    if manifest.get("gate_report_ids") != decision.get("gate_report_ids"):
+        raise ReleaseEvidenceError("durable release gate evidence does not match the decision")
+    snapshot = document["evaluation"].get("candidate_snapshot")
+    if not isinstance(snapshot, dict):
+        raise ReleaseEvidenceError("candidate snapshot is missing")
+    if manifest.get("scorer_version_id") != snapshot.get("scorer_version"):
+        raise ReleaseEvidenceError("durable scorer identity does not match the candidate")
+    provider_version = manifest.get("provider_version_id")
+    if not isinstance(provider_version, str) or not provider_version.startswith(f"{snapshot.get('answer_provider')}-"):
+        raise ReleaseEvidenceError("durable provider identity does not match the candidate")
+    if manifest.get("model_version_id") != snapshot.get("primary_model"):
+        raise ReleaseEvidenceError("durable model identity does not match the candidate")
+    candidate_binding = document["evaluation"].get("candidate_gold_binding")
+    if manifest.get("candidate_digest") and manifest["candidate_digest"] != candidate_binding.get("candidate_snapshot_sha256"):
+        raise ReleaseEvidenceError("durable candidate digest does not match the evidence")
+    artifact = document["artifact"]
+    if delivery_manifest.get("commit") != artifact.get("commit"):
+        raise ReleaseEvidenceError("delivery commit does not match the evidence artifact")
+    if delivery_manifest.get("api_digest") != artifact.get("api_digest"):
+        raise ReleaseEvidenceError("delivery API digest does not match the evidence artifact")
+    if delivery_manifest.get("frontend_digest") != artifact.get("frontend_digest"):
+        raise ReleaseEvidenceError("delivery frontend digest does not match the evidence artifact")
+    binding = delivery_manifest.get("serving_binding")
+    if not isinstance(binding, dict) or binding.get("corpus_version_id") != document["evaluation"].get("corpus_version_id"):
+        raise ReleaseEvidenceError("delivery corpus binding does not match the evidence")
+    configuration_digest = binding.get("configuration_digest")
+    if configuration_digest is not None and configuration_digest != snapshot.get("configuration_fingerprint"):
+        raise ReleaseEvidenceError("delivery configuration identity does not match the candidate")
+    return result
+
+
 def _validate_artifact(value: Any) -> None:
     if not isinstance(value, dict):
         raise ReleaseEvidenceError("artifact must be an object")

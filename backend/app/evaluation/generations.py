@@ -26,6 +26,7 @@ from app.evaluation.dataset import (
     CandidateBindingError,
     CandidateGoldBinding,
     CandidateGoldReview,
+    GoldAnnotationRemap,
     candidate_review_fingerprint,
 )
 
@@ -263,6 +264,118 @@ class FirestoreEvaluationGenerationStore:
         except (TypeError, CandidateBindingError):
             raise GenerationIntegrityError("candidate binding is invalid") from None
 
+    def get_candidate_chunk(self, *, corpus_version_id: str, chunk_id: str):
+        """Resolve one persisted vector document without crossing corpus versions."""
+
+        snapshot = self.client.collection("document_chunks_v2").document(chunk_id).get()
+        if not snapshot.exists:
+            return None
+        payload = snapshot.to_dict()
+        metadata = payload.get("metadata", {})
+        if not isinstance(metadata, dict) or metadata.get("corpus_version_id") != corpus_version_id:
+            return None
+        from app.contracts import DocumentChunk
+
+        try:
+            return DocumentChunk(
+                chunk_id=str(metadata["chunk_id"]),
+                corpus_version_id=str(metadata["corpus_version_id"]),
+                page=int(metadata["page"]),
+                section=str(metadata["section"]),
+                chunk_ordinal=int(metadata["chunk_ordinal"]),
+                content_hash=str(metadata["content_hash"]),
+                text=str(payload["text"]),
+                embedding=list(payload["embedding"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            raise GenerationIntegrityError("candidate chunk is invalid") from None
+
+    def bind_candidate_review(
+        self,
+        generation_id: str,
+        item_id: str,
+        candidate_review: CandidateGoldReview,
+    ) -> GoldAnnotation:
+        """Atomically persist one candidate binding while leaving approval unchanged."""
+
+        generation = self.generations.document(generation_id)
+        annotation = generation.collection("annotations").document(item_id)
+
+        def apply(transaction: Any) -> GoldAnnotation:
+            pointer_snapshot = self.pointer.get(transaction=transaction)
+            active_id = pointer_snapshot.to_dict().get("generation_id") if pointer_snapshot.exists else None
+            if active_id != generation_id:
+                raise ReviewStateError("candidate bindings are allowed only for the active evaluation generation")
+            generation_snapshot = generation.get(transaction=transaction)
+            annotation_snapshot = annotation.get(transaction=transaction)
+            if not generation_snapshot.exists or not annotation_snapshot.exists:
+                raise EvaluationGenerationError("unknown evaluation binding target")
+            current_payload = annotation_snapshot.to_dict()
+            current = _annotation_from_payload(current_payload)
+            if current.review_status != "candidate":
+                raise ReviewStateError("candidate binding requires a candidate annotation")
+
+            generation_payload = generation_snapshot.to_dict()
+            existing = generation_payload.get("candidate_review")
+            existing_review = _candidate_review_from_payload(existing) if isinstance(existing, dict) else None
+            remap = candidate_review.remap_for(item_id)
+            effective_review = candidate_review
+            if existing_review is not None:
+                if existing_review.binding != candidate_review.binding or existing_review.expected_refusal != candidate_review.expected_refusal:
+                    raise ReviewStateError("candidate binding is already set to different data")
+                try:
+                    existing_remap = existing_review.remap_for(item_id)
+                except CandidateBindingError:
+                    existing_remap = None
+                if existing_remap is not None:
+                    if existing_remap != remap:
+                        raise ReviewStateError("candidate binding is already set to different data")
+                    return current
+                effective_review = CandidateGoldReview(
+                    binding=candidate_review.binding,
+                    remaps=existing_review.remaps + (remap,),
+                    binding_version=candidate_review.binding_version,
+                    expected_refusal=candidate_review.expected_refusal,
+                    reviewed_by=candidate_review.reviewed_by,
+                    reviewed_at=candidate_review.reviewed_at,
+                    chunk_hashes={**(existing_review.chunk_hashes or {}), **(candidate_review.chunk_hashes or {})},
+                )
+            updated = current.model_copy(update={"relevant_chunk_ids": list(remap.relevant_chunk_ids)})
+            stored_review = _candidate_review_from_payload(effective_review.model_dump())
+            stored_review = CandidateGoldReview(
+                binding=stored_review.binding,
+                remaps=stored_review.remaps,
+                binding_version=stored_review.binding_version,
+                expected_refusal=stored_review.expected_refusal,
+                reviewed_by=effective_review.reviewed_by,
+                reviewed_at=effective_review.reviewed_at,
+                chunk_hashes=stored_review.chunk_hashes,
+            )
+            transaction.update(
+                annotation,
+                {
+                    **updated.model_dump(mode="json"),
+                    "candidate_review": {
+                        **remap.model_dump(),
+                        "expected_refusal": effective_review.expected_refusal,
+                        "binding_version": effective_review.binding_version,
+                        "reviewed_by": effective_review.reviewed_by,
+                        "reviewed_at": effective_review.reviewed_at,
+                        "chunk_hashes": dict(effective_review.chunk_hashes or {}),
+                    },
+                },
+            )
+            transaction.update(
+                generation,
+                {
+                    "candidate_review": stored_review.model_dump(),
+                    "candidate_review_sha256": candidate_review_fingerprint(stored_review),
+                },
+            )
+            return updated
+
+        return self._transaction_runner(self.client.transaction(), apply)
+
     def generation_status(self, generation_id: str) -> str | None:
         """Return a persisted lifecycle status for audit and reproduction queries."""
 
@@ -296,7 +409,10 @@ class FirestoreEvaluationGenerationStore:
                 raise ReviewStateError("annotation review is already final")
             candidate_review = annotation_payload.get("candidate_review")
             if review_status == "approved" and isinstance(candidate_review, dict):
-                if candidate_review.get("remap_status") != "matched":
+                if candidate_review.get("remap_status") != "matched" and not (
+                    candidate_review.get("remap_status") == "refusal"
+                    and candidate_review.get("expected_refusal") is True
+                ):
                     raise ReviewStateError("unresolved candidate support cannot be approved")
 
             updated = current.model_copy(update={"review_status": review_status})
@@ -374,3 +490,23 @@ def _annotation_from_payload(payload: dict[str, Any]) -> GoldAnnotation:
     """Remove durable remap metadata before validating the public annotation contract."""
 
     return GoldAnnotation.model_validate({key: value for key, value in payload.items() if key != "candidate_review"})
+
+
+def _candidate_review_from_payload(payload: dict[str, Any]) -> CandidateGoldReview:
+    try:
+        binding = CandidateGoldBinding(**payload["binding"])
+        remaps = tuple(
+            GoldAnnotationRemap(**{key: value for key, value in remap.items() if key != "review_status"})
+            for remap in payload["remaps"]
+        )
+        return CandidateGoldReview(
+            binding=binding,
+            remaps=remaps,
+            binding_version=payload.get("binding_version", "candidate-binding-v1"),
+            expected_refusal=bool(payload.get("expected_refusal", False)),
+            reviewed_by=payload.get("reviewed_by"),
+            reviewed_at=payload.get("reviewed_at"),
+            chunk_hashes=payload.get("chunk_hashes") or {},
+        )
+    except (KeyError, TypeError, ValueError, CandidateBindingError):
+        raise GenerationIntegrityError("candidate binding is invalid") from None

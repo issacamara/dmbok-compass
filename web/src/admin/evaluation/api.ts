@@ -1,10 +1,13 @@
 import {
   API_ROUTES,
   type ActiveEvaluationGeneration,
+  type CandidateBindingInput,
+  type CandidateBindingResult,
   type EvaluationImportResponse,
   type EvaluationRun,
   type ItemReview,
   type ReleaseDecision,
+  type RunItemAssessment,
   type ReviewStatus,
 } from "../../api/contracts";
 
@@ -55,6 +58,34 @@ export function reviewEvaluationItem(
     `${API_ROUTES.evaluationDatasets}/${encodeURIComponent(generationId)}/items/${encodeURIComponent(itemId)}/review`,
     token,
     { method: "PATCH", body: JSON.stringify({ review_status: reviewStatus }) },
+  );
+}
+
+export function bindEvaluationItem(
+  token: string,
+  generationId: string,
+  itemId: string,
+  payload: CandidateBindingInput,
+): Promise<CandidateBindingResult> {
+  return request<CandidateBindingResult>(
+    `${API_ROUTES.evaluationDatasets}/${encodeURIComponent(generationId)}/items/${encodeURIComponent(itemId)}/binding`,
+    token,
+    { method: "PUT", body: JSON.stringify(payload) },
+  );
+}
+
+export type AssessmentInput = Omit<RunItemAssessment, "assessment_status">;
+
+export function assessEvaluationItem(
+  token: string,
+  runId: string,
+  itemId: string,
+  payload: AssessmentInput,
+): Promise<RunItemAssessment> {
+  return request<RunItemAssessment>(
+    `${API_ROUTES.evaluationAssessments}/${encodeURIComponent(runId)}/items/${encodeURIComponent(itemId)}/assessment`,
+    token,
+    { method: "PUT", body: JSON.stringify(payload) },
   );
 }
 

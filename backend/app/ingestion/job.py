@@ -7,6 +7,10 @@ from collections.abc import Callable
 
 from app.contracts import CorpusVersion
 from app.corpus.indexing import CorpusEmbeddingWriter
+from app.corpus.search_probe import (
+    CandidateFilteredVectorProbe,
+    SearchReadinessEvidence,
+)
 from app.corpus.versions import CorpusVersionStore
 from app.corpus.chunking import TextChunk
 
@@ -64,6 +68,26 @@ class CorpusIngestionJob:
                     raise IngestionInterrupted("ingestion stopped after a persisted batch")
 
             validated = self.versions.validate(staged.version_id, stored)
+            persist_probe = getattr(self.versions, "persist_search_readiness", None)
+            if callable(persist_probe) and hasattr(self.writer.vector_store, "similarity_search_with_score"):
+                binding = validated.serving_binding
+                collection_id = binding.vector_collection if binding is not None else "document_chunks_v2"
+                probe = CandidateFilteredVectorProbe(
+                    self.writer.vector_store,
+                    collection_id=collection_id,
+                )
+                persist_probe(
+                    validated.version_id,
+                    SearchReadinessEvidence(
+                        complete=probe.complete_signal(
+                            version_id=validated.version_id, candidate=stored[0]
+                        ),
+                        search_ready=None,
+                        attempts=0,
+                    ),
+                )
+                evidence = probe.run(version_id=validated.version_id, candidate=stored[0])
+                persist_probe(validated.version_id, evidence)
             active = self.versions.activate(
                 validated.version_id,
                 expected_active_version_id=current.version_id if current is not None else None,

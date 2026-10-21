@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from datetime import datetime, timezone
 from threading import RLock
-from typing import Literal, Protocol
+from typing import Callable, Literal, Protocol
 
 from pydantic import Field
 
 from app.contracts import EvaluationReportEligibility, EvaluationRun, ReleaseDecision
 from app.evaluation import EvaluationRunStore
 from app.contracts.api import ContractModel
+from app.release.firestore import (
+    ReleaseManifest,
+    ReleaseManifestStore,
+    candidate_digest,
+)
 
 
 class ReleaseDecisionError(ValueError):
@@ -37,7 +43,14 @@ class ReleaseDecisionRequest(ContractModel):
 
 
 class ReleaseDecisionStore(Protocol):
-    def create_or_get(self, decision: ReleaseDecision) -> ReleaseDecision: ...
+    def create_or_get(
+        self,
+        decision: ReleaseDecision,
+        *,
+        actor_user_id: str = "system",
+        decided_at: datetime | None = None,
+        candidate_digest: str = "",
+    ) -> ReleaseDecision: ...
 
     def get(self, release_id: str) -> ReleaseDecision | None: ...
 
@@ -57,7 +70,7 @@ class InMemoryReleaseDecisionStore:
         self._decisions: dict[str, ReleaseDecision] = {}
         self._lock = RLock()
 
-    def create_or_get(self, decision: ReleaseDecision) -> ReleaseDecision:
+    def create_or_get(self, decision: ReleaseDecision, **_: object) -> ReleaseDecision:
         with self._lock:
             existing = self._decisions.get(decision.release_id)
             if existing is not None:
@@ -90,12 +103,19 @@ class ReleaseDecisionService:
         runs: EvaluationRunStore,
         decisions: ReleaseDecisionStore,
         evidence: ReleaseEvidenceStore,
+        manifests: ReleaseManifestStore | None = None,
+        *,
+        actor_user_id: str = "system",
+        clock: Callable[[], datetime] | None = None,
     ) -> None:
         self.runs = runs
         self.decisions = decisions
         self.evidence = evidence
+        self.manifests = manifests
+        self.actor_user_id = actor_user_id
+        self.clock = clock or (lambda: datetime.now(timezone.utc))
 
-    def record(self, request: ReleaseDecisionRequest) -> ReleaseDecision:
+    def record(self, request: ReleaseDecisionRequest, *, actor_user_id: str | None = None) -> ReleaseDecision:
         run = self.runs.get(request.evaluation_run_id)
         if run is None:
             raise ReleaseDecisionError("evaluation evidence is missing")
@@ -103,7 +123,27 @@ class ReleaseDecisionService:
         if request.decision == "approved":
             self._validate_current_evidence(run)
             self._validate_gates(request, run)
-        return self.decisions.create_or_get(request.to_decision())
+        decision = request.to_decision()
+        digest = candidate_digest(run.candidate_snapshot)
+        if self.manifests is not None:
+            self.manifests.create_or_get(ReleaseManifest(
+                release_id=decision.release_id,
+                evaluation_run_id=decision.evaluation_run_id,
+                dataset_version_id=decision.dataset_version_id,
+                corpus_version_id=decision.corpus_version_id,
+                configuration_version_id=decision.configuration_version_id,
+                provider_version_id=decision.provider_version_id,
+                model_version_id=decision.model_version_id,
+                scorer_version_id=decision.scorer_version_id,
+                candidate_digest=digest,
+                gate_report_ids=decision.gate_report_ids,
+            ))
+        return self.decisions.create_or_get(
+            decision,
+            actor_user_id=actor_user_id or self.actor_user_id,
+            decided_at=self.clock(),
+            candidate_digest=digest,
+        )
 
     def get(self, release_id: str) -> ReleaseDecision:
         decision = self.decisions.get(release_id)
@@ -187,8 +227,4 @@ class ReleaseDecisionService:
 def _candidate_snapshot_sha256(snapshot: object) -> str:
     """Hash the complete non-secret candidate identity deterministically."""
 
-    from hashlib import sha256
-
-    if snapshot is None or not hasattr(snapshot, "model_dump"):
-        return ""
-    return sha256(snapshot.model_dump_json().encode("utf-8")).hexdigest()
+    return candidate_digest(snapshot)

@@ -8,6 +8,13 @@ from .decision import (
     ReleaseDecisionStore,
     ReleaseEvidenceStore,
 )
+from .firestore import (
+    FirestoreReleaseDecisionStore,
+    FirestoreReleaseManifestStore,
+    ReleaseManifest,
+    ReleaseManifestStore,
+    candidate_digest,
+)
 from .evidence import (
     GATE_REQUIREMENTS,
     REQUIRED_EVIDENCE_SECTIONS,
@@ -23,6 +30,11 @@ __all__ = [
     "ReleaseDecisionService",
     "ReleaseDecisionStore",
     "ReleaseEvidenceStore",
+    "FirestoreReleaseDecisionStore",
+    "FirestoreReleaseManifestStore",
+    "ReleaseManifest",
+    "ReleaseManifestStore",
+    "candidate_digest",
     "GATE_REQUIREMENTS",
     "REQUIRED_EVIDENCE_SECTIONS",
     "ReleaseEvidenceError",

@@ -15,6 +15,13 @@ from .indexing import (
     create_vector_store,
 )
 from .manifest import RAG_DERIVATION, SourceManifest, create_source_manifest, default_derivation
+from .lexical_artifact import (
+    LexicalArtifactError,
+    LexicalArtifactManifest,
+    LoadedLexicalArtifact,
+    build_lexical_artifact,
+    load_lexical_artifact,
+)
 from .versions import (
     ConcurrentCorpusActivationError,
     CorpusCompletenessError,
@@ -43,4 +50,9 @@ __all__ = [
     "ConcurrentCorpusActivationError",
     "CorpusVersionError",
     "InMemoryCorpusVersionStore",
+    "LexicalArtifactError",
+    "LexicalArtifactManifest",
+    "LoadedLexicalArtifact",
+    "build_lexical_artifact",
+    "load_lexical_artifact",
 ]

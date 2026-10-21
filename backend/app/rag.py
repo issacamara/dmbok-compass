@@ -201,9 +201,9 @@ class LangChainRagFactory:
 
 
 def _dependency_lock_sha256() -> str:
-    """Bind the packaged compatibility lock without persisting its contents."""
+    """Bind the canonical lock installed in the application image."""
 
-    lock = Path(__file__).resolve().parents[1] / "requirements-compat.lock"
+    lock = Path(__file__).resolve().parents[1] / "requirements.lock"
     if not lock.is_file():
         raise ValueError("candidate dependency lock is unavailable")
     return sha256(lock.read_bytes()).hexdigest()

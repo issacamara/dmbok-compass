@@ -53,7 +53,13 @@ from app.evaluation import (
     FirestoreEvaluationRunStore,
 )
 from app.evaluation.worker import FirestoreEvaluationCandidateSnapshotResolver
-from app.release import ReleaseDecisionError, ReleaseDecisionRequest, ReleaseDecisionService
+from app.release import (
+    FirestoreReleaseDecisionStore,
+    FirestoreReleaseManifestStore,
+    ReleaseDecisionError,
+    ReleaseDecisionRequest,
+    ReleaseDecisionService,
+)
 from app.lifecycle import ShutdownCoordinator, configured_shutdown_timeout, lifespan, lifecycle_middleware
 
 app = FastAPI(title="DMBOK Compass API", version="0.1.0", lifespan=lifespan)
@@ -122,12 +128,15 @@ app.dependency_overrides[evaluation_generation_store] = configured_evaluation_ge
 @lru_cache(maxsize=1)
 def get_release_decision_service() -> ReleaseDecisionService:
     service = configured_evaluation_service()
-    from app.release import InMemoryReleaseDecisionStore
+    from app.identity import _firebase_app
+    from firebase_admin import firestore
+    client = firestore.client(app=_firebase_app())
 
     return ReleaseDecisionService(
         service.runs,
-        InMemoryReleaseDecisionStore(),
+        FirestoreReleaseDecisionStore(client),
         configured_evaluation_generation_store(),
+        FirestoreReleaseManifestStore(client),
     )
 
 
@@ -350,11 +359,11 @@ def list_aggregate_metrics(
 @app.post("/api/releases", response_model=ReleaseDecision, status_code=status.HTTP_201_CREATED, tags=["admin"])
 def record_release_decision(
     request: ReleaseDecisionRequest,
-    _: UserProfile = Depends(get_admin_user),
+    admin: UserProfile = Depends(get_admin_user),
     service: ReleaseDecisionService = Depends(release_decision_service),
 ) -> ReleaseDecision:
     try:
-        return service.record(request)
+        return service.record(request, actor_user_id=admin.user_id)
     except ReleaseDecisionError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

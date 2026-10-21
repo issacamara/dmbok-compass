@@ -47,6 +47,55 @@ def test_report_fails_closed_for_failed_requests_and_slow_p95() -> None:
     assert "question" not in json_safe_text(report)
 
 
+def test_report_counts_typed_outcomes_and_rejects_http_200_errors() -> None:
+    report = build_report(
+        [
+            RequestSample(0, 200, 100, "answer", "primary", input_tokens=10, output_tokens=5),
+            RequestSample(1, 200, 120, "refusal", "primary", input_tokens=10, output_tokens=0),
+            RequestSample(2, 200, 90, "operational_error", "primary", error_class="unavailable"),
+            RequestSample(2, 503, 80, None, None, error_class="HTTPStatusError"),
+        ],
+        threshold_ms=15_000,
+        daily_requests=100,
+        provider_cost_eur=1.0,
+        gcp_cost_eur=0,
+        gcp_budget_eur=5,
+        assumptions={"fallback_model": "fallback"},
+        candidate_identity={"artifact_id": "image-sha"},
+    )
+
+    assert report["functional_success_count"] == 2
+    assert report["answer_success_count"] == 1
+    assert report["operational_error_count"] == 2
+    assert report["outcome_counts"] == {
+        "answer": 1,
+        "qualified": 0,
+        "refusal": 1,
+        "evidence_refusal": 0,
+        "operational_error": 1,
+    }
+    assert report["normal_mix"]["count"] == 2
+    assert report["within_threshold_rate"] == 1.0
+    assert report["usage"]["status"] == "partial"
+    assert report["candidate_identity"] == {"artifact_id": "image-sha"}
+    assert report["passed"] is False
+
+
+def test_report_marks_cost_usage_unknown_without_token_data() -> None:
+    report = build_report(
+        [sample(100)],
+        threshold_ms=15_000,
+        daily_requests=100,
+        provider_cost_eur=10.5,
+        gcp_cost_eur=0,
+        gcp_budget_eur=5,
+        assumptions={"fallback_model": "fallback"},
+    )
+
+    assert report["usage"]["status"] == "unknown"
+    assert report["cost_envelope"]["provider_cost_status"] == "unknown"
+
+
 def json_safe_text(value: object) -> str:
     """Serialize report data for the privacy assertion without adding a dependency."""
 

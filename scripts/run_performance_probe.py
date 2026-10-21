@@ -37,6 +37,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fallback-output-eur-per-million", type=float, default=0.0)
     parser.add_argument("--gcp-cost-forecast-eur", type=float, default=0.0)
     parser.add_argument("--gcp-budget-eur", type=float, default=5.0)
+    parser.add_argument("--candidate-artifact-id")
+    parser.add_argument("--candidate-installed-lock-sha256")
+    parser.add_argument("--candidate-corpus-version-id")
+    parser.add_argument("--candidate-configuration-version-id")
+    parser.add_argument("--candidate-scorer-version")
     parser.add_argument("--output", type=Path, default=Path("performance-evidence.json"))
     return parser.parse_args()
 
@@ -58,13 +63,18 @@ async def probe_user(
                 json={"question": question},
             )
             payload = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+            trace = payload.get("trace") or {}
+            usage = payload.get("usage") or trace.get("usage") or {}
             samples.append(
                 RequestSample(
                     user_index=user_index,
                     status_code=response.status_code,
                     duration_ms=round((perf_counter() - started) * 1000, 3),
                     outcome=payload.get("outcome"),
-                    model=(payload.get("trace") or {}).get("selected_model"),
+                    model=trace.get("selected_model"),
+                    input_tokens=usage.get("input_tokens"),
+                    output_tokens=usage.get("output_tokens"),
+                    total_tokens=usage.get("total_tokens"),
                 )
             )
         except Exception as exc:  # noqa: BLE001 - report aggregate failure class only
@@ -117,6 +127,19 @@ async def run_probe(args: argparse.Namespace) -> dict[str, object]:
             "input_tokens_per_request": args.input_tokens_per_request,
             "output_tokens_per_request": args.output_tokens_per_request,
         },
+        candidate_identity={
+            "artifact_id": args.candidate_artifact_id,
+            "installed_lock_sha256": args.candidate_installed_lock_sha256,
+            "corpus_version_id": args.candidate_corpus_version_id,
+            "configuration_version_id": args.candidate_configuration_version_id,
+            "scorer_version": args.candidate_scorer_version,
+        } if all((
+            args.candidate_artifact_id,
+            args.candidate_installed_lock_sha256,
+            args.candidate_corpus_version_id,
+            args.candidate_configuration_version_id,
+            args.candidate_scorer_version,
+        )) else None,
     )
 
 

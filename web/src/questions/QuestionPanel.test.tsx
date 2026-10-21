@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { AnswerResponse } from "../api/contracts";
 import { QuestionPanel } from "./QuestionPanel";
+import type { QuestionAnswer } from "./questionApi";
 
 const quota = {
   user_used: 1,
@@ -27,7 +28,7 @@ function response(outcome: AnswerResponse["outcome"]): AnswerResponse {
   };
 }
 
-function mockApi(answer: AnswerResponse) {
+function mockApi(answer: QuestionAnswer) {
   vi.stubGlobal("fetch", vi.fn().mockImplementation((path: string) => Promise.resolve({
     ok: true,
     json: async () => path === "/api/quota" ? quota : answer,
@@ -93,6 +94,33 @@ describe("QuestionPanel", () => {
     expect(screen.getByText("The model provider is unavailable.")).toBeInTheDocument();
     expect(screen.getByText("Answer unavailable")).toBeInTheDocument();
     expect(screen.queryByText("Evidence-based refusal")).not.toBeInTheDocument();
+  });
+
+  it("renders bounded claim excerpts and keeps evidence refusal distinct", async () => {
+    const answer = response("answer") as QuestionAnswer;
+    answer.evidence = [{ citation_id: "cite-claim", claim_id: "claim-1", chunk_id: "chunk-1", page: 69, section: "Data Governance", excerpt: "Only this bounded excerpt is authoritative." }];
+    answer.outcome = "evidence_refusal";
+    answer.answer_text = "The approved corpus does not support this claim.";
+    answer.citations = [];
+    mockApi(answer);
+    const user = userEvent.setup();
+    render(<QuestionPanel token="firebase-token" onSignOut={vi.fn()} />);
+    await user.type(await screen.findByLabelText("Ask a DMBOK question"), "What is unsupported?");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    expect(await screen.findByText("Evidence-based refusal")).toBeInTheDocument();
+    expect(screen.getByText("Only this bounded excerpt is authoritative.")).toBeInTheDocument();
+    expect(screen.getByText("[1] Data Governance")).toHaveAttribute("id", "citation-cite-claim");
+  });
+
+  it.each([502, 503, 504])("offers an explicit retry for retryable %s failures", async (status) => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => quota })
+      .mockResolvedValueOnce({ ok: false, status, json: async () => ({ detail: { code: "service_failure", message: "Question service unavailable.", retryable: true } }) }));
+    const user = userEvent.setup();
+    render(<QuestionPanel token="firebase-token" onSignOut={vi.fn()} />);
+    await user.type(await screen.findByLabelText("Ask a DMBOK question"), "Retry safely");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+    expect(await screen.findByRole("button", { name: "Retry this question" })).toBeInTheDocument();
   });
 
   it("exposes the composer guidance and answer controls to keyboard and assistive technology", async () => {

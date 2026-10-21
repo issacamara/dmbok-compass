@@ -1,4 +1,12 @@
-import { API_ROUTES, type AnswerResponse, type QuotaStatus } from "../api/contracts";
+import { API_ROUTES, type AnswerResponse, type AnswerOutcome, type QuotaStatus } from "../api/contracts";
+
+export type QuestionAnswer = Omit<AnswerResponse, "outcome" | "citations" | "synthesis"> & {
+  outcome: AnswerResponse["outcome"] | "evidence_refusal" | "operational_error";
+  citations: AnswerResponse["citations"];
+  synthesis: boolean;
+  claims?: string[];
+  evidence?: AnswerOutcome["evidence"];
+};
 
 export class QuestionApiError extends Error {
   constructor(
@@ -9,6 +17,14 @@ export class QuestionApiError extends Error {
   ) {
     super(message);
   }
+}
+
+function normalizeAnswer(response: QuestionAnswer): QuestionAnswer {
+  return {
+    ...response,
+    citations: response.citations ?? (response.evidence ?? []).map(({ citation_id, page, section }) => ({ citation_id, page, section })),
+    synthesis: response.synthesis ?? false,
+  };
 }
 
 async function questionRequest<T>(path: string, token: string, init?: RequestInit): Promise<T> {
@@ -40,9 +56,9 @@ export function getQuota(token: string): Promise<QuotaStatus> {
   return questionRequest<QuotaStatus>(API_ROUTES.quota, token);
 }
 
-export function askQuestion(token: string, question: string): Promise<AnswerResponse> {
-  return questionRequest<AnswerResponse>(API_ROUTES.answer, token, {
+export function askQuestion(token: string, question: string): Promise<QuestionAnswer> {
+  return questionRequest<QuestionAnswer>(API_ROUTES.answer, token, {
     method: "POST",
     body: JSON.stringify({ question }),
-  });
+  }).then(normalizeAnswer);
 }

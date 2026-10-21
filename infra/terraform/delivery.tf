@@ -95,7 +95,7 @@ resource "google_cloud_run_v2_service" "api" {
         value_source {
           secret_key_ref {
             secret  = google_secret_manager_secret.managed["answer-provider-api-key"].secret_id
-            version = "latest"
+            version = var.runtime_secret_version
           }
         }
       }
@@ -246,7 +246,7 @@ resource "google_cloud_run_v2_job" "evaluation" {
           value_source {
             secret_key_ref {
               secret  = google_secret_manager_secret.managed["answer-provider-api-key"].secret_id
-              version = "latest"
+              version = var.runtime_secret_version
             }
           }
         }

@@ -16,6 +16,7 @@ from app.corpus.embedding import (
     EMBEDDING_MODEL,
     QUERY_TASK_TYPE,
 )
+from app.corpus.chunking import MAX_CHUNK_CHARACTERS, SUBDIVISION_ALGORITHM_VERSION
 from app.corpus.indexing import VECTOR_COLLECTION, VECTOR_SCHEMA_VERSION
 
 
@@ -90,6 +91,10 @@ def default_derivation(*, vector_collection: str = VECTOR_COLLECTION) -> dict[st
             "chunk_size": 700,
             "chunk_overlap": 70,
             "separator": " ",
+            "subdivision": {
+                "algorithm": SUBDIVISION_ALGORITHM_VERSION,
+                "max_characters": MAX_CHUNK_CHARACTERS,
+            },
         },
         "embedding": {
             "model": EMBEDDING_MODEL,
@@ -214,6 +219,8 @@ def _validate_derivation(derivation: Mapping[str, Any]) -> None:
         ("splitter", "units"),
         ("splitter", "chunk_size"),
         ("splitter", "chunk_overlap"),
+        ("splitter", "subdivision", "algorithm"),
+        ("splitter", "subdivision", "max_characters"),
         ("embedding", "model"),
         ("embedding", "dimensions"),
         ("embedding", "document_task"),

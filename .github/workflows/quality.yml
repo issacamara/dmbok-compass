@@ -57,6 +57,24 @@ jobs:
           sed '/^--find-links /d; /^langchain-google-firestore==/,/^    # via /d' requirements.lock > "$RUNNER_TEMP/requirements-audit.lock"
           pip-audit --strict --no-deps -r "$RUNNER_TEMP/requirements-audit.lock"
 
+  image-snapshot:
+    name: Final image snapshot smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Build the final application image
+        run: docker build --file backend/Dockerfile --tag "dmbok-compass-snapshot:${GITHUB_SHA}" backend
+      - name: Exercise API and evaluation job inside the final image
+        run: |
+          docker run --rm \
+            --volume "$GITHUB_WORKSPACE/backend/tests/test_image_snapshot.py:/tmp/test_image_snapshot.py:ro" \
+            --env FINAL_IMAGE_SMOKE=1 \
+            --env EXPECTED_LOCK_SHA256="$(sha256sum backend/requirements.lock | cut -d ' ' -f1)" \
+            --env IMAGE_ARTIFACT_ID="$(docker image inspect "dmbok-compass-snapshot:${GITHUB_SHA}" --format '{{.Id}}')" \
+            "dmbok-compass-snapshot:${GITHUB_SHA}" \
+            python -m pytest -q -s /tmp/test_image_snapshot.py
+
   frontend:
     name: Frontend tests, build, and audit
     runs-on: ubuntu-latest

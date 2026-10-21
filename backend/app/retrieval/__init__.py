@@ -11,6 +11,7 @@ from .evidence import (
     retrieval_success_metric,
 )
 from .search import FirestorePassageRetriever
+from .lexical import LexicalCandidate, LexicalIndex
 
 __all__ = [
     "EvidenceBundle",
@@ -22,4 +23,6 @@ __all__ = [
     "STRONG_EVIDENCE_THRESHOLD",
     "classify_evidence",
     "retrieval_success_metric",
+    "LexicalCandidate",
+    "LexicalIndex",
 ]

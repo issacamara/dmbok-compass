@@ -24,11 +24,88 @@ export type QuestionCategory = "definitions" | "explanations" | "comparisons" | 
 export type ReviewStatus = "candidate" | "approved" | "rejected";
 export type RunEligibility = "exploratory" | "release_evidence";
 export type ImportStatus = "accepted" | "rejected";
+export type AnswerOutcomeKind = "answer" | "qualified" | "evidence_refusal" | "operational_error";
+export type StageStatus = "pending" | "running" | "succeeded" | "failed" | "unavailable";
+export type RetrievalStrategy = "dense" | "hybrid" | "reranked";
+export type RetrievalScoreSemantics = "cosine_similarity" | "distance" | "calibrated";
+
+export const OPERATIONAL_ERROR_STATUS = {
+  invalid_output: 502,
+  unavailable: 503,
+  deadline: 504,
+} as const;
 
 export const MAX_EVALUATION_IMPORT_BYTES = 1_048_576;
 export const MAX_EVALUATION_IMPORT_ITEMS = 500;
 export const MIN_APPROVED_GOLD_ITEMS = 30;
 export const MAX_APPROVED_GOLD_ITEMS = 50;
+
+export interface CandidateIdentity {
+  artifact_id: string;
+  installed_lock_sha256: string;
+  corpus_version_id: string;
+  configuration_version_id: string;
+  scorer_version: string;
+}
+
+export interface RuntimeSettings {
+  project: string;
+  location: string;
+  provider: "openrouter" | "vertex";
+  primary_model: string;
+  fallback_model?: string | null;
+  secret_version?: string | null;
+  lexical_artifact_id?: string | null;
+}
+
+export interface RetrievalResult {
+  candidate: CandidateIdentity;
+  ordered_chunk_ids: string[];
+  scores: number[];
+  score_semantics: RetrievalScoreSemantics;
+  strategy: RetrievalStrategy;
+  stage_status: StageStatus;
+  search_ready: boolean;
+}
+
+export interface EvaluationCase {
+  case_id: string;
+  question: string;
+  expected_outcome: "answer" | "qualified" | "evidence_refusal";
+  relevant_chunk_ids: string[];
+  expected_claim_ids: string[];
+}
+
+export interface RunItemResult {
+  case_id: string;
+  candidate: CandidateIdentity;
+  retrieval_success: boolean;
+  grounded: boolean;
+  citation_correct: boolean;
+  answer_quality: boolean;
+  refusal_correct: boolean;
+  response_time_ms: number;
+  stage_status: StageStatus;
+}
+
+export interface CitationEvidence {
+  citation_id: string;
+  claim_id: string;
+  chunk_id: string;
+  page: number;
+  section: string;
+  excerpt: string;
+}
+
+export interface AnswerOutcome {
+  outcome: AnswerOutcomeKind;
+  answer_text?: string | null;
+  claims: string[];
+  evidence: CitationEvidence[];
+  trace: RetrievalTrace;
+  quota: QuotaStatus;
+  error?: ApiError | null;
+}
 
 export interface QuotaPolicy {
   per_user_daily_limit: number;

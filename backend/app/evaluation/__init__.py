@@ -30,6 +30,17 @@ from .job import (
     stable_run_id,
 )
 from .dispatch import CloudRunEvaluationJobDispatcher, CloudRunJobExecutor, EvaluationDispatchClaimStore
+from .candidate_outputs import (
+    POLICY_ID,
+    CandidateOutputAlreadyExists,
+    CandidateOutputAuthorizationError,
+    CandidateOutputBindingError,
+    CandidateOutputError,
+    CandidateOutputSourceError,
+    CandidateOutputAudit,
+    FirestoreCandidateOutputStore,
+    RetentionCleanupResult,
+)
 
 __all__ = [
     "EvaluationDatasetError",
@@ -58,4 +69,13 @@ __all__ = [
     "CloudRunEvaluationJobDispatcher",
     "CloudRunJobExecutor",
     "EvaluationDispatchClaimStore",
+    "POLICY_ID",
+    "CandidateOutputAlreadyExists",
+    "CandidateOutputAuthorizationError",
+    "CandidateOutputBindingError",
+    "CandidateOutputError",
+    "CandidateOutputSourceError",
+    "CandidateOutputAudit",
+    "FirestoreCandidateOutputStore",
+    "RetentionCleanupResult",
 ]

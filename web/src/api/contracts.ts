@@ -9,6 +9,7 @@ export const API_ROUTES = {
   activeEvaluationGeneration: "/api/admin/evaluation-datasets/active",
   releaseDecisions: "/api/releases",
   evaluationDatasets: "/api/admin/evaluation-datasets",
+  evaluationAssessments: "/api/admin/evaluations",
 } as const;
 
 export const ADMIN_ROUTES = {
@@ -205,6 +206,47 @@ export interface EvaluationRun {
   report_eligibility?: EvaluationReportEligibility | null;
 }
 
+export interface CandidateBindingInput {
+  corpus_version_id: string;
+  candidate_snapshot_sha256: string;
+  source_provenance_sha256: string;
+  reviewed_chunk_ids: string[];
+  reviewed_chunk_hashes: Record<string, string>;
+  expected_refusal: boolean;
+  binding_version?: string;
+}
+
+export interface CandidateBindingResult {
+  generation_id: string;
+  item_id: string;
+  review_status: ReviewStatus;
+  binding_version: string;
+  expected_refusal: boolean;
+  reviewed_chunk_ids: string[];
+  reviewed_by?: string | null;
+  reviewed_at?: string | null;
+}
+
+export type AssessmentStatus = "pending" | "reviewed" | "inapplicable";
+
+export interface EvaluationItemOutput {
+  response_sha256: string;
+  outcome: AnswerOutcomeKind;
+  answer_text?: string | null;
+  claims: string[];
+  evidence: CitationEvidence[];
+}
+
+export interface RunItemAssessment {
+  assessment_status: AssessmentStatus;
+  response_sha256: string;
+  scorer_version: string;
+  claim_support: boolean | null;
+  claim_citation_support: boolean | null;
+  rubric_passed: boolean | null;
+  expected_refusal: boolean | null;
+}
+
 export interface ImportValidationError {
   index: number;
   code: "invalid_record" | "missing_question" | "missing_expected_answer_or_rubric" | "missing_supporting_passage" | "invalid_category";
@@ -254,6 +296,9 @@ export interface EvaluationItemResult {
   answer_quality: boolean;
   refusal_correct: boolean;
   response_time_ms: number;
+  assessment_status?: AssessmentStatus;
+  output?: EvaluationItemOutput | null;
+  assessment?: RunItemAssessment | null;
 }
 
 export interface ReleaseDecision {

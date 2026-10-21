@@ -29,7 +29,7 @@ class LoggingTelemetryAdapter:
     def emit(self, event: TelemetryEvent) -> None:
         payload = event.model_dump(exclude_none=True, mode="json")
         validate_telemetry_payload(payload)
-        logger.info("telemetry %s", json.dumps(payload, sort_keys=True))
+        logger.info(json.dumps(payload, sort_keys=True))
 
 
 class InMemoryTelemetryAdapter:

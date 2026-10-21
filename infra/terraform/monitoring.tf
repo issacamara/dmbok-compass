@@ -3,11 +3,11 @@ locals {
   # never include interaction content or credentials in these logs.
   operational_log_metrics = {
     request_failures = {
-      filter      = "textPayload:\"telemetry\" AND textPayload:\"\\\"outcome\\\": \\\"error\\\"\""
+      filter      = "jsonPayload.outcome=\"error\""
       description = "Content-free request failures emitted by the telemetry adapter."
     }
     fallback_requests = {
-      filter      = "textPayload:\"telemetry\" AND textPayload:\"provider_model\" AND textPayload:\"${var.fallback_model}\""
+      filter      = "jsonPayload.provider_model=\"${var.fallback_model}\""
       description = "Requests served by the configured model fallback."
     }
     quota_exhaustions = {

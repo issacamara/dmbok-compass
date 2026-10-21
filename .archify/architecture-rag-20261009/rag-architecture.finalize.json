@@ -1,0 +1,542 @@
+{
+  "schemaVersion": 1,
+  "ok": false,
+  "command": "finalize",
+  "status": "fail",
+  "type": "architecture",
+  "quality": "showcase",
+  "startedAt": "2026-10-09T20:35:04.732Z",
+  "specification": {
+    "path": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-rag-20261009/candidate.json",
+    "sha256": "a67f287a2f6ad7e2abb1d7ecd33b5976aa6ee0b9cdcdbe3e31cbc1aee1821c3b",
+    "bytes": 7152
+  },
+  "artifact": {
+    "path": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-rag-20261009/rag-architecture.html",
+    "sha256": "0c06b9bb3ce99c16a4a11bf74322e6a4944345aaaff01c69adc481f864346890",
+    "bytes": 787271
+  },
+  "stages": {
+    "validate": {
+      "status": "pass",
+      "exitCode": 0,
+      "durationMs": null,
+      "execution": "embedded-in-deliver",
+      "command": [
+        "/opt/homebrew/Cellar/node/26.8.1/bin/node",
+        "/Users/issacamara/.codex/skills/archify/bin/archify.mjs",
+        "deliver",
+        "architecture",
+        "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-rag-20261009/candidate.json",
+        "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-rag-20261009/rag-architecture.html",
+        "--quality",
+        "showcase",
+        "--repo-root",
+        "/Users/issacamara/Developer/dmbok-compass",
+        "--json"
+      ],
+      "receipt": {
+        "schemaVersion": 1,
+        "ok": true,
+        "command": "validate",
+        "specification": {
+          "sha256": "a67f287a2f6ad7e2abb1d7ecd33b5976aa6ee0b9cdcdbe3e31cbc1aee1821c3b",
+          "bytes": 7152
+        },
+        "validation": {
+          "checksPassed": 9,
+          "checkCount": 9,
+          "compositionProfile": "showcase",
+          "compositionStatus": "pass",
+          "errors": 0,
+          "warnings": 0
+        }
+      }
+    },
+    "deliver": {
+      "status": "pass",
+      "exitCode": 0,
+      "durationMs": 454,
+      "command": [
+        "/opt/homebrew/Cellar/node/26.8.1/bin/node",
+        "/Users/issacamara/.codex/skills/archify/bin/archify.mjs",
+        "deliver",
+        "architecture",
+        "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-rag-20261009/candidate.json",
+        "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-rag-20261009/rag-architecture.html",
+        "--quality",
+        "showcase",
+        "--repo-root",
+        "/Users/issacamara/Developer/dmbok-compass",
+        "--json"
+      ],
+      "receipt": {
+        "schemaVersion": 1,
+        "receiptId": "eae25af1-c9fb-472f-bedb-edee363af1b6",
+        "ok": true,
+        "command": "deliver",
+        "type": "architecture",
+        "input": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-rag-20261009/candidate.json",
+        "output": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-rag-20261009/rag-architecture.html",
+        "specification": {
+          "sha256": "a67f287a2f6ad7e2abb1d7ecd33b5976aa6ee0b9cdcdbe3e31cbc1aee1821c3b",
+          "bytes": 7152
+        },
+        "artifact": {
+          "sha256": "0c06b9bb3ce99c16a4a11bf74322e6a4944345aaaff01c69adc481f864346890",
+          "bytes": 787271
+        },
+        "validation": {
+          "checksPassed": 9,
+          "checkCount": 9,
+          "compositionProfile": "showcase",
+          "compositionStatus": "pass",
+          "errors": 0,
+          "warnings": 0
+        },
+        "evidence": {
+          "verified": true,
+          "repository": "https://github.com/issacamara/dmbok-compass",
+          "revision": "fb160f612b802b65e55046bd59b12fe844baa239",
+          "references": 24
+        },
+        "update": {
+          "status": "unavailable",
+          "installedVersion": null,
+          "availableVersion": null,
+          "releaseNotes": null,
+          "checkedAt": null,
+          "source": null,
+          "noticeRequired": false,
+          "noticeText": null,
+          "reason": "disabled"
+        }
+      }
+    },
+    "check": {
+      "status": "pass",
+      "exitCode": 0,
+      "durationMs": 130,
+      "command": [
+        "/opt/homebrew/Cellar/node/26.8.1/bin/node",
+        "/Users/issacamara/.codex/skills/archify/bin/archify.mjs",
+        "check",
+        "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-rag-20261009/rag-architecture.html",
+        "--require-provenance"
+      ],
+      "receipt": {
+        "ok": true,
+        "file": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-rag-20261009/rag-architecture.html",
+        "artifact": {
+          "sha256": "0c06b9bb3ce99c16a4a11bf74322e6a4944345aaaff01c69adc481f864346890",
+          "bytes": 787271
+        },
+        "checks": [
+          {
+            "name": "single_svg",
+            "ok": true,
+            "details": [
+              "found 1 <svg> block(s)"
+            ]
+          },
+          {
+            "name": "finite_svg",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "orthogonal_arrows",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "label_route_clearance",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "relationship_crossings",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "relationship_corridors",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "container_border_runs",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "route_rhythm",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "legend_clearance",
+            "ok": true,
+            "details": []
+          }
+        ],
+        "composition": {
+          "schemaVersion": 1,
+          "profile": "showcase",
+          "status": "pass",
+          "summary": {
+            "errors": 0,
+            "warnings": 0
+          },
+          "metrics": {
+            "properCrossings": 0,
+            "resolvedCrossovers": 5,
+            "ambiguousCorridors": 0,
+            "arrowheadCollisions": 0,
+            "containerBorderRuns": 0,
+            "labelRouteClearanceIssues": 0,
+            "labelCanvasOverflowIssues": 0,
+            "minLabelRouteClearance": 8,
+            "desktopReadabilityIssues": 0,
+            "viewportHeightIssues": 0,
+            "minProjectedNodeTextPx": 6.066478873239436,
+            "maxBends": 5,
+            "routesOverSuggestedBends": 3,
+            "maxStretch": 1.209,
+            "routesOverSuggestedStretch": 0,
+            "minSegmentPx": 10,
+            "minInteriorSegmentPx": 16,
+            "shortSegmentCount": 2,
+            "shortEndpointSegmentCount": 2,
+            "shortInteriorSegmentCount": 0,
+            "microSegmentCount": 0
+          },
+          "suggestedLimits": {
+            "bendsPerRelationship": 2,
+            "stretch": 1.35,
+            "segmentPx": 16,
+            "microSegmentPx": 8
+          },
+          "routeReview": {
+            "crossings": [
+              {
+                "left": {
+                  "id": "call-api",
+                  "from": "web",
+                  "to": "api",
+                  "label": "HTTPS /api/questions",
+                  "collectionIndex": 2,
+                  "artifactIndex": 3
+                },
+                "right": {
+                  "id": "embed-query",
+                  "from": "api",
+                  "to": "query-embed",
+                  "label": "embed question",
+                  "collectionIndex": 4,
+                  "artifactIndex": 5
+                },
+                "point": [
+                  586.0000000000001,
+                  332
+                ],
+                "sharedNode": "api"
+              },
+              {
+                "left": {
+                  "id": "search",
+                  "from": "query-embed",
+                  "to": "vector",
+                  "label": "768-d vector search",
+                  "collectionIndex": 5,
+                  "artifactIndex": 6
+                },
+                "right": {
+                  "id": "answer",
+                  "from": "policy",
+                  "to": "api",
+                  "label": "citations + live trace",
+                  "collectionIndex": 11,
+                  "artifactIndex": 12
+                },
+                "point": [
+                  865.1538461538462,
+                  276
+                ]
+              },
+              {
+                "left": {
+                  "id": "search",
+                  "from": "query-embed",
+                  "to": "vector",
+                  "label": "768-d vector search",
+                  "collectionIndex": 5,
+                  "artifactIndex": 6
+                },
+                "right": {
+                  "id": "privacy-constraint",
+                  "from": "privacy",
+                  "to": "api",
+                  "label": "",
+                  "collectionIndex": 17,
+                  "artifactIndex": 18
+                },
+                "point": [
+                  865,
+                  236.99999999999997
+                ]
+              },
+              {
+                "left": {
+                  "id": "prompt",
+                  "from": "policy",
+                  "to": "adapter",
+                  "label": "",
+                  "collectionIndex": 7,
+                  "artifactIndex": 8
+                },
+                "right": {
+                  "id": "privacy-constraint",
+                  "from": "privacy",
+                  "to": "api",
+                  "label": "",
+                  "collectionIndex": 17,
+                  "artifactIndex": 18
+                },
+                "point": [
+                  1257,
+                  328
+                ]
+              },
+              {
+                "left": {
+                  "id": "response",
+                  "from": "adapter",
+                  "to": "policy",
+                  "label": "",
+                  "collectionIndex": 10,
+                  "artifactIndex": 11
+                },
+                "right": {
+                  "id": "privacy-constraint",
+                  "from": "privacy",
+                  "to": "api",
+                  "label": "",
+                  "collectionIndex": 17,
+                  "artifactIndex": 18
+                },
+                "point": [
+                  1257,
+                  342
+                ]
+              }
+            ],
+            "detours": [
+              {
+                "relationship": {
+                  "id": "answer",
+                  "from": "policy",
+                  "to": "api",
+                  "label": "citations + live trace",
+                  "collectionIndex": 11,
+                  "artifactIndex": 12
+                },
+                "bends": 3,
+                "stretch": 1.136,
+                "directCorridorBlockers": [
+                  {
+                    "id": "vector",
+                    "label": "Active corpus vector store",
+                    "box": [
+                      820,
+                      330,
+                      190,
+                      70
+                    ]
+                  }
+                ]
+              },
+              {
+                "relationship": {
+                  "id": "active-filter",
+                  "from": "version",
+                  "to": "vector",
+                  "label": "active version filter",
+                  "collectionIndex": 16,
+                  "artifactIndex": 17
+                },
+                "bends": 3,
+                "stretch": 1
+              },
+              {
+                "relationship": {
+                  "id": "privacy-constraint",
+                  "from": "privacy",
+                  "to": "api",
+                  "label": "",
+                  "collectionIndex": 17,
+                  "artifactIndex": 18
+                },
+                "bends": 5,
+                "stretch": 1.209
+              }
+            ]
+          },
+          "leadingSpace": {
+            "measured": true,
+            "emptyTopPx": 120,
+            "emptyTopRatio": 0.131,
+            "occupiedTop": 120,
+            "viewBoxTop": 0,
+            "canvasHeight": 918,
+            "typicalNodeHeight": 70,
+            "reviewSuggested": false
+          },
+          "desktopReadability": {
+            "budgetBasis": "recognized-declared-wide",
+            "readerContract": "declared-wide-v1",
+            "availableDiagramWidth": 1346,
+            "actualBudgetPx": 1346,
+            "actualReaderWidth": 1376,
+            "desiredReaderWidth": 1694.0625,
+            "viewportCap": 1376,
+            "limit": "viewport-cap",
+            "requestedTargetPx": 7.5,
+            "requestedTargetMet": false,
+            "hardFloorPx": 6,
+            "hardFloorMet": true,
+            "minimumOwner": {
+              "kind": "edge",
+              "id": "ask",
+              "from": "user",
+              "to": "web"
+            },
+            "minimumSourceTextPx": 8,
+            "minimumProjectedTextPx": 6.066478873239436,
+            "semanticTextCount": 46
+          },
+          "issues": []
+        },
+        "provenance": "current",
+        "deliveryReceiptId": "eae25af1-c9fb-472f-bedb-edee363af1b6"
+      }
+    },
+    "browser-check": {
+      "status": "fail",
+      "exitCode": 1,
+      "durationMs": 4682,
+      "command": [
+        "/opt/homebrew/Cellar/node/26.8.1/bin/node",
+        "/Users/issacamara/.codex/skills/archify/bin/archify.mjs",
+        "browser-check",
+        "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-rag-20261009/rag-architecture.html",
+        "--json",
+        "--require-provenance"
+      ],
+      "execution": "in-process",
+      "receipt": {
+        "schemaVersion": 1,
+        "ok": false,
+        "command": "browser-check",
+        "evidenceKind": "automated-browser",
+        "status": "fail",
+        "visualReview": "not-requested",
+        "provenance": "current",
+        "deliveryReceiptId": "eae25af1-c9fb-472f-bedb-edee363af1b6",
+        "artifact": {
+          "path": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-rag-20261009/rag-architecture.html",
+          "sha256": "0c06b9bb3ce99c16a4a11bf74322e6a4944345aaaff01c69adc481f864346890",
+          "bytes": 787271
+        },
+        "state": {
+          "detail": "read",
+          "motion": "still"
+        },
+        "chrome": {
+          "status": "available",
+          "executable": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        },
+        "diagnostics": [
+          {
+            "code": "viewer/browser-check-runtime",
+            "severity": "error",
+            "message": "browser-check could not complete its Chrome inspection.",
+            "subject": {
+              "artifact": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-rag-20261009/rag-architecture.html"
+            },
+            "evidence": {
+              "reason": "Chrome DevTools read pipe failed: stream ended\nChrome process: still running.\nChrome transport: Node v26.8.1, libuv 1.52.1, darwin; pid=51692, exitCode=null, signalCode=null.\nChrome read pipe: readable=false, ended=true, destroyed=false, receivedBytes=0, messages=0, bufferedBytes=0.\nChrome write pipe: writable=true, ended=false, destroyed=false, completedWrites=1, writtenBytes=50, bufferedBytes=0."
+            },
+            "supportedFixes": [
+              "resolve the reported Chrome inspection error, then rerun browser-check"
+            ]
+          }
+        ],
+        "containment": {
+          "status": "fail",
+          "policy": "fit-or-reader-declared-readable-vertical-scroll",
+          "viewports": []
+        },
+        "themeStates": {
+          "status": "fail",
+          "viewports": []
+        },
+        "readability": {
+          "status": "fail",
+          "minimumProjectedNodeTextPx": 6,
+          "viewports": []
+        },
+        "viewerChrome": {
+          "status": "fail",
+          "viewports": []
+        },
+        "captures": {
+          "status": "not-requested",
+          "screenshots": [],
+          "contactSheet": null
+        },
+        "sidecars": {
+          "receipt": "rag-architecture.browser-check.json",
+          "files": []
+        },
+        "error": "Chrome DevTools read pipe failed: stream ended\nChrome process: still running.\nChrome transport: Node v26.8.1, libuv 1.52.1, darwin; pid=51692, exitCode=null, signalCode=null.\nChrome read pipe: readable=false, ended=true, destroyed=false, receivedBytes=0, messages=0, bufferedBytes=0.\nChrome write pipe: writable=true, ended=false, destroyed=false, completedWrites=1, writtenBytes=50, bufferedBytes=0."
+      }
+    }
+  },
+  "diagnostics": [
+    {
+      "code": "viewer/browser-check-runtime",
+      "severity": "error",
+      "message": "browser-check could not complete its Chrome inspection.",
+      "subject": {
+        "artifact": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-rag-20261009/rag-architecture.html"
+      },
+      "evidence": {
+        "reason": "Chrome DevTools read pipe failed: stream ended\nChrome process: still running.\nChrome transport: Node v26.8.1, libuv 1.52.1, darwin; pid=51692, exitCode=null, signalCode=null.\nChrome read pipe: readable=false, ended=true, destroyed=false, receivedBytes=0, messages=0, bufferedBytes=0.\nChrome write pipe: writable=true, ended=false, destroyed=false, completedWrites=1, writtenBytes=50, bufferedBytes=0."
+      },
+      "supportedFixes": [
+        "resolve the reported Chrome inspection error, then rerun browser-check"
+      ]
+    }
+  ],
+  "evidence": {
+    "receipt": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-rag-20261009/rag-architecture.finalize.json",
+    "summaryReceipt": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-rag-20261009/rag-architecture.finalize-summary.json",
+    "browserCheckReceipt": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-rag-20261009/rag-architecture.browser-check.json"
+  },
+  "visualReview": "not-requested",
+  "failedStage": "browser-check",
+  "finishedAt": "2026-10-09T20:35:10.141Z",
+  "durationMs": 5411,
+  "update": {
+    "status": "unavailable",
+    "installedVersion": null,
+    "availableVersion": null,
+    "releaseNotes": null,
+    "checkedAt": null,
+    "source": null,
+    "noticeRequired": false,
+    "noticeText": null,
+    "reason": "cache-unavailable"
+  }
+}

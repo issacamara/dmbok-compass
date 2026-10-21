@@ -72,7 +72,11 @@ variable "artifact_repository_id" {
 variable "hosting_site_id" {
   description = "Firebase Hosting site ID used by the frontend deployment."
   type        = string
-  default     = "dmbok-compass"
+
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9-]{1,29}[a-z0-9]$", var.hosting_site_id))
+    error_message = "hosting_site_id must be a valid Firebase Hosting site ID."
+  }
 }
 
 variable "github_repository" {

@@ -1,0 +1,634 @@
+{
+  "schemaVersion": 1,
+  "ok": false,
+  "command": "finalize",
+  "status": "fail",
+  "type": "architecture",
+  "quality": "showcase",
+  "startedAt": "2026-10-10T13:54:09.472Z",
+  "specification": {
+    "path": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-dmbok-compass-rag-20261010-134949/candidate.json",
+    "sha256": "bcfa7678243d866fba1c2a8fa0f89c52c2e27a6b4621bc6cee1e327dfd18d53f",
+    "bytes": 8817
+  },
+  "artifact": {
+    "path": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-dmbok-compass-rag-20261010-134949/dmbok-compass-rag.html",
+    "sha256": "e66198d489e522ef30536e2924444c856d2559dc2d4d4bbcc745562c051e15fa",
+    "bytes": 793095
+  },
+  "stages": {
+    "validate": {
+      "status": "pass",
+      "exitCode": 0,
+      "durationMs": null,
+      "execution": "embedded-in-deliver",
+      "command": [
+        "/opt/homebrew/Cellar/node/26.8.1/bin/node",
+        "/Users/issacamara/.codex/skills/archify/bin/archify.mjs",
+        "deliver",
+        "architecture",
+        "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-dmbok-compass-rag-20261010-134949/candidate.json",
+        "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-dmbok-compass-rag-20261010-134949/dmbok-compass-rag.html",
+        "--quality",
+        "showcase",
+        "--repo-root",
+        "/Users/issacamara/Developer/dmbok-compass",
+        "--json"
+      ],
+      "receipt": {
+        "schemaVersion": 1,
+        "ok": true,
+        "command": "validate",
+        "specification": {
+          "sha256": "bcfa7678243d866fba1c2a8fa0f89c52c2e27a6b4621bc6cee1e327dfd18d53f",
+          "bytes": 8817
+        },
+        "validation": {
+          "checksPassed": 9,
+          "checkCount": 9,
+          "compositionProfile": "showcase",
+          "compositionStatus": "pass",
+          "errors": 0,
+          "warnings": 0
+        }
+      }
+    },
+    "deliver": {
+      "status": "pass",
+      "exitCode": 0,
+      "durationMs": 486,
+      "command": [
+        "/opt/homebrew/Cellar/node/26.8.1/bin/node",
+        "/Users/issacamara/.codex/skills/archify/bin/archify.mjs",
+        "deliver",
+        "architecture",
+        "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-dmbok-compass-rag-20261010-134949/candidate.json",
+        "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-dmbok-compass-rag-20261010-134949/dmbok-compass-rag.html",
+        "--quality",
+        "showcase",
+        "--repo-root",
+        "/Users/issacamara/Developer/dmbok-compass",
+        "--json"
+      ],
+      "receipt": {
+        "schemaVersion": 1,
+        "receiptId": "23b229e4-7662-438e-a954-38cab081adb4",
+        "ok": true,
+        "command": "deliver",
+        "type": "architecture",
+        "input": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-dmbok-compass-rag-20261010-134949/candidate.json",
+        "output": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-dmbok-compass-rag-20261010-134949/dmbok-compass-rag.html",
+        "specification": {
+          "sha256": "bcfa7678243d866fba1c2a8fa0f89c52c2e27a6b4621bc6cee1e327dfd18d53f",
+          "bytes": 8817
+        },
+        "artifact": {
+          "sha256": "e66198d489e522ef30536e2924444c856d2559dc2d4d4bbcc745562c051e15fa",
+          "bytes": 793095
+        },
+        "validation": {
+          "checksPassed": 9,
+          "checkCount": 9,
+          "compositionProfile": "showcase",
+          "compositionStatus": "pass",
+          "errors": 0,
+          "warnings": 0
+        },
+        "evidence": {
+          "verified": true,
+          "repository": "https://github.com/issacamara/dmbok-compass",
+          "revision": "b8a82db3b786eb22e6f21e26f738cecbcf657355",
+          "references": 28
+        },
+        "update": {
+          "status": "unavailable",
+          "installedVersion": null,
+          "availableVersion": null,
+          "releaseNotes": null,
+          "checkedAt": null,
+          "source": null,
+          "noticeRequired": false,
+          "noticeText": null,
+          "reason": "disabled"
+        }
+      }
+    },
+    "check": {
+      "status": "pass",
+      "exitCode": 0,
+      "durationMs": 145,
+      "command": [
+        "/opt/homebrew/Cellar/node/26.8.1/bin/node",
+        "/Users/issacamara/.codex/skills/archify/bin/archify.mjs",
+        "check",
+        "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-dmbok-compass-rag-20261010-134949/dmbok-compass-rag.html",
+        "--require-provenance"
+      ],
+      "receipt": {
+        "ok": true,
+        "file": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-dmbok-compass-rag-20261010-134949/dmbok-compass-rag.html",
+        "artifact": {
+          "sha256": "e66198d489e522ef30536e2924444c856d2559dc2d4d4bbcc745562c051e15fa",
+          "bytes": 793095
+        },
+        "checks": [
+          {
+            "name": "single_svg",
+            "ok": true,
+            "details": [
+              "found 1 <svg> block(s)"
+            ]
+          },
+          {
+            "name": "finite_svg",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "orthogonal_arrows",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "label_route_clearance",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "relationship_crossings",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "relationship_corridors",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "container_border_runs",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "route_rhythm",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "legend_clearance",
+            "ok": true,
+            "details": []
+          }
+        ],
+        "composition": {
+          "schemaVersion": 1,
+          "profile": "showcase",
+          "status": "pass",
+          "summary": {
+            "errors": 0,
+            "warnings": 0
+          },
+          "metrics": {
+            "properCrossings": 0,
+            "resolvedCrossovers": 8,
+            "ambiguousCorridors": 0,
+            "arrowheadCollisions": 0,
+            "containerBorderRuns": 0,
+            "labelRouteClearanceIssues": 0,
+            "labelCanvasOverflowIssues": 0,
+            "minLabelRouteClearance": 7,
+            "desktopReadabilityIssues": 0,
+            "viewportHeightIssues": 0,
+            "minProjectedNodeTextPx": 6.352802359882006,
+            "maxBends": 6,
+            "routesOverSuggestedBends": 6,
+            "maxStretch": 1.405,
+            "routesOverSuggestedStretch": 2,
+            "minSegmentPx": 16,
+            "minInteriorSegmentPx": 16,
+            "shortSegmentCount": 0,
+            "shortEndpointSegmentCount": 0,
+            "shortInteriorSegmentCount": 0,
+            "microSegmentCount": 0
+          },
+          "suggestedLimits": {
+            "bendsPerRelationship": 2,
+            "stretch": 1.35,
+            "segmentPx": 16,
+            "microSegmentPx": 8
+          },
+          "routeReview": {
+            "crossings": [
+              {
+                "left": {
+                  "id": "auth-api",
+                  "from": "auth",
+                  "to": "api",
+                  "label": "verify identity + approval",
+                  "collectionIndex": 3,
+                  "artifactIndex": 4
+                },
+                "right": {
+                  "id": "api-response",
+                  "from": "retrieval",
+                  "to": "web",
+                  "label": "answer · citations · ephemeral trace",
+                  "collectionIndex": 10,
+                  "artifactIndex": 11
+                },
+                "point": [
+                  560,
+                  276
+                ]
+              },
+              {
+                "left": {
+                  "id": "worker-vertex",
+                  "from": "worker",
+                  "to": "vertex",
+                  "label": "document embeddings",
+                  "collectionIndex": 13,
+                  "artifactIndex": 14
+                },
+                "right": {
+                  "id": "worker-firestore",
+                  "from": "worker",
+                  "to": "firestore",
+                  "label": "chunks + eval",
+                  "collectionIndex": 14,
+                  "artifactIndex": 15
+                },
+                "point": [
+                  839,
+                  711
+                ],
+                "sharedNode": "worker"
+              },
+              {
+                "left": {
+                  "id": "worker-vertex",
+                  "from": "worker",
+                  "to": "vertex",
+                  "label": "document embeddings",
+                  "collectionIndex": 13,
+                  "artifactIndex": 14
+                },
+                "right": {
+                  "id": "secrets-api",
+                  "from": "secrets",
+                  "to": "api",
+                  "label": "inject credential",
+                  "collectionIndex": 15,
+                  "artifactIndex": 16
+                },
+                "point": [
+                  869.1999999999997,
+                  581.5
+                ]
+              },
+              {
+                "left": {
+                  "id": "worker-vertex",
+                  "from": "worker",
+                  "to": "vertex",
+                  "label": "document embeddings",
+                  "collectionIndex": 13,
+                  "artifactIndex": 14
+                },
+                "right": {
+                  "id": "api-ops",
+                  "from": "api",
+                  "to": "ops",
+                  "label": "safe metadata only",
+                  "collectionIndex": 16,
+                  "artifactIndex": 17
+                },
+                "point": [
+                  839,
+                  687
+                ]
+              },
+              {
+                "left": {
+                  "id": "worker-firestore",
+                  "from": "worker",
+                  "to": "firestore",
+                  "label": "chunks + eval",
+                  "collectionIndex": 14,
+                  "artifactIndex": 15
+                },
+                "right": {
+                  "id": "secrets-api",
+                  "from": "secrets",
+                  "to": "api",
+                  "label": "inject credential",
+                  "collectionIndex": 15,
+                  "artifactIndex": 16
+                },
+                "point": [
+                  862.5,
+                  560.0866666666542
+                ]
+              },
+              {
+                "left": {
+                  "id": "worker-firestore",
+                  "from": "worker",
+                  "to": "firestore",
+                  "label": "chunks + eval",
+                  "collectionIndex": 14,
+                  "artifactIndex": 15
+                },
+                "right": {
+                  "id": "api-ops",
+                  "from": "api",
+                  "to": "ops",
+                  "label": "safe metadata only",
+                  "collectionIndex": 16,
+                  "artifactIndex": 17
+                },
+                "point": [
+                  862.5,
+                  687
+                ]
+              },
+              {
+                "left": {
+                  "id": "secrets-api",
+                  "from": "secrets",
+                  "to": "api",
+                  "label": "inject credential",
+                  "collectionIndex": 15,
+                  "artifactIndex": 16
+                },
+                "right": {
+                  "id": "api-ops",
+                  "from": "api",
+                  "to": "ops",
+                  "label": "safe metadata only",
+                  "collectionIndex": 16,
+                  "artifactIndex": 17
+                },
+                "point": [
+                  869.1999999999997,
+                  687
+                ],
+                "sharedNode": "api"
+              },
+              {
+                "left": {
+                  "id": "api-ops",
+                  "from": "api",
+                  "to": "ops",
+                  "label": "safe metadata only",
+                  "collectionIndex": 16,
+                  "artifactIndex": 17
+                },
+                "right": {
+                  "id": "delivery-api",
+                  "from": "delivery",
+                  "to": "api",
+                  "label": "deploy",
+                  "collectionIndex": 18,
+                  "artifactIndex": 19
+                },
+                "point": [
+                  686,
+                  608.5
+                ],
+                "sharedNode": "api"
+              }
+            ],
+            "detours": [
+              {
+                "relationship": {
+                  "id": "web-api",
+                  "from": "web",
+                  "to": "api",
+                  "label": "Bearer token · JSON API",
+                  "collectionIndex": 2,
+                  "artifactIndex": 3
+                },
+                "bends": 4,
+                "stretch": 1.39
+              },
+              {
+                "relationship": {
+                  "id": "rag-vertex",
+                  "from": "retrieval",
+                  "to": "vertex",
+                  "label": "query vector",
+                  "collectionIndex": 6,
+                  "artifactIndex": 7
+                },
+                "bends": 4,
+                "stretch": 1.405
+              },
+              {
+                "relationship": {
+                  "id": "api-response",
+                  "from": "retrieval",
+                  "to": "web",
+                  "label": "answer · citations · ephemeral trace",
+                  "collectionIndex": 10,
+                  "artifactIndex": 11
+                },
+                "bends": 3,
+                "stretch": 1.098
+              },
+              {
+                "relationship": {
+                  "id": "worker-vertex",
+                  "from": "worker",
+                  "to": "vertex",
+                  "label": "document embeddings",
+                  "collectionIndex": 13,
+                  "artifactIndex": 14
+                },
+                "bends": 3,
+                "stretch": 1
+              },
+              {
+                "relationship": {
+                  "id": "secrets-api",
+                  "from": "secrets",
+                  "to": "api",
+                  "label": "inject credential",
+                  "collectionIndex": 15,
+                  "artifactIndex": 16
+                },
+                "bends": 6,
+                "stretch": 1.28
+              },
+              {
+                "relationship": {
+                  "id": "api-ops",
+                  "from": "api",
+                  "to": "ops",
+                  "label": "safe metadata only",
+                  "collectionIndex": 16,
+                  "artifactIndex": 17
+                },
+                "bends": 3,
+                "stretch": 1
+              }
+            ]
+          },
+          "leadingSpace": {
+            "measured": true,
+            "emptyTopPx": 155,
+            "emptyTopRatio": 0.155,
+            "occupiedTop": 155,
+            "viewBoxTop": 0,
+            "canvasHeight": 997,
+            "typicalNodeHeight": 68,
+            "reviewSuggested": false
+          },
+          "desktopReadability": {
+            "budgetBasis": "recognized-declared-wide",
+            "readerContract": "declared-wide-v1",
+            "availableDiagramWidth": 1346,
+            "actualBudgetPx": 1346,
+            "actualReaderWidth": 1376,
+            "desiredReaderWidth": 1619.0625,
+            "viewportCap": 1376,
+            "limit": "viewport-cap",
+            "requestedTargetPx": 7.5,
+            "requestedTargetMet": false,
+            "hardFloorPx": 6,
+            "hardFloorMet": true,
+            "minimumOwner": {
+              "kind": "edge",
+              "id": "user-web",
+              "from": "user",
+              "to": "web"
+            },
+            "minimumSourceTextPx": 8,
+            "minimumProjectedTextPx": 6.352802359882006,
+            "semanticTextCount": 51
+          },
+          "issues": []
+        },
+        "provenance": "current",
+        "deliveryReceiptId": "23b229e4-7662-438e-a954-38cab081adb4"
+      }
+    },
+    "browser-check": {
+      "status": "fail",
+      "exitCode": 1,
+      "durationMs": 17,
+      "command": [
+        "/opt/homebrew/Cellar/node/26.8.1/bin/node",
+        "/Users/issacamara/.codex/skills/archify/bin/archify.mjs",
+        "browser-check",
+        "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-dmbok-compass-rag-20261010-134949/dmbok-compass-rag.html",
+        "--json",
+        "--require-provenance"
+      ],
+      "execution": "in-process",
+      "receipt": {
+        "schemaVersion": 1,
+        "ok": false,
+        "command": "browser-check",
+        "evidenceKind": "automated-browser",
+        "status": "fail",
+        "visualReview": "not-requested",
+        "provenance": "current",
+        "deliveryReceiptId": "23b229e4-7662-438e-a954-38cab081adb4",
+        "artifact": {
+          "path": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-dmbok-compass-rag-20261010-134949/dmbok-compass-rag.html",
+          "sha256": "e66198d489e522ef30536e2924444c856d2559dc2d4d4bbcc745562c051e15fa",
+          "bytes": 793095
+        },
+        "state": {
+          "detail": "read",
+          "motion": "still"
+        },
+        "chrome": {
+          "status": "available",
+          "executable": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        },
+        "diagnostics": [
+          {
+            "code": "viewer/browser-check-runtime",
+            "severity": "error",
+            "message": "browser-check could not complete its Chrome inspection.",
+            "subject": {
+              "artifact": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-dmbok-compass-rag-20261010-134949/dmbok-compass-rag.html"
+            },
+            "evidence": {
+              "reason": "Chrome DevTools read pipe failed: stream ended\nChrome process: still running.\nChrome transport: Node v26.8.1, libuv 1.52.1, darwin; pid=1412, exitCode=null, signalCode=null.\nChrome read pipe: readable=false, ended=true, destroyed=false, receivedBytes=0, messages=0, bufferedBytes=0.\nChrome write pipe: writable=true, ended=false, destroyed=false, completedWrites=1, writtenBytes=50, bufferedBytes=0."
+            },
+            "supportedFixes": [
+              "resolve the reported Chrome inspection error, then rerun browser-check"
+            ]
+          }
+        ],
+        "containment": {
+          "status": "fail",
+          "policy": "fit-or-reader-declared-readable-vertical-scroll",
+          "viewports": []
+        },
+        "themeStates": {
+          "status": "fail",
+          "viewports": []
+        },
+        "readability": {
+          "status": "fail",
+          "minimumProjectedNodeTextPx": 6,
+          "viewports": []
+        },
+        "viewerChrome": {
+          "status": "fail",
+          "viewports": []
+        },
+        "captures": {
+          "status": "not-requested",
+          "screenshots": [],
+          "contactSheet": null
+        },
+        "sidecars": {
+          "receipt": "dmbok-compass-rag.browser-check.json",
+          "files": []
+        },
+        "error": "Chrome DevTools read pipe failed: stream ended\nChrome process: still running.\nChrome transport: Node v26.8.1, libuv 1.52.1, darwin; pid=1412, exitCode=null, signalCode=null.\nChrome read pipe: readable=false, ended=true, destroyed=false, receivedBytes=0, messages=0, bufferedBytes=0.\nChrome write pipe: writable=true, ended=false, destroyed=false, completedWrites=1, writtenBytes=50, bufferedBytes=0."
+      }
+    }
+  },
+  "diagnostics": [
+    {
+      "code": "viewer/browser-check-runtime",
+      "severity": "error",
+      "message": "browser-check could not complete its Chrome inspection.",
+      "subject": {
+        "artifact": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-dmbok-compass-rag-20261010-134949/dmbok-compass-rag.html"
+      },
+      "evidence": {
+        "reason": "Chrome DevTools read pipe failed: stream ended\nChrome process: still running.\nChrome transport: Node v26.8.1, libuv 1.52.1, darwin; pid=1412, exitCode=null, signalCode=null.\nChrome read pipe: readable=false, ended=true, destroyed=false, receivedBytes=0, messages=0, bufferedBytes=0.\nChrome write pipe: writable=true, ended=false, destroyed=false, completedWrites=1, writtenBytes=50, bufferedBytes=0."
+      },
+      "supportedFixes": [
+        "resolve the reported Chrome inspection error, then rerun browser-check"
+      ]
+    }
+  ],
+  "evidence": {
+    "receipt": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-dmbok-compass-rag-20261010-134949/dmbok-compass-rag.finalize.json",
+    "summaryReceipt": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-dmbok-compass-rag-20261010-134949/dmbok-compass-rag.finalize-summary.json",
+    "browserCheckReceipt": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-dmbok-compass-rag-20261010-134949/dmbok-compass-rag.browser-check.json"
+  },
+  "visualReview": "not-requested",
+  "failedStage": "browser-check",
+  "finishedAt": "2026-10-10T13:54:10.272Z",
+  "durationMs": 799,
+  "update": {
+    "status": "unavailable",
+    "installedVersion": null,
+    "availableVersion": null,
+    "releaseNotes": null,
+    "checkedAt": null,
+    "source": null,
+    "noticeRequired": false,
+    "noticeText": null,
+    "reason": "cache-unavailable"
+  }
+}

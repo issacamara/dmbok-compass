@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "23b229e4-7662-438e-a954-38cab081adb4",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-dmbok-compass-rag-20261010-134949/candidate.json",
+  "output": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-dmbok-compass-rag-20261010-134949/dmbok-compass-rag.html",
+  "specification": {
+    "sha256": "bcfa7678243d866fba1c2a8fa0f89c52c2e27a6b4621bc6cee1e327dfd18d53f",
+    "bytes": 8817
+  },
+  "artifact": {
+    "sha256": "e66198d489e522ef30536e2924444c856d2559dc2d4d4bbcc745562c051e15fa",
+    "bytes": 793095
+  }
+}

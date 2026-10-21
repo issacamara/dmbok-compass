@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "a9ef8242-7991-443b-84a8-02a5f89864ca",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-backend-20261011-234000/candidate.json",
+  "output": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-backend-20261011-234000/backend.html",
+  "specification": {
+    "sha256": "ee35f411bfef12c58f13d0c05233b7bcf39884adb3487622db4637ef4fa8e936",
+    "bytes": 5982
+  },
+  "artifact": {
+    "sha256": "14d18cb16f1fd3f9508c5eb47ad43e33cc8c8d8e19aaa44f39c2714e960bbeef",
+    "bytes": 775095
+  }
+}

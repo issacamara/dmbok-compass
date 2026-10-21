@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "receiptId": "eae25af1-c9fb-472f-bedb-edee363af1b6",
+  "status": "current",
+  "command": "deliver",
+  "type": "architecture",
+  "input": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-rag-20261009/candidate.json",
+  "output": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-rag-20261009/rag-architecture.html",
+  "specification": {
+    "sha256": "a67f287a2f6ad7e2abb1d7ecd33b5976aa6ee0b9cdcdbe3e31cbc1aee1821c3b",
+    "bytes": 7152
+  },
+  "artifact": {
+    "sha256": "0c06b9bb3ce99c16a4a11bf74322e6a4944345aaaff01c69adc481f864346890",
+    "bytes": 787271
+  }
+}

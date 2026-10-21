@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "ok": false,
+  "command": "finalize",
+  "status": "fail",
+  "type": "architecture",
+  "quality": "showcase",
+  "specification": {
+    "path": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-dmbok-compass-rag-20261010-134949/candidate.json",
+    "sha256": "bcfa7678243d866fba1c2a8fa0f89c52c2e27a6b4621bc6cee1e327dfd18d53f",
+    "bytes": 8817
+  },
+  "artifact": {
+    "path": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-dmbok-compass-rag-20261010-134949/dmbok-compass-rag.html",
+    "sha256": "e66198d489e522ef30536e2924444c856d2559dc2d4d4bbcc745562c051e15fa",
+    "bytes": 793095
+  },
+  "gates": {
+    "validate": "pass",
+    "deliver": "pass",
+    "check": "pass",
+    "browser-check": "fail"
+  },
+  "failedStage": "browser-check",
+  "diagnostics": [
+    {
+      "code": "viewer/browser-check-runtime",
+      "severity": "error",
+      "message": "browser-check could not complete its Chrome inspection.",
+      "subject": {
+        "artifact": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-dmbok-compass-rag-20261010-134949/dmbok-compass-rag.html"
+      },
+      "evidence": {
+        "reason": "Chrome DevTools read pipe failed: stream ended\nChrome process: still running.\nChrome transport: Node v26.8.1, libuv 1.52.1, darwin; pid=1412, exitCode=null, signalCode=null.\nChrome read pipe: readable=false, ended=true, destroyed=false, receivedBytes=0, messages=0, bufferedBytes=0.\nChrome write pipe: writable=true, ended=false, destroyed=false, completedWrites=1, writtenBytes=50, bufferedBytes=0."
+      },
+      "supportedFixes": [
+        "resolve the reported Chrome inspection error, then rerun browser-check"
+      ]
+    }
+  ],
+  "diagnosticSummary": {
+    "total": 1,
+    "shown": 1,
+    "truncated": false
+  },
+  "evidence": {
+    "receipt": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-dmbok-compass-rag-20261010-134949/dmbok-compass-rag.finalize.json",
+    "summaryReceipt": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-dmbok-compass-rag-20261010-134949/dmbok-compass-rag.finalize-summary.json",
+    "browserCheckReceipt": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-dmbok-compass-rag-20261010-134949/dmbok-compass-rag.browser-check.json"
+  },
+  "update": {
+    "status": "unavailable",
+    "installedVersion": null,
+    "availableVersion": null,
+    "releaseNotes": null,
+    "checkedAt": null,
+    "source": null,
+    "noticeRequired": false,
+    "noticeText": null,
+    "reason": "cache-unavailable"
+  },
+  "visualReview": "not-requested",
+  "durationMs": 799
+}

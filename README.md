@@ -125,6 +125,15 @@ outputs and reviewed project settings: `GCP_PROJECT_ID`,
 development and `prod-dmbok-compass` in production. Protect the `production`
 environment with required reviewers.
 
+Firebase Hosting uses the environment project IDs as the site IDs, so the
+stable frontend URLs are:
+
+- Development: `https://dev-dmbok-compass.web.app/`
+- Production: `https://prod-dmbok-compass.web.app/`
+
+If a GitHub environment has a `HOSTING_SITE` variable, set it to the matching
+project ID; otherwise the workflow derives it from `GCP_PROJECT_ID`.
+
 Pushes to `main` target development by default. Manual runs can select either
 environment; a run with `promote=true` and a release decision identifier
 promotes the exact reviewed artifacts in the selected project.

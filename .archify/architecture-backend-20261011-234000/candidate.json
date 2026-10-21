@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "DMBOK Compass Backend",
+    "subtitle": "Authenticated grounded Q&A and immutable corpus ingestion",
+    "output": ".archify/architecture-backend-20261011-234000/backend.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/issacamara/dmbok-compass.git",
+      "revision": "1dc3580948b7b7260b201b65d5aa323c4bdbed3e",
+      "link_mode": "web"
+    }
+  },
+  "components": [
+    {"id":"client","type":"external","label":"Web client","sublabel":"Questions + admin UI","pos":[40,300],"size":[150,64],"sources":[{"path":"backend/app/main.py","line":233,"end_line":239}]},
+    {"id":"api","type":"backend","label":"FastAPI API","sublabel":"/api/questions · admin · health","pos":[270,300],"size":[190,70],"sources":[{"path":"backend/app/main.py","line":36,"end_line":40},{"path":"backend/app/main.py","line":233,"end_line":248},{"path":"backend/app/main.py","line":251,"end_line":303}]},
+    {"id":"identity","type":"security","label":"Firebase identity","sublabel":"Bearer token + approval gate","pos":[270,130],"size":[190,70],"sources":[{"path":"backend/app/identity.py","line":70,"end_line":93},{"path":"backend/app/identity.py","line":96,"end_line":103}]},
+    {"id":"quota","type":"backend","label":"Quota repository","sublabel":"Reserve before billable work","pos":[620,300],"size":[190,70],"sources":[{"path":"backend/app/main.py","line":176,"end_line":190},{"path":"backend/app/main.py","line":233,"end_line":240}]},
+    {"id":"retrieval","type":"backend","label":"Grounded answer service","sublabel":"Active-version retrieval + policy","pos":[960,300],"size":[220,78],"sources":[{"path":"backend/app/main.py","line":199,"end_line":230},{"path":"backend/app/answering/pipeline.py","line":123,"end_line":173},{"path":"backend/app/answering/pipeline.py","line":210,"end_line":232}]},
+    {"id":"firestore","type":"database","label":"Firestore","sublabel":"users · quotas · chunks · versions","pos":[770,470],"size":[220,70],"sources":[{"path":"backend/app/retrieval/search.py","line":61,"end_line":96},{"path":"backend/app/corpus/firestore.py","line":10,"end_line":20},{"path":"backend/app/identity.py","line":106,"end_line":116}]},
+    {"id":"models","type":"cloud","label":"Model providers","sublabel":"Vertex primary · OpenRouter fallback","pos":[1450,300],"size":[220,78],"sources":[{"path":"backend/app/main.py","line":213,"end_line":230},{"path":"backend/model/openrouter.py","line":44,"end_line":76}]},
+    {"id":"storage","type":"cloud","label":"Cloud Storage","sublabel":"Immutable approved corpus PDF","pos":[40,650],"size":[190,70],"sources":[{"path":"backend/app/ingestion/entrypoint.py","line":23,"end_line":44}]},
+    {"id":"ingest","type":"backend","label":"Cloud Run ingestion job","sublabel":"Extract · chunk · embed · promote","pos":[430,650],"size":[220,78],"sources":[{"path":"backend/app/ingestion/entrypoint.py","line":45,"end_line":67},{"path":"backend/app/ingestion/job.py","line":20,"end_line":41}]},
+    {"id":"embed","type":"cloud","label":"Vertex embeddings","sublabel":"768-dim document vectors","pos":[800,650],"size":[190,70],"sources":[{"path":"backend/app/corpus/embedding.py","line":14,"end_line":38},{"path":"backend/app/ingestion/entrypoint.py","line":61,"end_line":66}]},
+    {"id":"release","type":"backend","label":"Admin + release controls","sublabel":"Approval, metrics, release decisions","pos":[520,130],"size":[210,70],"sources":[{"path":"backend/app/main.py","line":251,"end_line":303}]}
+  ],
+  "boundaries": [
+    {"kind":"region","label":"DMBOK Compass backend runtime","wraps":["api","quota","retrieval","firestore","ingest","release"]},
+    {"kind":"security-group","label":"Authenticated API surface","wraps":["api","identity","quota","release"]}
+  ],
+  "connections": [
+    {"id":"client-api","from":"client","to":"api","label":"HTTPS / JSON","variant":"emphasis"},
+    {"id":"api-identity","from":"api","to":"identity","label":"verify Firebase ID token","variant":"security","fromSide":"top","toSide":"bottom"},
+    {"id":"api-quota","from":"api","to":"quota","label":"reserve approved-user quota"},
+    {"id":"quota-retrieval","from":"quota","to":"retrieval","label":"invoke after reservation","variant":"emphasis"},
+    {"id":"retrieval-store","from":"retrieval","to":"firestore","label":"active corpus + nearest chunks","fromSide":"bottom","toSide":"top"},
+    {"id":"retrieval-models","from":"retrieval","to":"models","label":"grounded structured generation"},
+    {"id":"models-retrieval","from":"models","to":"retrieval","label":"answer + citations / refusal","variant":"dashed"},
+    {"id":"api-release","from":"api","to":"release","label":"admin endpoints","fromSide":"top","toSide":"right"},
+    {"id":"storage-ingest","from":"storage","to":"ingest","label":"download immutable generation","variant":"emphasis"},
+    {"id":"ingest-embed","from":"ingest","to":"embed","label":"embed each document chunk"},
+    {"id":"embed-store","from":"embed","to":"firestore","label":"write vectors + version"},
+    {"id":"ingest-store","from":"ingest","to":"firestore","label":"stage → validate → activate","variant":"dashed"}
+  ],
+  "cards": [
+    {"dot":"cyan","title":"Question path","items":["Firebase token verification and approved-user quota happen before answering.","Retrieval is restricted to the active corpus version and capped at five passages."]},
+    {"dot":"emerald","title":"Grounding policy","items":["Vertex is primary when configured; OpenRouter is the fallback adapter.","Responses require citations to supplied evidence; absent or invalid evidence produces a refusal."]},
+    {"dot":"amber","title":"Corpus lifecycle","items":["Cloud Run downloads an immutable Cloud Storage generation, extracts and chunks the PDF, writes embeddings, then promotes a validated version.","Firestore is the durable boundary for profiles, quotas, vectors, and corpus-version metadata."]}
+  ]
+}

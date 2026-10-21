@@ -94,17 +94,20 @@ terraform fmt -check -recursive
 terraform validate
 terraform plan \
   -var='project_id=dev-dmbok-compass' \
+  -var='hosting_site_id=dev-dmbok-compass' \
   -var='corpus_bucket_name=globally-unique-bucket-name'
 ```
 
 For production, use `backends/production.hcl`, set
-`project_id=prod-dmbok-compass`, and use the production corpus bucket name.
+`project_id=prod-dmbok-compass`, `hosting_site_id=prod-dmbok-compass`, and use
+the production corpus bucket name.
 
 Applying requires explicit project authorization and a reviewed plan:
 
 ```sh
 terraform apply \
   -var='project_id=YOUR_PROJECT_ID' \
+  -var='hosting_site_id=YOUR_HOSTING_SITE_ID' \
   -var='corpus_bucket_name=globally-unique-bucket-name'
 ```
 

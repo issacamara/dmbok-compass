@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "DMBOK Compass RAG Architecture",
+    "subtitle": "Grounded question answering, corpus indexing, and evaluation on Google Cloud",
+    "output": ".archify/architecture-dmbok-compass-rag-20261010-134949/dmbok-compass-rag.html",
+    "quality_profile": "showcase",
+    "repository": {
+      "url": "https://github.com/issacamara/dmbok-compass.git",
+      "revision": "b8a82db3b786eb22e6f21e26f738cecbcf657355",
+      "link_mode": "web"
+    }
+  },
+  "components": [
+    { "id": "user", "type": "external", "label": "Approved user", "sublabel": "Question / answer session", "pos": [40, 300], "size": [150, 64], "sources": [{ "path": "documents/ARCHITECTURE.md", "line": 80, "end_line": 80 }] },
+    { "id": "web", "type": "frontend", "label": "Web application", "sublabel": "React + TypeScript · Firebase Hosting", "pos": [330, 300], "size": [190, 68], "sources": [{ "path": "documents/ARCHITECTURE.md", "line": 122, "end_line": 127 }, { "path": "web/src/questions/QuestionPanel.tsx", "line": 39, "end_line": 62 }] },
+    { "id": "auth", "type": "security", "label": "Firebase Authentication", "sublabel": "Email/password · verified identity", "pos": [330, 160], "size": [190, 68], "sources": [{ "path": "documents/ARCHITECTURE.md", "line": 150, "end_line": 155 }, { "path": "backend/app/main.py", "line": 142, "end_line": 149 }] },
+    { "id": "api", "type": "backend", "label": "Cloud Run API", "sublabel": "FastAPI modular monolith", "pos": [600, 300], "size": [200, 72], "tag": "authorize · quota · orchestrate", "sources": [{ "path": "documents/ARCHITECTURE.md", "line": 129, "end_line": 134 }, { "path": "backend/app/main.py", "line": 219, "end_line": 234 }] },
+    { "id": "retrieval", "type": "backend", "label": "RAG answer pipeline", "sublabel": "retrieve → classify evidence → cite", "pos": [880, 300], "size": [205, 72], "sources": [{ "path": "backend/app/answering/pipeline.py", "line": 123, "end_line": 225 }, { "path": "documents/ARCHITECTURE.md", "line": 228, "end_line": 230 }] },
+    { "id": "firestore", "type": "database", "label": "Firestore", "sublabel": "Application data + active corpus", "pos": [760, 485], "size": [205, 72], "tag": "768-d vector index", "sources": [{ "path": "documents/ARCHITECTURE.md", "line": 157, "end_line": 162 }, { "path": "infra/terraform/firestore_vector.tf", "line": 1, "end_line": 19 }] },
+    { "id": "vertex", "type": "cloud", "label": "Vertex AI Embeddings", "sublabel": "gemini-embedding-001 · 768 dims", "pos": [1150, 300], "size": [210, 72], "sources": [{ "path": "documents/ARCHITECTURE.md", "line": 171, "end_line": 176 }, { "path": "backend/app/retrieval/search.py", "line": 27, "end_line": 58 }] },
+    { "id": "adapter", "type": "backend", "label": "Model adapter", "sublabel": "Provider-neutral generation contract", "pos": [1150, 155], "size": [210, 68], "sources": [{ "path": "documents/ARCHITECTURE.md", "line": 143, "end_line": 148 }, { "path": "backend/model/openrouter.py", "line": 27, "end_line": 72 }] },
+    { "id": "models", "type": "external", "label": "OpenRouter models", "sublabel": "Primary + eligible-failure fallback", "pos": [1450, 155], "size": [205, 68], "sources": [{ "path": "documents/ARCHITECTURE.md", "line": 178, "end_line": 183 }, { "path": "backend/model/openrouter.py", "line": 22, "end_line": 24 }] },
+    { "id": "storage", "type": "cloud", "label": "Cloud Storage", "sublabel": "Versioned DMBOK PDF + artifacts", "pos": [250, 690], "size": [205, 70], "sources": [{ "path": "documents/ARCHITECTURE.md", "line": 164, "end_line": 169 }, { "path": "infra/terraform/storage.tf", "line": 1, "end_line": 19 }] },
+    { "id": "worker", "type": "backend", "label": "Cloud Run Jobs", "sublabel": "Ingestion + evaluation worker", "pos": [600, 690], "size": [215, 70], "tag": "stage · validate · activate", "sources": [{ "path": "documents/ARCHITECTURE.md", "line": 136, "end_line": 141 }, { "path": "backend/app/ingestion/job.py", "line": 20, "end_line": 41 }] },
+    { "id": "scheduler", "type": "cloud", "label": "Cloud Scheduler", "sublabel": "Authenticated job trigger", "pos": [600, 845], "size": [215, 64], "sources": [{ "path": "documents/ARCHITECTURE.md", "line": 232, "end_line": 232 }] },
+    { "id": "delivery", "type": "cloud", "label": "Delivery platform", "sublabel": "GitHub Actions · Artifact Registry · Terraform", "pos": [40, 845], "size": [360, 64], "sources": [{ "path": "documents/ARCHITECTURE.md", "line": 185, "end_line": 190 }, { "path": "infra/terraform/main.tf", "line": 94, "end_line": 102 }] },
+    { "id": "secrets", "type": "security", "label": "Secret Manager", "sublabel": "Runtime provider credentials", "pos": [1000, 690], "size": [210, 64], "sources": [{ "path": "documents/ARCHITECTURE.md", "line": 185, "end_line": 190 }, { "path": "backend/model/openrouter.py", "line": 47, "end_line": 56 }] },
+    { "id": "ops", "type": "cloud", "label": "Logging + Monitoring", "sublabel": "Allowlisted operational metadata", "pos": [1250, 690], "size": [210, 64], "sources": [{ "path": "documents/ARCHITECTURE.md", "line": 185, "end_line": 190 }, { "path": "backend/app/main.py", "line": 89, "end_line": 115 }] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "Google Cloud · europe-west1", "wraps": ["web", "api", "retrieval", "firestore", "worker", "storage", "scheduler", "delivery", "secrets", "ops"] },
+    { "kind": "security-group", "label": "Private application plane · service accounts only", "wraps": ["api", "retrieval", "firestore", "worker", "secrets", "ops"] }
+  ],
+  "connections": [
+    { "id": "user-web", "from": "user", "to": "web", "label": "HTTPS", "variant": "emphasis" },
+    { "id": "web-auth", "from": "web", "to": "auth", "label": "sign-in · verification", "variant": "security", "fromSide": "top", "toSide": "bottom" },
+    { "id": "web-api", "from": "web", "to": "api", "label": "Bearer token · JSON API", "variant": "emphasis" },
+    { "id": "auth-api", "from": "auth", "to": "api", "label": "verify identity + approval", "variant": "security" },
+    { "id": "api-rag", "from": "api", "to": "retrieval", "label": "question", "variant": "emphasis" },
+    { "id": "rag-firestore", "from": "retrieval", "to": "firestore", "label": "active corpus nearest-neighbor", "fromSide": "bottom", "toSide": "top", "labelDy": 58 },
+    { "id": "rag-vertex", "from": "retrieval", "to": "vertex", "label": "query vector", "fromSide": "right", "toSide": "left" },
+    { "id": "rag-adapter", "from": "retrieval", "to": "adapter", "label": "grounded prompt + passages" },
+    { "id": "adapter-models", "from": "adapter", "to": "models", "label": "generate", "variant": "emphasis" },
+    { "id": "models-adapter", "from": "models", "to": "adapter", "label": "result + usage", "variant": "dashed" },
+    { "id": "api-response", "from": "retrieval", "to": "web", "label": "answer · citations · ephemeral trace", "variant": "dashed" },
+    { "id": "storage-worker", "from": "storage", "to": "worker", "label": "source + manifests", "variant": "emphasis" },
+    { "id": "scheduler-worker", "from": "scheduler", "to": "worker", "label": "authenticated trigger", "variant": "security", "fromSide": "top", "toSide": "bottom" },
+    { "id": "worker-vertex", "from": "worker", "to": "vertex", "label": "document embeddings" },
+    { "id": "worker-firestore", "from": "worker", "to": "firestore", "label": "chunks + eval" },
+    { "id": "secrets-api", "from": "secrets", "to": "api", "label": "inject credential", "variant": "security" },
+    { "id": "api-ops", "from": "api", "to": "ops", "label": "safe metadata only", "variant": "dashed" },
+    { "id": "delivery-web", "from": "delivery", "to": "web", "label": "deploy", "variant": "dashed" },
+    { "id": "delivery-api", "from": "delivery", "to": "api", "label": "deploy", "variant": "dashed" }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "Live RAG path", "items": ["Firebase token and server-side approval gate every protected request", "Query embedding filters Firestore nearest-neighbor search to the active corpus", "Evidence policy returns an answer, qualified answer, or refusal with stored provenance"] },
+    { "dot": "emerald", "title": "Corpus lifecycle", "items": ["Cloud Run Job extracts, chunks, embeds, stages, validates, and activates an immutable version", "Cloud Storage remains the rebuild source; Firestore holds chunks and vectors", "Evaluation and release evidence are durable; production interaction content is not"] },
+    { "dot": "rose", "title": "Trust and operations", "items": ["Browser has no direct Firestore access; service accounts mediate backend and worker I/O", "OpenRouter fallback is limited to timeout, unavailable, and rate-limit failures", "Telemetry is allowlisted operational metadata only"] }
+  ]
+}

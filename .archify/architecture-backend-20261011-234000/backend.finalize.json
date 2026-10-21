@@ -1,0 +1,406 @@
+{
+  "schemaVersion": 1,
+  "ok": false,
+  "command": "finalize",
+  "status": "fail",
+  "type": "architecture",
+  "quality": "showcase",
+  "startedAt": "2026-10-11T05:57:54.137Z",
+  "specification": {
+    "path": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-backend-20261011-234000/candidate.json",
+    "sha256": "ee35f411bfef12c58f13d0c05233b7bcf39884adb3487622db4637ef4fa8e936",
+    "bytes": 5982
+  },
+  "artifact": {
+    "path": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-backend-20261011-234000/backend.html",
+    "sha256": "14d18cb16f1fd3f9508c5eb47ad43e33cc8c8d8e19aaa44f39c2714e960bbeef",
+    "bytes": 775095
+  },
+  "stages": {
+    "validate": {
+      "status": "pass",
+      "exitCode": 0,
+      "durationMs": null,
+      "execution": "embedded-in-deliver",
+      "command": [
+        "/opt/homebrew/Cellar/node/26.8.1/bin/node",
+        "/Users/issacamara/.codex/skills/archify/bin/archify.mjs",
+        "deliver",
+        "architecture",
+        "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-backend-20261011-234000/candidate.json",
+        "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-backend-20261011-234000/backend.html",
+        "--quality",
+        "showcase",
+        "--repo-root",
+        "/Users/issacamara/Developer/dmbok-compass",
+        "--json"
+      ],
+      "receipt": {
+        "schemaVersion": 1,
+        "ok": true,
+        "command": "validate",
+        "specification": {
+          "sha256": "ee35f411bfef12c58f13d0c05233b7bcf39884adb3487622db4637ef4fa8e936",
+          "bytes": 5982
+        },
+        "validation": {
+          "checksPassed": 9,
+          "checkCount": 9,
+          "compositionProfile": "showcase",
+          "compositionStatus": "pass",
+          "errors": 0,
+          "warnings": 0
+        }
+      }
+    },
+    "deliver": {
+      "status": "pass",
+      "exitCode": 0,
+      "durationMs": 395,
+      "command": [
+        "/opt/homebrew/Cellar/node/26.8.1/bin/node",
+        "/Users/issacamara/.codex/skills/archify/bin/archify.mjs",
+        "deliver",
+        "architecture",
+        "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-backend-20261011-234000/candidate.json",
+        "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-backend-20261011-234000/backend.html",
+        "--quality",
+        "showcase",
+        "--repo-root",
+        "/Users/issacamara/Developer/dmbok-compass",
+        "--json"
+      ],
+      "receipt": {
+        "schemaVersion": 1,
+        "receiptId": "a9ef8242-7991-443b-84a8-02a5f89864ca",
+        "ok": true,
+        "command": "deliver",
+        "type": "architecture",
+        "input": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-backend-20261011-234000/candidate.json",
+        "output": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-backend-20261011-234000/backend.html",
+        "specification": {
+          "sha256": "ee35f411bfef12c58f13d0c05233b7bcf39884adb3487622db4637ef4fa8e936",
+          "bytes": 5982
+        },
+        "artifact": {
+          "sha256": "14d18cb16f1fd3f9508c5eb47ad43e33cc8c8d8e19aaa44f39c2714e960bbeef",
+          "bytes": 775095
+        },
+        "validation": {
+          "checksPassed": 9,
+          "checkCount": 9,
+          "compositionProfile": "showcase",
+          "compositionStatus": "pass",
+          "errors": 0,
+          "warnings": 0
+        },
+        "evidence": {
+          "verified": true,
+          "repository": "https://github.com/issacamara/dmbok-compass",
+          "revision": "1dc3580948b7b7260b201b65d5aa323c4bdbed3e",
+          "references": 22
+        },
+        "update": {
+          "status": "unavailable",
+          "installedVersion": null,
+          "availableVersion": null,
+          "releaseNotes": null,
+          "checkedAt": null,
+          "source": null,
+          "noticeRequired": false,
+          "noticeText": null,
+          "reason": "disabled"
+        }
+      }
+    },
+    "check": {
+      "status": "pass",
+      "exitCode": 0,
+      "durationMs": 126,
+      "command": [
+        "/opt/homebrew/Cellar/node/26.8.1/bin/node",
+        "/Users/issacamara/.codex/skills/archify/bin/archify.mjs",
+        "check",
+        "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-backend-20261011-234000/backend.html",
+        "--require-provenance"
+      ],
+      "receipt": {
+        "ok": true,
+        "file": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-backend-20261011-234000/backend.html",
+        "artifact": {
+          "sha256": "14d18cb16f1fd3f9508c5eb47ad43e33cc8c8d8e19aaa44f39c2714e960bbeef",
+          "bytes": 775095
+        },
+        "checks": [
+          {
+            "name": "single_svg",
+            "ok": true,
+            "details": [
+              "found 1 <svg> block(s)"
+            ]
+          },
+          {
+            "name": "finite_svg",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "orthogonal_arrows",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "label_route_clearance",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "relationship_crossings",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "relationship_corridors",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "container_border_runs",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "route_rhythm",
+            "ok": true,
+            "details": []
+          },
+          {
+            "name": "legend_clearance",
+            "ok": true,
+            "details": []
+          }
+        ],
+        "composition": {
+          "schemaVersion": 1,
+          "profile": "showcase",
+          "status": "pass",
+          "summary": {
+            "errors": 0,
+            "warnings": 0
+          },
+          "metrics": {
+            "properCrossings": 0,
+            "resolvedCrossovers": 0,
+            "ambiguousCorridors": 0,
+            "arrowheadCollisions": 0,
+            "containerBorderRuns": 0,
+            "labelRouteClearanceIssues": 0,
+            "labelCanvasOverflowIssues": 0,
+            "minLabelRouteClearance": 20,
+            "desktopReadabilityIssues": 0,
+            "viewportHeightIssues": 0,
+            "minProjectedNodeTextPx": 6.297076023391813,
+            "maxBends": 3,
+            "routesOverSuggestedBends": 2,
+            "maxStretch": 1.097,
+            "routesOverSuggestedStretch": 0,
+            "minSegmentPx": 24,
+            "minInteriorSegmentPx": 111,
+            "shortSegmentCount": 0,
+            "shortEndpointSegmentCount": 0,
+            "shortInteriorSegmentCount": 0,
+            "microSegmentCount": 0
+          },
+          "suggestedLimits": {
+            "bendsPerRelationship": 2,
+            "stretch": 1.35,
+            "segmentPx": 16,
+            "microSegmentPx": 8
+          },
+          "routeReview": {
+            "crossings": [],
+            "detours": [
+              {
+                "relationship": {
+                  "id": "api-release",
+                  "from": "api",
+                  "to": "release",
+                  "label": "admin endpoints",
+                  "collectionIndex": 7,
+                  "artifactIndex": 8
+                },
+                "bends": 3,
+                "stretch": 1.097
+              },
+              {
+                "relationship": {
+                  "id": "ingest-store",
+                  "from": "ingest",
+                  "to": "firestore",
+                  "label": "stage → validate → activate",
+                  "collectionIndex": 11,
+                  "artifactIndex": 12
+                },
+                "bends": 3,
+                "stretch": 1
+              }
+            ]
+          },
+          "leadingSpace": {
+            "measured": true,
+            "emptyTopPx": 82,
+            "emptyTopRatio": 0.1,
+            "occupiedTop": 82,
+            "viewBoxTop": 0,
+            "canvasHeight": 816,
+            "typicalNodeHeight": 70,
+            "reviewSuggested": false
+          },
+          "desktopReadability": {
+            "budgetBasis": "recognized-declared-wide",
+            "readerContract": "declared-wide-v1",
+            "availableDiagramWidth": 1346,
+            "actualBudgetPx": 1346,
+            "actualReaderWidth": 1376,
+            "desiredReaderWidth": 1633.125,
+            "viewportCap": 1376,
+            "limit": "viewport-cap",
+            "requestedTargetPx": 7.5,
+            "requestedTargetMet": false,
+            "hardFloorPx": 6,
+            "hardFloorMet": true,
+            "minimumOwner": {
+              "kind": "edge",
+              "id": "client-api",
+              "from": "client",
+              "to": "api"
+            },
+            "minimumSourceTextPx": 8,
+            "minimumProjectedTextPx": 6.297076023391813,
+            "semanticTextCount": 36
+          },
+          "issues": []
+        },
+        "provenance": "current",
+        "deliveryReceiptId": "a9ef8242-7991-443b-84a8-02a5f89864ca"
+      }
+    },
+    "browser-check": {
+      "status": "fail",
+      "exitCode": 1,
+      "durationMs": 15,
+      "command": [
+        "/opt/homebrew/Cellar/node/26.8.1/bin/node",
+        "/Users/issacamara/.codex/skills/archify/bin/archify.mjs",
+        "browser-check",
+        "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-backend-20261011-234000/backend.html",
+        "--json",
+        "--require-provenance"
+      ],
+      "execution": "in-process",
+      "receipt": {
+        "schemaVersion": 1,
+        "ok": false,
+        "command": "browser-check",
+        "evidenceKind": "automated-browser",
+        "status": "fail",
+        "visualReview": "not-requested",
+        "provenance": "current",
+        "deliveryReceiptId": "a9ef8242-7991-443b-84a8-02a5f89864ca",
+        "artifact": {
+          "path": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-backend-20261011-234000/backend.html",
+          "sha256": "14d18cb16f1fd3f9508c5eb47ad43e33cc8c8d8e19aaa44f39c2714e960bbeef",
+          "bytes": 775095
+        },
+        "state": {
+          "detail": "read",
+          "motion": "still"
+        },
+        "chrome": {
+          "status": "available",
+          "executable": "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+        },
+        "diagnostics": [
+          {
+            "code": "viewer/browser-check-runtime",
+            "severity": "error",
+            "message": "browser-check could not complete its Chrome inspection.",
+            "subject": {
+              "artifact": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-backend-20261011-234000/backend.html"
+            },
+            "evidence": {
+              "reason": "Chrome DevTools read pipe failed: stream ended\nChrome process: still running.\nChrome transport: Node v26.8.1, libuv 1.52.1, darwin; pid=84456, exitCode=null, signalCode=null.\nChrome read pipe: readable=false, ended=true, destroyed=false, receivedBytes=0, messages=0, bufferedBytes=0.\nChrome write pipe: writable=true, ended=false, destroyed=false, completedWrites=1, writtenBytes=50, bufferedBytes=0."
+            },
+            "supportedFixes": [
+              "resolve the reported Chrome inspection error, then rerun browser-check"
+            ]
+          }
+        ],
+        "containment": {
+          "status": "fail",
+          "policy": "fit-or-reader-declared-readable-vertical-scroll",
+          "viewports": []
+        },
+        "themeStates": {
+          "status": "fail",
+          "viewports": []
+        },
+        "readability": {
+          "status": "fail",
+          "minimumProjectedNodeTextPx": 6,
+          "viewports": []
+        },
+        "viewerChrome": {
+          "status": "fail",
+          "viewports": []
+        },
+        "captures": {
+          "status": "not-requested",
+          "screenshots": [],
+          "contactSheet": null
+        },
+        "sidecars": {
+          "receipt": "backend.browser-check.json",
+          "files": []
+        },
+        "error": "Chrome DevTools read pipe failed: stream ended\nChrome process: still running.\nChrome transport: Node v26.8.1, libuv 1.52.1, darwin; pid=84456, exitCode=null, signalCode=null.\nChrome read pipe: readable=false, ended=true, destroyed=false, receivedBytes=0, messages=0, bufferedBytes=0.\nChrome write pipe: writable=true, ended=false, destroyed=false, completedWrites=1, writtenBytes=50, bufferedBytes=0."
+      }
+    }
+  },
+  "diagnostics": [
+    {
+      "code": "viewer/browser-check-runtime",
+      "severity": "error",
+      "message": "browser-check could not complete its Chrome inspection.",
+      "subject": {
+        "artifact": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-backend-20261011-234000/backend.html"
+      },
+      "evidence": {
+        "reason": "Chrome DevTools read pipe failed: stream ended\nChrome process: still running.\nChrome transport: Node v26.8.1, libuv 1.52.1, darwin; pid=84456, exitCode=null, signalCode=null.\nChrome read pipe: readable=false, ended=true, destroyed=false, receivedBytes=0, messages=0, bufferedBytes=0.\nChrome write pipe: writable=true, ended=false, destroyed=false, completedWrites=1, writtenBytes=50, bufferedBytes=0."
+      },
+      "supportedFixes": [
+        "resolve the reported Chrome inspection error, then rerun browser-check"
+      ]
+    }
+  ],
+  "evidence": {
+    "receipt": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-backend-20261011-234000/backend.finalize.json",
+    "summaryReceipt": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-backend-20261011-234000/backend.finalize-summary.json",
+    "browserCheckReceipt": "/Users/issacamara/Developer/dmbok-compass/.archify/architecture-backend-20261011-234000/backend.browser-check.json"
+  },
+  "visualReview": "not-requested",
+  "failedStage": "browser-check",
+  "finishedAt": "2026-10-11T05:57:54.885Z",
+  "durationMs": 747,
+  "update": {
+    "status": "unavailable",
+    "installedVersion": null,
+    "availableVersion": null,
+    "releaseNotes": null,
+    "checkedAt": null,
+    "source": null,
+    "noticeRequired": false,
+    "noticeText": null,
+    "reason": "cache-unavailable"
+  }
+}

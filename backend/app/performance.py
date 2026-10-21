@@ -18,6 +18,43 @@ class RequestSample:
     outcome: str | None
     model: str | None
     error_class: str | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    total_tokens: int | None = None
+
+
+FUNCTIONAL_OUTCOMES = frozenset({"answer", "qualified", "refusal", "evidence_refusal"})
+
+
+def is_functional_success(sample: RequestSample) -> bool:
+    """Return whether a complete typed response is a functional success."""
+
+    return 200 <= sample.status_code < 300 and sample.outcome in FUNCTIONAL_OUTCOMES
+
+
+def _outcome_counts(samples: Iterable[RequestSample]) -> dict[str, int]:
+    counts = {outcome: 0 for outcome in (
+        "answer", "qualified", "refusal", "evidence_refusal", "operational_error",
+    )}
+    for sample in samples:
+        if sample.outcome in counts:
+            counts[sample.outcome] += 1
+    return counts
+
+
+def _usage_summary(samples: Iterable[RequestSample]) -> dict[str, object]:
+    values = list(samples)
+    known = [sample for sample in values if sample.input_tokens is not None and sample.output_tokens is not None]
+    input_tokens = sum(sample.input_tokens or 0 for sample in known)
+    output_tokens = sum(sample.output_tokens or 0 for sample in known)
+    return {
+        "status": "unknown" if not known else "complete" if len(known) == len(values) else "partial",
+        "known_request_count": len(known),
+        "unknown_request_count": len(values) - len(known),
+        "input_tokens": input_tokens if known else None,
+        "output_tokens": output_tokens if known else None,
+        "total_tokens": input_tokens + output_tokens if known else None,
+    }
 
 
 def percentile(values: Iterable[float], percentile_value: float) -> float:
@@ -84,38 +121,58 @@ def build_report(
     *,
     threshold_ms: float,
     daily_requests: int,
-    provider_cost_eur: float,
+    provider_cost_eur: float | None,
     gcp_cost_eur: float,
     gcp_budget_eur: float,
     assumptions: dict[str, object],
+    candidate_identity: dict[str, str] | None = None,
 ) -> dict[str, object]:
     """Create a JSON-safe release-evidence report with no request content."""
 
-    successful = [sample for sample in samples if 200 <= sample.status_code < 300]
+    successful = [sample for sample in samples if is_functional_success(sample)]
     fallback_model = assumptions.get("fallback_model")
     fallback = [sample for sample in successful if sample.model == fallback_model]
-    failed = [sample for sample in samples if sample not in successful]
+    failed = [sample for sample in samples if not is_functional_success(sample)]
     overall = latency_summary(successful)
+    outcome_counts = _outcome_counts(samples)
+    usage = _usage_summary(samples)
+    answer_success_count = outcome_counts["answer"] + outcome_counts["qualified"]
+    within_threshold_count = sum(sample.duration_ms <= threshold_ms for sample in successful)
+    provider_cost_known = provider_cost_eur is not None and usage["status"] == "complete"
+    combined_forecast = (
+        round(provider_cost_eur + gcp_cost_eur, 6) if provider_cost_eur is not None else None
+    )
     return {
         "schema_version": "performance-evidence-v1",
         "contract": "Versioned performance report linked to release evidence.",
         "request_count": len(samples),
         "successful_count": len(successful),
+        "functional_success_count": len(successful),
+        "answer_success_count": answer_success_count,
         "failed_count": len(failed),
+        "operational_error_count": len(failed),
+        "outcome_counts": outcome_counts,
         "user_count": len({sample.user_index for sample in samples}),
         "threshold_ms": threshold_ms,
         "normal_mix": overall,
         "fallback_mix": latency_summary(fallback),
+        "within_threshold_count": within_threshold_count,
+        "within_threshold_rate": round(within_threshold_count / len(successful), 6) if successful else None,
+        "usage": usage,
+        "candidate_identity": candidate_identity,
         "passed": bool(successful)
         and not failed
         and overall["p95_ms"] <= threshold_ms,
         "cost_envelope": {
             "daily_requests": daily_requests,
             "provider_forecast_eur_per_month": provider_cost_eur,
+            "provider_cost_status": "known" if provider_cost_known else "unknown",
             "gcp_forecast_eur_per_month": gcp_cost_eur,
-            "combined_forecast_eur_per_month": round(provider_cost_eur + gcp_cost_eur, 6),
+            "combined_forecast_eur_per_month": combined_forecast,
             "gcp_budget_eur_per_month": gcp_budget_eur,
-            "combined_forecast_within_gcp_budget": provider_cost_eur + gcp_cost_eur <= gcp_budget_eur,
+            "combined_forecast_within_gcp_budget": (
+                combined_forecast is not None and combined_forecast <= gcp_budget_eur
+            ),
         },
         "assumptions": assumptions,
     }

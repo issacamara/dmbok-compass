@@ -12,7 +12,15 @@ from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-from app.contracts.api import ContractModel, ModelAttempt, Outcome
+from app.contracts.api import (
+    CandidateIdentity,
+    ContractModel,
+    EvaluationCase,
+    RetrievalResult,
+    RuntimeSettings,
+    ModelAttempt,
+    Outcome,
+)
 
 
 class Passage(BaseModel):
@@ -119,6 +127,27 @@ class GenerationError(Exception):
 class ModelAdapter(Protocol):
     async def generate(self, request: GenerationRequest) -> GenerationResult:
         """Generate one candidate from ephemeral request data."""
+
+
+class RetrievalAdapter(Protocol):
+    """Candidate-pinned retrieval boundary that fake consumers can implement."""
+
+    async def retrieve(self, candidate: CandidateIdentity, query: str) -> RetrievalResult:
+        """Return ordered evidence metadata without owning storage internals."""
+
+
+class EvaluationCaseRepository(Protocol):
+    """Repository boundary for evaluator-authored cases."""
+
+    async def get_case(self, case_id: str) -> EvaluationCase | None:
+        """Resolve one case without exposing a concrete persistence adapter."""
+
+
+class RuntimeSettingsProvider(Protocol):
+    """Reference-only runtime configuration boundary."""
+
+    def settings(self) -> RuntimeSettings:
+        """Return settings references; never return secret material."""
 
 
 def parse_candidate(payload: object) -> GenerationCandidate:

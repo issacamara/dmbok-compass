@@ -102,3 +102,13 @@ variable "secret_names" {
     error_message = "Secret names must use Secret Manager's supported characters and length."
   }
 }
+
+variable "runtime_secret_version" {
+  description = "Pinned Secret Manager version shared by the API and evaluation job runtime."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[1-9][0-9]*$", trimspace(var.runtime_secret_version)))
+    error_message = "runtime_secret_version must be a positive Secret Manager version number; latest is not allowed."
+  }
+}

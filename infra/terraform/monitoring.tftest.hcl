@@ -5,6 +5,8 @@ run "monitoring_contract" {
     project_id         = "dmbok-compass-dev"
     billing_account_id = "000000-000000-000000"
     corpus_bucket_name = "dmbok-compass-dev-corpus"
+    hosting_site_id = "dmbok-compass-dev"
+    runtime_secret_version = "1"
   }
 
   assert {

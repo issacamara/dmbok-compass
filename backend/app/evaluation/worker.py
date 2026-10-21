@@ -114,6 +114,7 @@ class EvaluationAnswerEvaluator:
             retrieved_chunk_ids=retrieved,
             cited_chunk_ids=cited,
             scorer_version=self._scorer_version,
+            operational_error=response.error is not None,
         )
         return EvaluationOutcome(
             retrieval_success=score.retrieval_success,

@@ -43,17 +43,20 @@ def score_assessment(
     retrieved_chunk_ids: set[str],
     cited_chunk_ids: set[str],
     scorer_version: str,
+    operational_error: bool = False,
 ) -> SemanticScore:
-    """Return only human-reviewed semantic evidence, never output proxies.
+    """Return independent retrieval and human-reviewed semantic evidence.
 
-    Missing, non-approved, stale, or response-mismatched assessments count as
-    failures in every semantic gate.  This keeps incomplete review evidence
-    from producing a passing release report.
+    Retrieval is scored from approved support IDs and ranked retrieval IDs
+    before validating the generated response.  Missing, non-approved, stale,
+    or response-mismatched assessments still fail the semantic gates without
+    turning a correct retrieval into a retrieval miss.
     """
 
+    retrieval_success = _retrieval_success(annotation, retrieved_chunk_ids)
     assessment = annotation.semantic_assessment if annotation is not None else None
     if not _is_valid(assessment, annotation, outcome, answer_text, cited_chunk_ids, scorer_version):
-        return SemanticScore(False, False, False, False, False, SEMANTIC_METRICS)
+        return SemanticScore(retrieval_success, False, False, False, False, SEMANTIC_METRICS)
 
     assert annotation is not None
     assert assessment is not None
@@ -64,7 +67,7 @@ def score_assessment(
             grounded=False,
             citation_correct=False,
             answer_quality=False,
-            refusal_correct=outcome == "refusal",
+            refusal_correct=outcome == "refusal" and not operational_error,
             applicable_metrics=frozenset({"refusal_correctness"}),
         )
 
@@ -73,13 +76,22 @@ def score_assessment(
     if expected:
         applicable.add("retrieval_success")
     return SemanticScore(
-        retrieval_success=bool(retrieved_chunk_ids & expected),
+        retrieval_success=retrieval_success,
         grounded=assessment.claim_support is True,
         citation_correct=assessment.claim_citation_support is True,
         answer_quality=assessment.rubric_passed is True,
         refusal_correct=False,
         applicable_metrics=frozenset(applicable),
     )
+
+
+def _retrieval_success(annotation: GoldAnnotation | None, retrieved_chunk_ids: set[str]) -> bool:
+    """Score retrieval from reviewed support IDs, independently of generation."""
+
+    if annotation is None or annotation.review_status != "approved":
+        return False
+    expected = set(annotation.relevant_chunk_ids)
+    return bool(expected and retrieved_chunk_ids & expected)
 
 
 def _is_valid(

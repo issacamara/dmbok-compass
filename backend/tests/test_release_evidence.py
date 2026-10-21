@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from app.release import ReleaseEvidenceError, validate_release_evidence
+from app.release import ReleaseEvidenceError, validate_durable_promotion, validate_release_evidence
 
 
 def evidence_document() -> dict:
@@ -116,3 +116,43 @@ def test_candidate_bundle_records_blockers_without_claiming_promotion() -> None:
         "recovery", "performance", "cost", "rollback", "decisions",
     }
     assert result.exceptions == ()
+
+
+def test_durable_promotion_requires_exact_registry_and_delivery_identity() -> None:
+    document = evidence_document()
+    decision = {
+        "decision": {
+            "release_id": document["release_id"],
+            "evaluation_run_id": "eval-1",
+            "dataset_version_id": "dataset-v1",
+            "corpus_version_id": "corpus-v1",
+            "configuration_version_id": "config-v1",
+            "provider_version_id": "openrouter-v1",
+            "model_version_id": "model-v1",
+            "scorer_version_id": "scorer-v1",
+            "gate_report_ids": ["gate-1"],
+            "decision": "approved",
+        },
+        "actor_user_id": "sponsor-1",
+        "decided_at": "2026-10-21T12:00:00+00:00",
+    }
+    manifest = {
+        **decision["decision"],
+        "gate_report_ids": ["gate-1"],
+    }
+    delivery = {
+        "commit": document["artifact"]["commit"],
+        "api_digest": document["artifact"]["api_digest"],
+        "frontend_digest": document["artifact"]["frontend_digest"],
+        "serving_binding": {"corpus_version_id": "corpus-v1"},
+    }
+
+    validate_durable_promotion(
+        document, manifest=manifest, decision_record=decision, delivery_manifest=delivery
+    )
+
+    delivery["commit"] = "different-commit"
+    with pytest.raises(ReleaseEvidenceError, match="delivery commit"):
+        validate_durable_promotion(
+            document, manifest=manifest, decision_record=decision, delivery_manifest=delivery
+        )

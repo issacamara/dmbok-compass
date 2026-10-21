@@ -12,6 +12,9 @@ from langchain_text_splitters import CharacterTextSplitter
 
 
 _WHITESPACE = re.compile(r"\s+")
+MAX_CHUNK_CHARACTERS = 5_000
+MAX_SECTION_CHARACTERS = 500
+SUBDIVISION_ALGORITHM_VERSION = "fixed-character-window-v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,8 +75,12 @@ def chunk_pages(
         documents = splitter.split_documents(
             [Document(page_content=normalized, metadata={"page": source_page.page})]
         )
-        for ordinal, document in enumerate(documents):
-            text = document.page_content
+        subdivisions = tuple(
+            subdivision
+            for document in documents
+            for subdivision in _subdivide(document.page_content)
+        )
+        for ordinal, text in enumerate(subdivisions):
             content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
             chunks.append(
                 TextChunk(
@@ -98,3 +105,16 @@ def _validate_page(source_page: SourcePage) -> None:
         raise ValueError("page must be positive")
     if not source_page.section or not source_page.section.strip():
         raise ValueError("section must be non-empty")
+    if len(source_page.section.strip()) > MAX_SECTION_CHARACTERS:
+        raise ValueError(f"section must be at most {MAX_SECTION_CHARACTERS} characters")
+
+
+def _subdivide(text: str) -> tuple[str, ...]:
+    """Bound chunk text without dropping content or crossing source pages."""
+
+    if not text:
+        return ()
+    return tuple(
+        text[start : start + MAX_CHUNK_CHARACTERS]
+        for start in range(0, len(text), MAX_CHUNK_CHARACTERS)
+    )

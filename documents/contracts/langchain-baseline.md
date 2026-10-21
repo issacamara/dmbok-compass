@@ -17,7 +17,7 @@ from `python:3.11-slim@sha256:e88e9763f943ec1834f992a4b51e0f24500486803e8bc534e5
 
 | Artifact | SHA-256 |
 | --- | --- |
-| `backend/requirements-compat.lock` | `4b14a82ce8542173da5bec0e541110c868339f881be8dca4abd92a4de8b66784` |
+| `backend/requirements-compat.lock` | `dcf7e39df74d620d29ea53e11c23e0bde91ad3e279ed8dbfa9470a9334823b00` |
 | `langchain_google_firestore-0.5.0.post2-py3-none-any.whl` | `9ced9b491908b453a31a4b2598c1ec5fbbddf106dff868adcfe36bd5e60124c2` |
 
 The image is CI evidence only; it is not a published production artifact.

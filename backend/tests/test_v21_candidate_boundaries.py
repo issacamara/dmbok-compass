@@ -101,3 +101,16 @@ def test_release_evidence_artifacts_preserve_exact_binding_and_block_unknown_liv
     assert "No operational error receives success credit" in evidence
     assert "Status: **blocked**" in evidence
     assert "dense-only" in evidence
+
+
+def test_release_recovery_rehearsal_preserves_the_candidate_tuple_and_fails_closed() -> None:
+    rehearsal = (RELEASE_DIR / "release-recovery-rehearsal.md").read_text()
+
+    assert "documents/release/v2.1/retrieval-report.json" in rehearsal
+    assert "documents/release/langchain/release-evidence.json#artifact" in rehearsal
+    assert "documents/release/langchain/release-evidence.json#evaluation" in rehearsal
+    assert "documents/release/langchain/release-evidence.json#release_decision" in rehearsal
+    assert "scripts/recovery/verify_langchain_restore.py" in rehearsal
+    assert "not promotable" in rehearsal
+    assert "eleven evidence sections as `blocked`" in rehearsal
+    assert "release decision is `pending`" in rehearsal

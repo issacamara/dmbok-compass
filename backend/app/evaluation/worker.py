@@ -25,6 +25,8 @@ from app.evaluation.job import (
     EvaluationOutcome,
     EvaluationRunError,
     EvaluationRunStore,
+    EvaluationStageStore,
+    FirestoreEvaluationStageStore,
     EvaluationInterrupted,
     EvaluationWorker,
 )
@@ -81,6 +83,7 @@ def execute_run(
     runs: EvaluationRunStore,
     evaluate: Callable[[str], EvaluationOutcome],
     termination_requested: Callable[[], bool] | None = None,
+    stages: EvaluationStageStore | None = None,
 ) -> None:
     """Reload the run-pinned generation and persist its terminal outcome."""
 
@@ -91,7 +94,7 @@ def execute_run(
     if dataset is None:
         runs.update(run.model_copy(update={"status": "failed", "error": "evaluation dataset is unavailable"}))
         return
-    EvaluationWorker(runs).execute(
+    EvaluationWorker(runs, stages=stages).execute(
         run_id, dataset, evaluate, termination_requested=termination_requested
     )
 
@@ -141,6 +144,7 @@ def main() -> None:
     client = firestore.Client(project=project)
     datasets = FirestoreEvaluationGenerationStore(client)
     runs = FirestoreEvaluationRunStore(client)
+    stages = FirestoreEvaluationStageStore(client)
     run = runs.get(run_id)
     if run is None:
         raise EvaluationRunError("unknown evaluation run")
@@ -153,6 +157,7 @@ def main() -> None:
                 runs=runs,
                 evaluate=lambda _: _unavailable(),
                 termination_requested=termination_requested.is_set,
+                stages=stages,
             )
             return
         execute_run(
@@ -163,6 +168,7 @@ def main() -> None:
                 dataset, _pinned_answerer(project, run), scorer_version=run.candidate_snapshot.scorer_version
             ),
             termination_requested=termination_requested.is_set,
+            stages=stages,
         )
     except EvaluationInterrupted:
         print(json.dumps({"event": "dmbok_evaluation_interrupted", "exit_code": 1}))

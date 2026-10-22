@@ -8,7 +8,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
-from app.contracts import CorpusServingBinding, EvaluationCandidateSnapshot
+from app.contracts import CandidateIdentity, CorpusServingBinding, EvaluationCandidateSnapshot
 from app.settings import RuntimeConfiguration
 from app.corpus.embedding import create_vertex_embeddings
 from app.corpus.indexing import (
@@ -17,6 +17,8 @@ from app.corpus.indexing import (
     create_vector_store,
 )
 from app.retrieval.search import FirestorePassageRetriever
+from app.retrieval.hybrid import HybridRetriever, HybridStrategy
+from app.retrieval.lexical import LexicalIndex
 from model.fallback import FallbackAdapter
 from model.gemini import create_gemini_adapter
 from model.langchain import enforce_private_langchain_runtime
@@ -77,6 +79,22 @@ class LangChainRagFactory:
 
     def retriever(self) -> FirestorePassageRetriever:
         return FirestorePassageRetriever(self._vector_store)
+
+    def experimental_hybrid_retriever(
+        self,
+        lexical_index: LexicalIndex,
+        candidate: CandidateIdentity,
+        *,
+        strategy: HybridStrategy = HybridStrategy(),
+    ) -> HybridRetriever:
+        """Build the opt-in experiment without changing dense serving."""
+
+        return HybridRetriever(
+            self.retriever().retrieve,
+            lexical_index,
+            candidate,
+            strategy=strategy,
+        )
 
     def retriever_for_binding(self, binding: CorpusServingBinding) -> FirestorePassageRetriever:
         """Create a native store against one immutable serving binding."""

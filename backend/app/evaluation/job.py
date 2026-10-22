@@ -5,13 +5,23 @@ from __future__ import annotations
 from copy import deepcopy
 from hashlib import sha256
 from threading import RLock
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
+import dataclasses
 from dataclasses import dataclass
 from collections.abc import Callable
 
 from google.api_core.exceptions import AlreadyExists
 
-from app.contracts import EvaluationCandidateSnapshot, EvaluationDataset, EvaluationItemResult, EvaluationMetric, EvaluationReportEligibility, EvaluationRun
+from app.contracts import (
+    EvaluationCandidateSnapshot,
+    EvaluationDataset,
+    EvaluationItemResult,
+    EvaluationMetric,
+    EvaluationReportEligibility,
+    EvaluationRun,
+    RetrievalResult,
+)
+from app.contracts.api import AnswerOutcomeKind
 from app.evaluation.dataset import EvaluationDatasetStore
 
 
@@ -23,10 +33,97 @@ class EvaluationInterrupted(RuntimeError):
     """Raised when a worker receives termination before a run completes."""
 
 
+class EvaluationStageError(EvaluationRunError):
+    """A typed stage failure that can retain retrieval evidence."""
+
+    def __init__(self, message: str, *, retrieval: RetrievalResult | None = None) -> None:
+        super().__init__(message)
+        self.retrieval = retrieval
+
+
+class EvaluationReviewError(EvaluationRunError):
+    """Raised when an assessment cannot bind to the exact generated output."""
+
+
 class EvaluationRunStore(Protocol):
     def create_or_get(self, run: EvaluationRun) -> EvaluationRun: ...
     def get(self, run_id: str) -> EvaluationRun | None: ...
     def update(self, run: EvaluationRun) -> EvaluationRun: ...
+
+
+AssessmentStatus = Literal["awaiting_review", "reviewed", "inapplicable"]
+
+
+@dataclass(frozen=True)
+class EvaluationItemStage:
+    """Durable, content-free state for the independent stages of one item."""
+
+    run_id: str
+    item_id: str
+    retrieval: RetrievalResult | None = None
+    retrieval_status: Literal["pending", "running", "succeeded", "failed", "unavailable"] = "pending"
+    generation_status: Literal["pending", "running", "succeeded", "failed", "unavailable"] = "pending"
+    generation_outcome: AnswerOutcomeKind | None = None
+    assessment_status: AssessmentStatus = "awaiting_review"
+    output_handle: str | None = None
+    output_digest: str | None = None
+    operational_error: str | None = None
+    retrieval_success: bool = False
+    grounded: bool = False
+    citation_correct: bool = False
+    answer_quality: bool = False
+    refusal_correct: bool = False
+    response_time_ms: float = 0.0
+
+    @property
+    def ready_for_finalization(self) -> bool:
+        return (
+            self.assessment_status in {"reviewed", "inapplicable"}
+            and self.retrieval_status != "failed"
+            and self.generation_status != "failed"
+            and self.operational_error is None
+        )
+
+
+class EvaluationStageStore(Protocol):
+    def get(self, run_id: str, item_id: str) -> EvaluationItemStage | None: ...
+    def update(self, stage: EvaluationItemStage) -> EvaluationItemStage: ...
+
+
+class InMemoryEvaluationStageStore:
+    """Restart-safe seam used by tests and local workers."""
+
+    def __init__(self) -> None:
+        self._stages: dict[tuple[str, str], EvaluationItemStage] = {}
+        self._lock = RLock()
+
+    def get(self, run_id: str, item_id: str) -> EvaluationItemStage | None:
+        with self._lock:
+            return deepcopy(self._stages.get((run_id, item_id)))
+
+    def update(self, stage: EvaluationItemStage) -> EvaluationItemStage:
+        with self._lock:
+            self._stages[(stage.run_id, stage.item_id)] = stage
+            return deepcopy(stage)
+
+
+class FirestoreEvaluationStageStore:
+    """Persist item stages separately from the public run summary."""
+
+    collection_id = "evaluation_run_stages"
+
+    def __init__(self, client: Any) -> None:
+        self.stages = client.collection(self.collection_id)
+
+    def get(self, run_id: str, item_id: str) -> EvaluationItemStage | None:
+        snapshot = self.stages.document(_stage_id(run_id, item_id)).get()
+        if not snapshot.exists:
+            return None
+        return _stage_from_payload(snapshot.to_dict())
+
+    def update(self, stage: EvaluationItemStage) -> EvaluationItemStage:
+        self.stages.document(_stage_id(stage.run_id, stage.item_id)).set(_stage_payload(stage))
+        return stage
 
 
 class ActiveEvaluationDatasetStore(EvaluationDatasetStore, Protocol):
@@ -145,13 +242,29 @@ class EvaluationOutcome:
     applicable_metrics: frozenset[str] = frozenset({
         "retrieval_success", "grounded_claims", "citation_correctness", "answer_quality", "refusal_correctness",
     })
+    retrieval: RetrievalResult | None = None
+    generation_status: Literal["succeeded", "failed", "unavailable"] = "succeeded"
+    generation_outcome: AnswerOutcomeKind | None = "answer"
+    output_handle: str | None = None
+    output_digest: str | None = None
+    # Existing pure outcomes are already assessed. Real generated outputs set
+    # this to awaiting_review until an exact-digest review is submitted.
+    assessment_status: AssessmentStatus = "reviewed"
+    operational_error: str | None = None
 
 
 class EvaluationWorker:
     """Execute one dispatched run without persisting interaction content."""
 
-    def __init__(self, runs: EvaluationRunStore, *, response_time_threshold_ms: float = 15_000) -> None:
+    def __init__(
+        self,
+        runs: EvaluationRunStore,
+        stages: EvaluationStageStore | None = None,
+        *,
+        response_time_threshold_ms: float = 15_000,
+    ) -> None:
         self.runs = runs
+        self.stages = stages or InMemoryEvaluationStageStore()
         self.response_time_threshold_ms = response_time_threshold_ms
 
     def execute(
@@ -188,22 +301,30 @@ class EvaluationWorker:
             for item_id in run.selected_item_ids:
                 if termination_requested is not None and termination_requested():
                     raise EvaluationInterrupted("evaluation interrupted before next item")
-                results.append(evaluate(item_id))
+                try:
+                    outcome = evaluate(item_id)
+                except Exception as exc:
+                    previous = self.stages.get(run_id, item_id)
+                    base = previous or EvaluationItemStage(run_id=run_id, item_id=item_id)
+                    retrieval = getattr(exc, "retrieval", None)
+                    self.stages.update(dataclasses.replace(
+                        base,
+                        retrieval=retrieval or base.retrieval,
+                        retrieval_status="succeeded" if (retrieval or base.retrieval) is not None else base.retrieval_status,
+                        generation_status="failed",
+                        assessment_status="awaiting_review",
+                        operational_error=type(exc).__name__,
+                    ))
+                    raise
+                self.stages.update(_stage_from_outcome(run_id, item_id, outcome))
+                results.append(outcome)
             if termination_requested is not None and termination_requested():
                 raise EvaluationInterrupted("evaluation interrupted after item")
-            metrics = [
-                _metric("retrieval_success", results, lambda result: result.retrieval_success, threshold=90),
-                _metric("grounded_claims", results, lambda result: result.grounded, threshold=95),
-                _metric("citation_correctness", results, lambda result: result.citation_correct, threshold=95),
-                _metric("answer_quality", results, lambda result: result.answer_quality, threshold=85),
-                _metric("refusal_correctness", results, lambda result: result.refusal_correct, threshold=95),
-                _metric(
-                    "response_time",
-                    results,
-                    lambda result: result.response_time_ms <= self.response_time_threshold_ms,
-                    threshold=95,
-                ),
-            ]
+            metrics = (
+                []
+                if any(result.assessment_status == "awaiting_review" for result in results)
+                else _metrics(results, self.response_time_threshold_ms)
+            )
             item_results = [
                 EvaluationItemResult(
                     item_id=item_id,
@@ -232,6 +353,86 @@ class EvaluationWorker:
             return self.runs.update(
                 running.model_copy(update={"status": "failed", "error": f"{type(exc).__name__}: evaluation failed"})
             )
+
+    def finalize(
+        self,
+        run_id: str,
+        *,
+        cleanup_output: Callable[[str], None] | None = None,
+    ) -> EvaluationRun:
+        """Recompute all six gates after exact-output review is complete.
+
+        The worker never infers a review from a raw answer. Every selected
+        item must have a durable stage and a matching reviewed assessment;
+        otherwise the run remains ineligible and no raw output is cleaned up.
+        """
+
+        run = self.runs.get(run_id)
+        if run is None:
+            raise EvaluationRunError("unknown evaluation run")
+        stages = [self.stages.get(run_id, item_id) for item_id in run.selected_item_ids]
+        if any(stage is None for stage in stages):
+            return self._ineligible(run, "evaluation assessment is incomplete")
+        resolved = [stage for stage in stages if stage is not None]
+        if any(not stage.ready_for_finalization for stage in resolved):
+            return self._ineligible(run, "evaluation assessment is incomplete or operationally failed")
+
+        outcomes = [
+            EvaluationOutcome(
+                retrieval_success=stage.retrieval_success,
+                grounded=stage.grounded,
+                citation_correct=stage.citation_correct,
+                answer_quality=stage.answer_quality,
+                refusal_correct=stage.refusal_correct,
+                response_time_ms=stage.response_time_ms,
+                retrieval=stage.retrieval,
+                generation_status=stage.generation_status,
+                generation_outcome=stage.generation_outcome,
+                output_handle=stage.output_handle,
+                output_digest=stage.output_digest,
+                assessment_status=stage.assessment_status,
+                operational_error=stage.operational_error,
+            )
+            for stage in resolved
+        ]
+        metrics = _metrics(outcomes, self.response_time_threshold_ms)
+        if cleanup_output is not None:
+            for stage in resolved:
+                if stage.output_handle is not None:
+                    cleanup_output(stage.output_handle)
+        return self.runs.update(run.model_copy(update={"status": "completed", "metrics": metrics}))
+
+    def review_item(
+        self,
+        run_id: str,
+        item_id: str,
+        *,
+        output_digest: str,
+        assessment: EvaluationOutcome,
+    ) -> EvaluationItemStage:
+        """Bind one human assessment to the exact evaluator output digest."""
+
+        stage = self.stages.get(run_id, item_id)
+        if stage is None:
+            raise EvaluationReviewError("evaluation item stage is unavailable")
+        if stage.output_handle is None or stage.output_digest is None:
+            raise EvaluationReviewError("evaluation item has no reviewable output handle")
+        if output_digest != stage.output_digest:
+            raise EvaluationReviewError("assessment digest does not match the generated output")
+        reviewed = dataclasses.replace(
+            stage,
+            assessment_status="reviewed",
+            grounded=assessment.grounded,
+            citation_correct=assessment.citation_correct,
+            answer_quality=assessment.answer_quality,
+            refusal_correct=assessment.refusal_correct,
+        )
+        return self.stages.update(reviewed)
+
+    def _ineligible(self, run: EvaluationRun, error: str) -> EvaluationRun:
+        # Keep the run durable and content-free. Empty/old metrics cannot be
+        # mistaken for a finalized report by the existing release checks.
+        return self.runs.update(run.model_copy(update={"metrics": [], "error": error}))
 
 
 def select_items(dataset: EvaluationDataset, item_ids: list[str] | None) -> tuple[str, ...]:
@@ -360,6 +561,60 @@ def _metric(
         threshold=threshold,
         passed=denominator > 0 and percentage >= threshold,
     )
+
+
+def _metrics(results: list[EvaluationOutcome], response_time_threshold_ms: float) -> list[EvaluationMetric]:
+    return [
+        _metric("retrieval_success", results, lambda result: result.retrieval_success, threshold=90),
+        _metric("grounded_claims", results, lambda result: result.grounded, threshold=95),
+        _metric("citation_correctness", results, lambda result: result.citation_correct, threshold=95),
+        _metric("answer_quality", results, lambda result: result.answer_quality, threshold=85),
+        _metric("refusal_correctness", results, lambda result: result.refusal_correct, threshold=95),
+        _metric(
+            "response_time", results,
+            lambda result: result.response_time_ms <= response_time_threshold_ms,
+            threshold=95,
+        ),
+    ]
+
+
+def _stage_id(run_id: str, item_id: str) -> str:
+    return f"{run_id}:{item_id}"
+
+
+def _stage_from_outcome(run_id: str, item_id: str, outcome: EvaluationOutcome) -> EvaluationItemStage:
+    retrieval_status = "succeeded" if outcome.retrieval is not None else "unavailable"
+    return EvaluationItemStage(
+        run_id=run_id,
+        item_id=item_id,
+        retrieval=outcome.retrieval,
+        retrieval_status=retrieval_status,
+        generation_status=outcome.generation_status,
+        generation_outcome=outcome.generation_outcome,
+        assessment_status=outcome.assessment_status,
+        output_handle=outcome.output_handle,
+        output_digest=outcome.output_digest,
+        operational_error=outcome.operational_error,
+        retrieval_success=outcome.retrieval_success,
+        grounded=outcome.grounded,
+        citation_correct=outcome.citation_correct,
+        answer_quality=outcome.answer_quality,
+        refusal_correct=outcome.refusal_correct,
+        response_time_ms=outcome.response_time_ms,
+    )
+
+
+def _stage_payload(stage: EvaluationItemStage) -> dict[str, Any]:
+    payload = stage.__dict__.copy()
+    payload["retrieval"] = stage.retrieval.model_dump(mode="json") if stage.retrieval is not None else None
+    return payload
+
+
+def _stage_from_payload(payload: dict[str, Any]) -> EvaluationItemStage:
+    values = dict(payload)
+    if values.get("retrieval") is not None:
+        values["retrieval"] = RetrievalResult.model_validate(values["retrieval"])
+    return EvaluationItemStage(**values)
 
 
 def main() -> None:

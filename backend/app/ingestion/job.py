@@ -20,6 +20,7 @@ class IngestionResult:
     version: CorpusVersion
     chunks: tuple[TextChunk, ...]
     activated: bool
+    ready_for_evaluation: bool = False
 
 
 class IngestionInterrupted(RuntimeError):
@@ -27,11 +28,10 @@ class IngestionInterrupted(RuntimeError):
 
 
 class CorpusIngestionJob:
-    """Stage, write, validate, and promote one immutable corpus version.
+    """Stage, write and validate one immutable corpus version.
 
-    Version and chunk identifiers are deterministic inputs.  Re-running a
-    completed job therefore returns the existing active version without
-    creating another version or activating a second pointer.
+    Publication is deliberately separate: a successful run never changes the
+    serving release or the legacy active pointer.
     """
 
     def __init__(self, versions: CorpusVersionStore, writer: CorpusEmbeddingWriter) -> None:
@@ -45,10 +45,9 @@ class CorpusIngestionJob:
         *,
         termination_requested: Callable[[], bool] | None = None,
     ) -> IngestionResult:
-        current = self.versions.active()
         existing = self.versions.get(version.version_id)
-        if existing is not None and existing.status == "active":
-            return IngestionResult(existing, (), False)
+        if existing is not None and existing.status in {"validated", "active"}:
+            return IngestionResult(existing, (), False, existing.status == "validated")
 
         staged = self.versions.stage(version)
         requested = termination_requested or (lambda: False)
@@ -88,10 +87,6 @@ class CorpusIngestionJob:
                 )
                 evidence = probe.run(version_id=validated.version_id, candidate=stored[0])
                 persist_probe(validated.version_id, evidence)
-            active = self.versions.activate(
-                validated.version_id,
-                expected_active_version_id=current.version_id if current is not None else None,
-            )
         except IngestionInterrupted:
             if callable(finish):
                 finish(staged.version_id, status="interrupted")
@@ -103,4 +98,4 @@ class CorpusIngestionJob:
         else:
             if callable(finish):
                 finish(staged.version_id, status="completed")
-            return IngestionResult(active, tuple(stored), True)
+            return IngestionResult(validated, tuple(stored), False, True)

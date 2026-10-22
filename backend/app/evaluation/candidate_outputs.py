@@ -171,6 +171,11 @@ class FirestoreCandidateOutputStore:
             return None
         return payload.get("output") if isinstance(payload.get("output"), str) else None
 
+    def get_audit(self, attempt_id: str) -> CandidateOutputAudit | None:
+        """Return content-free binding metadata for an assessment boundary."""
+
+        return self._audit_for(attempt_id)
+
     def finalize(self, *, actor: UserProfile, attempt_id: str, assessment: dict[str, Any] | None = None) -> CandidateOutputAudit | None:
         _authorize(actor)
         raw_ref = self.raw.document(attempt_id)

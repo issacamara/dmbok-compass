@@ -58,6 +58,11 @@ from app.release import (
     ReleaseDecisionService,
 )
 from app.lifecycle import ShutdownCoordinator, configured_shutdown_timeout, lifespan, lifecycle_middleware
+from app.health import (
+    FirestoreSelectedReleaseResolver,
+    NoopServiceChecker,
+    ReadinessChecker,
+)
 from app.settings import startup_configuration
 
 app = FastAPI(title="DMBOK Compass API", version="0.1.0", lifespan=lifespan)
@@ -189,10 +194,49 @@ def aggregate_metric_repository() -> AggregateMetricRepository:
     return get_aggregate_metric_repository()
 
 
+@app.get("/health/live", tags=["system"])
+def liveness() -> dict[str, str]:
+    """Report only that the process can respond; no dependency calls are made."""
+    return {"status": "ok"}
+
+
+@app.get("/health/ready", tags=["system"])
+async def readiness() -> JSONResponse:
+    """Report whether the selected release and required services are usable."""
+    checker = getattr(app.state, "readiness_checker", None)
+    if checker is None:
+        try:
+            configuration = app.state.runtime_configuration
+            from app.identity import _firebase_app
+            from firebase_admin import firestore
+
+            client = firestore.client(app=_firebase_app())
+            checker = ReadinessChecker(
+                configuration,
+                FirestoreSelectedReleaseResolver(
+                    FirestoreReleaseDecisionStore(client),
+                    FirestoreReleaseManifestStore(client),
+                    FirestoreCorpusVersionStore(
+                        client,
+                        vector_collection=configuration.vector_collection,
+                    ),
+                ),
+                NoopServiceChecker(),
+            )
+            app.state.readiness_checker = checker
+        except Exception:
+            return JSONResponse(
+                status_code=503,
+                content={"status": "not_ready", "checks": {"configuration": {"status": "failed"}}},
+            )
+    result = await checker.probe()
+    return JSONResponse(status_code=200 if result.ready else 503, content=result.as_dict())
+
+
 @app.get("/health", tags=["system"])
 def health() -> dict[str, str]:
-    """Report that the API process is ready to receive requests."""
-    return {"status": "ok"}
+    """Compatibility alias for liveness; use /health/live or /health/ready explicitly."""
+    return liveness()
 
 
 @app.post("/api/registration", response_model=UserProfile, status_code=status.HTTP_200_OK)

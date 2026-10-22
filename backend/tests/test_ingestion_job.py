@@ -76,8 +76,9 @@ def test_retry_does_not_create_duplicate_chunks_or_versions() -> None:
     first = job.run(version, chunks)
     second = job.run(version, chunks)
 
-    assert first.activated is True
-    assert second.activated is False
+    assert first.activated is False
+    assert first.ready_for_evaluation is True
+    assert second.ready_for_evaluation is True
     assert len(store.documents) == 1
 
 
@@ -115,12 +116,12 @@ def test_changed_derivation_for_the_same_pdf_stages_a_new_corpus_without_overwri
     first, first_chunks = ingest(original_manifest)
     second, second_chunks = ingest(changed_manifest)
 
-    assert first.activated is True
-    assert second.activated is True
+    assert first.ready_for_evaluation is True
+    assert second.ready_for_evaluation is True
     assert original_manifest.corpus_version_id != changed_manifest.corpus_version_id
     assert first_chunks[0].chunk_id in vector_store.documents
     assert second_chunks[0].chunk_id in vector_store.documents
-    assert versions.get(original_manifest.corpus_version_id).status == "retired"  # type: ignore[union-attr]
+    assert versions.get(original_manifest.corpus_version_id).status == "validated"  # type: ignore[union-attr]
 
 
 def test_interruption_after_a_500_chunk_batch_keeps_resumable_staging_and_retry_activates() -> None:
@@ -144,8 +145,8 @@ def test_interruption_after_a_500_chunk_batch_keeps_resumable_staging_and_retry_
 
     retried = job.run(staged_version(), chunks)
 
-    assert retried.activated is True
-    assert versions.get("v1").status == "active"  # type: ignore[union-attr]
+    assert retried.ready_for_evaluation is True
+    assert versions.get("v1").status == "validated"  # type: ignore[union-attr]
     assert len(vector_store.documents) == 501
     assert vector_store.batch_sizes == [500, 500, 1]
 

@@ -65,6 +65,8 @@ from app.release import (
     ReleaseDecisionError,
     ReleaseDecisionRequest,
     ReleaseDecisionService,
+    FirestoreServingReleaseStore,
+    PublishedCorpusResolver,
 )
 from app.lifecycle import ShutdownCoordinator, configured_shutdown_timeout, lifespan, lifecycle_middleware
 from app.health import (
@@ -377,11 +379,20 @@ def configured_question_answerer() -> RetrievedAnswerService:
         model_name=factory.selected_model(),
         timeout_ms=generation_timeout_ms,
     )
+    corpus_store = FirestoreCorpusVersionStore(
+        client, vector_collection=factory.settings.vector_collection
+    )
+    published_corpus = PublishedCorpusResolver(
+        FirestoreServingReleaseStore(client),
+        corpus_store,
+        configuration_version_id=os.environ.get("CONFIGURATION_VERSION_ID", ""),
+        vector_collection=factory.settings.vector_collection,
+        vector_schema_version=configuration.vector_schema_version,
+        artifact_id=os.environ.get("ARTIFACT_ID") or None,
+    )
     return RetrievedAnswerService(
         factory.retriever(),
-        FirestoreCorpusVersionStore(
-            client, vector_collection=factory.settings.vector_collection
-        ),
+        corpus_store,
         policy,
         request_timeout_ms=request_timeout_ms,
         retriever_for_binding=lambda corpus: factory.retriever_for_binding(
@@ -390,6 +401,7 @@ def configured_question_answerer() -> RetrievedAnswerService:
                 corpus, vector_collection=factory.settings.vector_collection
             )
         ),
+        serving_release=published_corpus,
     )
 
 

@@ -436,6 +436,11 @@ class ActiveCorpusStore(Protocol):
         """Return the active corpus version, if one exists."""
 
 
+class ServingCorpusStore(Protocol):
+    def active(self) -> Any | None:
+        """Return the corpus selected by the approved serving publication."""
+
+
 @dataclass(frozen=True)
 class AnswerInvocation:
     """Bounded, ephemeral input to the LangChain RAG composition boundary."""
@@ -462,6 +467,7 @@ class LangChainRagPipeline(Runnable[AnswerInvocation, AnswerResponse]):
         request_timeout_ms: int = DEFAULT_REQUEST_TIMEOUT_MS,
         clock: Callable[[], float] = perf_counter,
         retriever_for_binding: Callable[[CorpusVersion], PassageRetriever] | None = None,
+        serving_release: ServingCorpusStore | None = None,
     ) -> None:
         self._retriever = retriever
         self._corpus_versions = corpus_versions
@@ -469,6 +475,7 @@ class LangChainRagPipeline(Runnable[AnswerInvocation, AnswerResponse]):
         self._request_timeout_ms = request_timeout_ms
         self._clock = clock
         self._retriever_for_binding = retriever_for_binding
+        self._serving_release = serving_release
 
     def invoke(
         self,
@@ -496,7 +503,7 @@ class LangChainRagPipeline(Runnable[AnswerInvocation, AnswerResponse]):
             raise TypeError("input must be an AnswerInvocation")
         deadline = RequestDeadline.start(self._request_timeout_ms, clock=self._clock)
         try:
-            active = self._corpus_versions.active()
+            active = (self._serving_release or self._corpus_versions).active()
         except Exception:
             return self._policy.service_refusal(
                 input.quota,
@@ -557,6 +564,7 @@ class RetrievedAnswerService:
         *,
         request_timeout_ms: int = DEFAULT_REQUEST_TIMEOUT_MS,
         retriever_for_binding: Callable[[CorpusVersion], PassageRetriever] | None = None,
+        serving_release: ServingCorpusStore | None = None,
     ) -> None:
         self._pipeline = LangChainRagPipeline(
             retriever,
@@ -564,6 +572,7 @@ class RetrievedAnswerService:
             policy,
             request_timeout_ms=request_timeout_ms,
             retriever_for_binding=retriever_for_binding,
+            serving_release=serving_release,
         )
 
     async def answer(self, question: str, quota: QuotaStatus) -> AnswerResponse:

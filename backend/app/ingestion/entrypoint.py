@@ -123,7 +123,10 @@ def _run(termination_requested: Callable[[], bool]) -> None:
             versions,
             writer,
         ).run(version, chunks, termination_requested=termination_requested)
-        print(f"Activated corpus version {result.version.version_id} with {len(result.chunks)} chunks.")
+        print(
+            f"Corpus version {result.version.version_id} is ready_for_evaluation "
+            f"with {len(result.chunks)} chunks; serving publication is separate."
+        )
 
 
 def _required(name: str) -> str:

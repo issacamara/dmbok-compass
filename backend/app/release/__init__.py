@@ -33,6 +33,17 @@ from .source_retention import (
     SourceRetentionError,
     inventory,
 )
+from .publication import (
+    ConcurrentPublicationError,
+    FirestoreServingReleaseStore,
+    InMemoryServingReleaseStore,
+    PublicationError,
+    PublishedRelease,
+    PublishedCorpusResolver,
+    ReleasePublisher,
+    ServingReleaseStore,
+    validate_runtime_binding,
+)
 
 __all__ = [
     "InMemoryReleaseDecisionStore",
@@ -60,4 +71,13 @@ __all__ = [
     "SourceGeneration",
     "SourceRetentionError",
     "inventory",
+    "ConcurrentPublicationError",
+    "FirestoreServingReleaseStore",
+    "InMemoryServingReleaseStore",
+    "PublicationError",
+    "PublishedRelease",
+    "PublishedCorpusResolver",
+    "ReleasePublisher",
+    "ServingReleaseStore",
+    "validate_runtime_binding",
 ]

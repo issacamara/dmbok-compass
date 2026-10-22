@@ -1,5 +1,13 @@
 """Request-scoped grounded answer orchestration."""
 
+from .citations import (
+    CitationValidationError,
+    ValidatedClaim,
+    render_validated_claims,
+    validate_citation_evidence,
+    validated_citations,
+)
+
 from .pipeline import (
     GroundedAnswerPolicy,
     AnswerInvocation,
@@ -16,6 +24,11 @@ from .pipeline import (
 )
 
 __all__ = [
+    "CitationValidationError",
+    "ValidatedClaim",
+    "render_validated_claims",
+    "validate_citation_evidence",
+    "validated_citations",
     "GroundedAnswerPolicy",
     "AnswerInvocation",
     "DEFAULT_GENERATION_TIMEOUT_MS",

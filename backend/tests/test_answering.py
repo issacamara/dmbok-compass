@@ -83,7 +83,7 @@ class BudgetAdapter:
             candidate=GenerationCandidate(
                 outcome="answer",
                 answer_text="Grounded.",
-                citations=[{"citation_id": "chunk-1", "page": 1, "section": "x", "excerpt": "y"}],
+                citations=[{"citation_id": "chunk-1", "page": 4, "section": "Governance", "excerpt": "Stored excerpt chunk-1"}],
             ),
             usage=UsageMetadata(provider="test", model="test-model"),
         )
@@ -118,7 +118,7 @@ def test_retrieved_answer_service_uses_active_version_and_top_five_limit() -> No
             {
                 "outcome": "answer",
                 "answer_text": "Grounded.",
-                "citations": [{"citation_id": "chunk-1", "page": 1, "section": "x", "excerpt": "y"}],
+                "citations": [{"citation_id": "chunk-1", "page": 4, "section": "Governance", "excerpt": "Stored excerpt chunk-1"}],
             }
         )
     )
@@ -160,9 +160,9 @@ def test_retrieved_answer_service_resolves_one_retriever_from_active_binding() -
                     "citations": [
                         {
                             "citation_id": "bound",
-                            "page": 1,
-                            "section": "model",
-                            "excerpt": "model citation",
+                            "page": 4,
+                            "section": "Governance",
+                            "excerpt": "Stored excerpt bound",
                         }
                     ],
                 }
@@ -214,8 +214,8 @@ def test_strong_answer_uses_stored_citation_provenance_and_labels_synthesis() ->
             answer_text="Governance coordinates decisions.",
             synthesis=False,
             citations=[
-                {"citation_id": "chunk-1", "page": 999, "section": "fake", "excerpt": "fake"},
-                {"citation_id": "chunk-2", "page": 999, "section": "fake", "excerpt": "fake"},
+                {"citation_id": "chunk-1", "page": 4, "section": "Governance", "excerpt": "Stored excerpt chunk-1"},
+                {"citation_id": "chunk-2", "page": 4, "section": "Governance", "excerpt": "Stored excerpt chunk-2"},
             ],
         ),
         model="primary-model",
@@ -245,7 +245,7 @@ def test_partial_evidence_forces_qualified_outcome() -> None:
         {
             "outcome": "answer",
             "answer_text": "A limited answer.",
-            "citations": [{"citation_id": "chunk-1", "page": 1, "section": "x", "excerpt": "y"}],
+            "citations": [{"citation_id": "chunk-1", "page": 4, "section": "Governance", "excerpt": "Stored excerpt chunk-1"}],
         }
     )
     response = asyncio.run(GroundedAnswerPolicy(adapter).answer(
@@ -270,7 +270,7 @@ def test_unmapped_citation_is_rejected() -> None:
 
     assert response.outcome == "refusal"
     assert response.error is not None
-    assert response.error.code == "grounding_policy_rejected"
+    assert response.error.code == "answer_output_validation"
 
 
 def test_retrieved_service_includes_retrieval_timing_in_ephemeral_trace() -> None:
@@ -402,8 +402,8 @@ def test_langchain_rag_runnable_composes_active_retrieval_and_answering() -> Non
         GroundedAnswerPolicy(FakeAdapter({
             "outcome": "answer", "answer_text": "Grounded.",
             "citations": [{
-                "citation_id": "chunk-1", "page": 1,
-                "section": "model", "excerpt": "model citation",
+                "citation_id": "chunk-1", "page": 4,
+                "section": "Governance", "excerpt": "Stored excerpt chunk-1",
             }],
         })),
     )

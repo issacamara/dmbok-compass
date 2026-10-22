@@ -1,0 +1,44 @@
+{
+  "schema_version": "dense-candidate-evidence-v1",
+  "evidence_kind": "controlled-fixture-boundary",
+  "candidate": {
+    "artifact_id": "candidate-image@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+    "installed_lock_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "corpus_version_id": "corpus-v1",
+    "configuration_version_id": "config-v1",
+    "scorer_version": "evaluation-gates-v1"
+  },
+  "prompt_version": "langchain-rag-v3",
+  "strategy": "dense",
+  "quality_gates": {
+    "hit_at_5_percentage": 90.0,
+    "claim_grounding_percentage": 95.0,
+    "citation_correctness_percentage": 95.0,
+    "rubric_percentage": 85.0,
+    "refusal_percentage": 95.0,
+    "operational_errors_receive_success_credit": false
+  },
+  "latency_and_cost": {
+    "user_count": 3,
+    "threshold_ms": 15000,
+    "within_threshold_rate": 1.0,
+    "gcp_forecast_eur_per_month": 0.0,
+    "gcp_budget_eur_per_month": 5.0,
+    "provider_cost_status": "unknown"
+  },
+  "adversarial_paths": [
+    "prompt_injection",
+    "invalid_citation",
+    "readiness_dependency_failure",
+    "pinned_secret_and_output_cap_identity",
+    "privacy_safe_telemetry_preview_notification"
+  ],
+  "live_validation": {
+    "status": "blocked",
+    "missing": [
+      "final-image execution",
+      "approved provider budget",
+      "deployed three-user probe"
+    ]
+  }
+}

@@ -191,7 +191,7 @@ def test_retrieved_answer_service_refuses_without_active_corpus() -> None:
         )
     )
 
-    assert response.outcome == "refusal"
+    assert response.outcome == "operational_error"
     assert response.error is not None
     assert response.error.code == "active_corpus_unavailable"
 
@@ -268,7 +268,7 @@ def test_unmapped_citation_is_rejected() -> None:
         "Explain this.", [passage("chunk-1", 0.9)], quota()
     ))
 
-    assert response.outcome == "refusal"
+    assert response.outcome == "operational_error"
     assert response.error is not None
     assert response.error.code == "answer_output_validation"
 
@@ -333,7 +333,7 @@ def test_whole_request_exhaustion_is_an_operational_refusal_without_generation()
     ).ainvoke(AnswerInvocation(question="What is governance?", quota=quota())))
 
     assert adapter.budgets == []
-    assert response.outcome == "refusal"
+    assert response.outcome == "operational_error"
     assert response.error is not None
     assert response.error.code == "answer_provider_timeout"
     assert response.trace.timings_ms["total_ms"] == 14_000
@@ -348,7 +348,7 @@ def test_generation_that_overruns_the_shared_deadline_is_not_a_success() -> None
         "What is governance?", [passage("chunk-1", 0.9)], quota(), deadline=deadline
     ))
 
-    assert response.outcome == "refusal"
+    assert response.outcome == "operational_error"
     assert response.error is not None
     assert response.error.code == "answer_provider_timeout"
 
@@ -387,7 +387,7 @@ def test_provider_failure_is_safe_refusal() -> None:
         "Explain this.", [passage("chunk-1", 0.9)], quota()
     ))
 
-    assert response.outcome == "refusal"
+    assert response.outcome == "operational_error"
     assert response.error is not None
     assert response.error.retryable is True
     assert response.trace.selected_model == "fallback"

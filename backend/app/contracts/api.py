@@ -12,7 +12,7 @@ class ContractModel(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
 
-Outcome = Literal["answer", "qualified", "refusal"]
+Outcome = Literal["answer", "qualified", "refusal", "operational_error"]
 AnswerOutcomeKind = Literal["answer", "qualified", "evidence_refusal", "operational_error"]
 QuestionCategory = Literal["definitions", "explanations", "comparisons", "study", "scenarios"]
 ImportStatus = Literal["accepted", "rejected"]

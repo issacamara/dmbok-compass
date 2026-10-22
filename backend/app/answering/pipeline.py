@@ -21,6 +21,7 @@ from app.contracts import (
     AnswerResponse,
     ApiError,
     CorpusVersion,
+    OPERATIONAL_ERROR_STATUS,
     QuotaStatus,
     RetrievedPassage,
     RetrievalTrace,
@@ -344,8 +345,21 @@ class GroundedAnswerPolicy:
         deadline = deadline or RequestDeadline.start(self._timeout_ms)
         timings = {"retrieval_ms": retrieval_ms} if retrieval_ms is not None else {}
         return self._finalize(AnswerResponse(
-            outcome="refusal",
-            error=ApiError(code=code, message=message, retryable=True, status=503),
+            outcome="operational_error",
+            error=ApiError(
+                code=code,
+                message=(
+                    "Answer retrieval exceeded the request deadline."
+                    if code == "answer_request_timeout"
+                    else "The answer service is unavailable."
+                ),
+                retryable=True,
+                status=(
+                    OPERATIONAL_ERROR_STATUS["deadline"]
+                    if code == "answer_request_timeout"
+                    else OPERATIONAL_ERROR_STATUS["unavailable"]
+                ),
+            ),
             trace=RetrievalTrace(
                 retrieved_passages=[], selected_model=self._model_name, timings_ms=timings
             ),
@@ -356,14 +370,20 @@ class GroundedAnswerPolicy:
         self, trace: RetrievalTrace, quota: QuotaStatus, error: GenerationError
     ) -> AnswerResponse:
         return AnswerResponse(
-            outcome="refusal",
+            outcome="operational_error",
             error=ApiError(
                 code=f"answer_provider_{error.code.value}",
-                message=error.message,
+                message=_safe_generation_error_message(error.code),
                 retryable=error.retryable,
-                status=503 if error.retryable else 502,
+                status=(
+                    OPERATIONAL_ERROR_STATUS["invalid_output"]
+                    if error.code is GenerationErrorCode.INVALID_OUTPUT
+                    else OPERATIONAL_ERROR_STATUS["deadline"]
+                    if error.code is GenerationErrorCode.TIMEOUT
+                    else OPERATIONAL_ERROR_STATUS["unavailable"]
+                ),
             ),
-            trace=trace,
+            trace=trace.model_copy(update={"model_output": None}),
             quota=quota,
         )
 
@@ -376,19 +396,27 @@ class GroundedAnswerPolicy:
         code: str = "grounding_policy_rejected",
     ) -> AnswerResponse:
         return AnswerResponse(
-            outcome="refusal",
+            outcome="operational_error",
             error=ApiError(
                 code=code,
-                message=message,
+                message="The answer output could not be validated.",
                 status=502,
             ),
-            trace=trace,
+            trace=trace.model_copy(update={"model_output": None}),
             quota=quota,
         )
 
 
 def _elapsed_ms(started: float) -> float:
     return round(max(0.0, (perf_counter() - started) * 1000), 3)
+
+
+def _safe_generation_error_message(code: GenerationErrorCode) -> str:
+    if code is GenerationErrorCode.INVALID_OUTPUT:
+        return "The provider returned an invalid answer."
+    if code is GenerationErrorCode.TIMEOUT:
+        return "Answer generation exceeded the request deadline."
+    return "The answer provider is temporarily unavailable."
 
 
 class QuestionAnswerer(Protocol):
@@ -467,7 +495,15 @@ class LangChainRagPipeline(Runnable[AnswerInvocation, AnswerResponse]):
         if not isinstance(input, AnswerInvocation):
             raise TypeError("input must be an AnswerInvocation")
         deadline = RequestDeadline.start(self._request_timeout_ms, clock=self._clock)
-        active = self._corpus_versions.active()
+        try:
+            active = self._corpus_versions.active()
+        except Exception:
+            return self._policy.service_refusal(
+                input.quota,
+                code="active_corpus_unavailable",
+                message="The active corpus could not be loaded.",
+                deadline=deadline,
+            )
         if active is None:
             return self._policy.service_refusal(
                 input.quota,
@@ -493,6 +529,13 @@ class LangChainRagPipeline(Runnable[AnswerInvocation, AnswerResponse]):
                 input.quota,
                 code="answer_request_timeout",
                 message="Answer retrieval exceeded the whole-request deadline.",
+                deadline=deadline,
+            )
+        except Exception:
+            return self._policy.service_refusal(
+                input.quota,
+                code="answer_retrieval_unavailable",
+                message="Answer retrieval could not complete.",
                 deadline=deadline,
             )
         return await self._policy.answer(

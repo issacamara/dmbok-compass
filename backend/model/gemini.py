@@ -27,6 +27,7 @@ from .protocol import (
 
 PRIMARY_MODEL = "gemini-2.5-flash-lite"
 FALLBACK_MODEL = "gemini-2.5-flash"
+GEMINI_MAX_OUTPUT_TOKENS = 8_192
 PROVIDER = "google-gemini"
 PROMPT_VERSION = "grounded-answer-policy-v2"
 _PROMPT = ChatPromptTemplate.from_messages(
@@ -59,6 +60,7 @@ class GeminiAdapter(ModelAdapter):
         vertexai: bool = False,
         primary_model: str = PRIMARY_MODEL,
         fallback_model: str | None = FALLBACK_MODEL,
+        max_output_tokens: int | None = None,
         chain_factory: ChainFactory | None = None,
     ) -> None:
         if vertexai and not project:
@@ -69,6 +71,7 @@ class GeminiAdapter(ModelAdapter):
         self._vertexai = vertexai
         self._primary_model = primary_model
         self._fallback_model = fallback_model
+        self._max_output_tokens = max_output_tokens
         self._chain_factory = chain_factory or self._build_chain
 
     @property
@@ -172,6 +175,11 @@ class GeminiAdapter(ModelAdapter):
             timeout=timeout_seconds,
             temperature=0,
             cache=False,
+            **(
+                {"max_output_tokens": self._max_output_tokens}
+                if self._max_output_tokens is not None
+                else {}
+            ),
         )
         return _PROMPT | chat.with_structured_output(
             GenerationCandidate, method="json_schema", include_raw=True
@@ -186,6 +194,7 @@ def create_gemini_adapter(
     vertexai: bool = False,
     primary_model: str = PRIMARY_MODEL,
     fallback_model: str | None = FALLBACK_MODEL,
+    max_output_tokens: int | None = None,
 ) -> GeminiAdapter:
     return GeminiAdapter(
         api_key=api_key,
@@ -194,6 +203,7 @@ def create_gemini_adapter(
         vertexai=vertexai,
         primary_model=primary_model,
         fallback_model=fallback_model,
+        max_output_tokens=max_output_tokens,
     )
 
 

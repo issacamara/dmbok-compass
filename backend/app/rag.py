@@ -20,9 +20,13 @@ from app.retrieval.search import FirestorePassageRetriever
 from app.retrieval.hybrid import HybridRetriever, HybridStrategy
 from app.retrieval.lexical import LexicalIndex
 from model.fallback import FallbackAdapter
-from model.gemini import create_gemini_adapter
+from model.gemini import GEMINI_MAX_OUTPUT_TOKENS, create_gemini_adapter
 from model.langchain import enforce_private_langchain_runtime
-from model.openrouter import OpenRouterAdapter, parse_json_schema_supported
+from model.openrouter import (
+    OPENROUTER_MAX_OUTPUT_TOKENS,
+    OpenRouterAdapter,
+    parse_json_schema_supported,
+)
 from model.protocol import ModelAdapter
 
 
@@ -35,6 +39,7 @@ class LangChainRagSettings:
     primary_model: str = "meta-llama/llama-3.1-8b-instruct"
     fallback_model: str | None = "google/gemma-4-26b-a4b-it:free"
     json_schema_supported: bool = True
+    output_token_cap: int | None = None
 
     @classmethod
     def from_environment(cls) -> "LangChainRagSettings":
@@ -48,6 +53,7 @@ class LangChainRagSettings:
             primary_model=runtime.primary_model,
             fallback_model=runtime.fallback_model,
             json_schema_supported=configuration.json_schema_supported,
+            output_token_cap=configuration.output_token_cap,
         )
 
 
@@ -114,12 +120,14 @@ class LangChainRagFactory:
         )
 
     def generation_adapter(self) -> ModelAdapter:
+        output_token_cap = self._validated_output_token_cap()
         if self.settings.answer_provider == "openrouter":
             return OpenRouterAdapter(
                 os.environ["OPENROUTER_API_KEY"],
                 primary_model=self.settings.primary_model,
                 fallback_model=self.settings.fallback_model,
                 json_schema_supported=self.settings.json_schema_supported,
+                max_output_tokens=output_token_cap,
             )
         vertex = create_gemini_adapter(
             project=self.settings.project,
@@ -127,6 +135,7 @@ class LangChainRagFactory:
             vertexai=True,
             primary_model=self.settings.primary_model,
             fallback_model=None,
+            max_output_tokens=output_token_cap,
         )
         secondary = OpenRouterAdapter(
             os.environ["OPENROUTER_API_KEY"],
@@ -135,6 +144,7 @@ class LangChainRagFactory:
             json_schema_supported=parse_json_schema_supported(
                 str(self.settings.json_schema_supported)
             ),
+            max_output_tokens=output_token_cap,
         )
         return FallbackAdapter(vertex, secondary)
 
@@ -146,12 +156,14 @@ class LangChainRagFactory:
         provider = snapshot.answer_provider
         primary_model = snapshot.primary_model
         fallback_model = snapshot.fallback_model
+        output_token_cap = _output_token_cap_from_artifact(snapshot.integration_artifact)
         if provider == "openrouter":
             return OpenRouterAdapter(
                 os.environ["OPENROUTER_API_KEY"],
                 primary_model=primary_model,
                 fallback_model=fallback_model,
                 json_schema_supported=snapshot.json_schema_supported,
+                max_output_tokens=output_token_cap,
             )
         vertex = create_gemini_adapter(
             project=self.settings.project,
@@ -159,12 +171,14 @@ class LangChainRagFactory:
             vertexai=True,
             primary_model=primary_model,
             fallback_model=None,
+            max_output_tokens=output_token_cap,
         )
         secondary = OpenRouterAdapter(
             os.environ.get("OPENROUTER_API_KEY", ""),
             primary_model=fallback_model or "meta-llama/llama-3.1-8b-instruct",
             fallback_model=None,
-                json_schema_supported=snapshot.json_schema_supported,
+            json_schema_supported=snapshot.json_schema_supported,
+            max_output_tokens=output_token_cap,
         )
         return FallbackAdapter(vertex, secondary)
 
@@ -176,6 +190,12 @@ class LangChainRagFactory:
         generation_timeout_ms: int,
     ) -> EvaluationCandidateSnapshot:
         """Capture all non-secret inputs needed to reconstruct an evaluation."""
+
+        output_token_cap = self.settings.output_token_cap
+        artifact = "langchain-google-firestore==0.5.0.post2"
+        if output_token_cap is not None:
+            output_token_cap = self._validated_output_token_cap()
+            artifact += f";output-token-cap={output_token_cap}"
 
         if binding.vector_collection != self.settings.vector_collection:
             raise ValueError("candidate corpus binding does not match the configured vector collection")
@@ -202,7 +222,7 @@ class LangChainRagFactory:
             evidence_policy_version="grounded-evidence-v1",
             scorer_version="evaluation-gates-v1",
             dependency_lock_sha256=_dependency_lock_sha256(),
-            integration_artifact="langchain-google-firestore==0.5.0.post2",
+            integration_artifact=artifact,
             runtime_version=os.environ.get("K_REVISION", "unversioned").strip() or "unversioned",
         )
 
@@ -210,6 +230,37 @@ class LangChainRagFactory:
         if self.settings.answer_provider == "openrouter":
             return self.settings.primary_model
         return self.settings.primary_model
+
+    def _validated_output_token_cap(self) -> int:
+        cap = self.settings.output_token_cap
+        if cap is None:
+            raise ValueError("output token cap is required for model route validation")
+        if cap < 1:
+            raise ValueError("output token cap must be positive")
+        route_limit = (
+            OPENROUTER_MAX_OUTPUT_TOKENS
+            if self.settings.answer_provider == "openrouter"
+            else GEMINI_MAX_OUTPUT_TOKENS
+        )
+        if cap > route_limit:
+            raise ValueError(
+                f"output token cap {cap} exceeds {self.settings.answer_provider} route capability {route_limit}"
+            )
+        return cap
+
+
+def _output_token_cap_from_artifact(artifact: str) -> int:
+    prefix = ";output-token-cap="
+    if prefix not in artifact:
+        raise ValueError("candidate snapshot has no output token cap")
+    value = artifact.rsplit(prefix, 1)[1]
+    try:
+        cap = int(value)
+    except ValueError:
+        raise ValueError("candidate snapshot has an invalid output token cap") from None
+    if cap < 1 or cap > OPENROUTER_MAX_OUTPUT_TOKENS:
+        raise ValueError("candidate snapshot output token cap is outside route capability")
+    return cap
 
 
 def _dependency_lock_sha256() -> str:

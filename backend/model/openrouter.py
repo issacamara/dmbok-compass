@@ -36,6 +36,7 @@ from .protocol import (
 
 OPENROUTER_PRIMARY_MODEL = "meta-llama/llama-3.1-8b-instruct"
 OPENROUTER_FALLBACK_MODEL = "google/gemma-4-26b-a4b-it:free"
+OPENROUTER_MAX_OUTPUT_TOKENS = 32_768
 PRIMARY_ATTEMPT_MAX_MS = 16_000
 FALLBACK_ATTEMPT_MAX_MS = 9_000
 PROVIDER = "openrouter"
@@ -75,6 +76,7 @@ class OpenRouterAdapter(ModelAdapter):
         primary_model: str = OPENROUTER_PRIMARY_MODEL,
         fallback_model: str | None = OPENROUTER_FALLBACK_MODEL,
         json_schema_supported: bool = True,
+        max_output_tokens: int | None = None,
         chain_factory: ChainFactory | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
@@ -86,6 +88,7 @@ class OpenRouterAdapter(ModelAdapter):
         self._primary_model = primary_model
         self._fallback_model = fallback_model
         self._json_schema_supported = json_schema_supported
+        self._max_output_tokens = max_output_tokens
         self._chain_factory = chain_factory or self._build_chain
         self._transport = transport
 
@@ -102,6 +105,7 @@ class OpenRouterAdapter(ModelAdapter):
             json_schema_supported=parse_json_schema_supported(
                 os.environ.get("OPENROUTER_JSON_SCHEMA_SUPPORTED", "true")
             ),
+            max_output_tokens=int(os.environ["ANSWER_OUTPUT_TOKEN_CAP"]),
         )
 
     @property
@@ -237,6 +241,11 @@ class OpenRouterAdapter(ModelAdapter):
             timeout=timeout_ms,
             temperature=0,
             cache=False,
+            **(
+                {"max_tokens": self._max_output_tokens}
+                if self._max_output_tokens is not None
+                else {}
+            ),
         )
         if json_schema_supported:
             output = chat.with_structured_output(

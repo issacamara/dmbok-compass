@@ -47,6 +47,15 @@ from .candidate_outputs import (
     FirestoreCandidateOutputStore,
     RetentionCleanupResult,
 )
+from .reviews import (
+    AssessmentConflictError,
+    AssessmentError,
+    AssessmentNotFoundError,
+    FirestoreAssessmentRepository,
+    InMemoryAssessmentRepository,
+    RunItemAssessment,
+    RunItemAssessmentRecord,
+)
 
 __all__ = [
     "EvaluationDatasetError",
@@ -90,4 +99,11 @@ __all__ = [
     "CandidateOutputAudit",
     "FirestoreCandidateOutputStore",
     "RetentionCleanupResult",
+    "AssessmentConflictError",
+    "AssessmentError",
+    "AssessmentNotFoundError",
+    "FirestoreAssessmentRepository",
+    "InMemoryAssessmentRepository",
+    "RunItemAssessment",
+    "RunItemAssessmentRecord",
 ]

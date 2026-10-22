@@ -8,6 +8,12 @@ from fastapi.responses import JSONResponse
 
 from app.api.evaluations import evaluation_service, router as evaluations_router
 from app.api.evaluation_datasets import evaluation_generation_store, router as evaluation_datasets_router
+from app.api.evaluation_assessments import (
+    assessment_repository,
+    evaluation_run_store,
+    output_store,
+    router as evaluation_assessments_router,
+)
 from app.answering import (
     GroundedAnswerPolicy,
     QuestionAnswerer,
@@ -48,6 +54,8 @@ from app.evaluation import (
     EvaluationJobService,
     FirestoreEvaluationGenerationStore,
     FirestoreEvaluationRunStore,
+    FirestoreAssessmentRepository,
+    FirestoreCandidateOutputStore,
 )
 from app.evaluation.worker import FirestoreEvaluationCandidateSnapshotResolver
 from app.release import (
@@ -70,6 +78,7 @@ app.state.shutdown_coordinator = ShutdownCoordinator(configured_shutdown_timeout
 app.middleware("http")(lifecycle_middleware)
 app.include_router(evaluations_router)
 app.include_router(evaluation_datasets_router)
+app.include_router(evaluation_assessments_router)
 
 
 @lru_cache(maxsize=1)
@@ -126,6 +135,47 @@ def configured_evaluation_generation_store() -> FirestoreEvaluationGenerationSto
 
 
 app.dependency_overrides[evaluation_generation_store] = configured_evaluation_generation_store
+
+
+@lru_cache(maxsize=1)
+def get_evaluation_run_store() -> FirestoreEvaluationRunStore:
+    from app.identity import _firebase_app
+    from firebase_admin import firestore
+
+    return FirestoreEvaluationRunStore(firestore.client(app=_firebase_app()))
+
+
+def configured_evaluation_run_store() -> FirestoreEvaluationRunStore:
+    return get_evaluation_run_store()
+
+
+@lru_cache(maxsize=1)
+def get_evaluation_output_store() -> FirestoreCandidateOutputStore:
+    from app.identity import _firebase_app
+    from firebase_admin import firestore
+
+    return FirestoreCandidateOutputStore(firestore.client(app=_firebase_app()))
+
+
+def configured_evaluation_output_store() -> FirestoreCandidateOutputStore:
+    return get_evaluation_output_store()
+
+
+@lru_cache(maxsize=1)
+def get_assessment_repository() -> FirestoreAssessmentRepository:
+    from app.identity import _firebase_app
+    from firebase_admin import firestore
+
+    return FirestoreAssessmentRepository(firestore.client(app=_firebase_app()))
+
+
+def configured_assessment_repository() -> FirestoreAssessmentRepository:
+    return get_assessment_repository()
+
+
+app.dependency_overrides[evaluation_run_store] = configured_evaluation_run_store
+app.dependency_overrides[output_store] = configured_evaluation_output_store
+app.dependency_overrides[assessment_repository] = configured_assessment_repository
 
 
 @lru_cache(maxsize=1)

@@ -355,7 +355,7 @@ def test_generation_that_overruns_the_shared_deadline_is_not_a_success() -> None
 
 @pytest.mark.parametrize(
     ("request_timeout", "generation_timeout"),
-    [("0", "1"), ("28000", "28001"), ("not-ms", "16000")],
+    [("0", "1"), ("14000", "14001"), ("not-ms", "8000")],
 )
 def test_timeout_settings_reject_invalid_or_legacy_configuration(
     request_timeout: str, generation_timeout: str
@@ -365,7 +365,7 @@ def test_timeout_settings_reject_invalid_or_legacy_configuration(
 
 
 def test_timeout_settings_use_the_approved_provisional_budget() -> None:
-    assert timeout_settings("28000", "16000") == (28_000, 16_000)
+    assert timeout_settings("14000", "8000") == (14_000, 8_000)
 
 
 def test_provider_failure_is_safe_refusal() -> None:

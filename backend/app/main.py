@@ -15,6 +15,7 @@ from app.answering import (
 )
 from app.contracts.api import (
     AggregateMetric,
+    AnswerOutcome,
     AnswerResponse,
     QuotaPolicy,
     QuotaStatus,
@@ -342,13 +343,13 @@ def configured_question_answerer() -> RetrievedAnswerService:
     )
 
 
-@app.post("/api/questions", response_model=AnswerResponse)
+@app.post("/api/questions", response_model=None)
 async def answer_question(
     request: QuestionRequest,
     quota: QuotaStatus = Depends(reserve_request_quota),
     answerer: QuestionAnswerer = Depends(question_answerer),
     telemetry: TelemetryAdapter = Depends(telemetry_adapter),
-) -> AnswerResponse:
+) -> AnswerResponse | JSONResponse:
     """Reserve quota before invoking the request-scoped grounded answerer."""
     started = perf_counter()
     try:
@@ -357,6 +358,17 @@ async def answer_question(
         telemetry.emit(error_event(exc, started))
         raise
     telemetry.emit(response_event(response, started))
+    if response.outcome == "operational_error":
+        assert response.error is not None
+        outcome = AnswerOutcome(
+            outcome="operational_error",
+            trace=response.trace,
+            quota=response.quota,
+            error=response.error,
+        )
+        payload = outcome.model_dump(mode="json")
+        payload["detail"] = outcome.error.model_dump(mode="json")
+        return JSONResponse(status_code=response.error.status, content=payload)
     return response
 
 

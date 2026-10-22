@@ -48,7 +48,7 @@ def response_event(response: AnswerResponse, started: float) -> TelemetryEvent:
 
     return TelemetryEvent(
         request_count=1,
-        outcome=response.outcome,
+        outcome="error" if response.outcome == "operational_error" else response.outcome,
         duration_ms=_elapsed_ms(started),
         provider_model=response.trace.selected_model,
         model_attempts=response.trace.model_attempts or None,

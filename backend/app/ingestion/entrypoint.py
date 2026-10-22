@@ -49,6 +49,7 @@ def _run(termination_requested: Callable[[], bool]) -> None:
         primary_model=runtime.primary_model,
         fallback_model=runtime.fallback_model,
         json_schema_supported=configuration.json_schema_supported,
+        output_token_cap=configuration.output_token_cap,
     )
     client = firestore.Client(project=project)
     versions = FirestoreCorpusVersionStore(client, vector_collection=settings.vector_collection)

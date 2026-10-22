@@ -314,6 +314,7 @@ def configured_question_answerer() -> RetrievedAnswerService:
             primary_model=configuration.runtime.primary_model,
             fallback_model=configuration.runtime.fallback_model,
             json_schema_supported=configuration.json_schema_supported,
+            output_token_cap=configuration.output_token_cap,
         ))
         adapter = factory.generation_adapter()
     except ValueError as exc:

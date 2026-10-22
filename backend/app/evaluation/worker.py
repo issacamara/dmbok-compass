@@ -58,6 +58,7 @@ class FirestoreEvaluationCandidateSnapshotResolver(EvaluationCandidateSnapshotRe
             primary_model=runtime.primary_model,
             fallback_model=runtime.fallback_model,
             json_schema_supported=configuration.json_schema_supported,
+            output_token_cap=configuration.output_token_cap,
         ))
         corpus = FirestoreCorpusVersionStore(
             self.client, vector_collection=factory.settings.vector_collection

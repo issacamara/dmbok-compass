@@ -40,7 +40,7 @@ from model.protocol import (
     TimeoutBudget,
 )
 
-from .citations import validated_citations
+from .citations import CitationValidationError, validated_citations
 
 EvidenceOutcome = Literal["strong", "partial", "absent"]
 STRONG_EVIDENCE_THRESHOLD = 0.75
@@ -280,7 +280,19 @@ class GroundedAnswerPolicy:
                 deadline,
             )
 
-        citations = validated_citations(candidate, evidence.passages)
+        try:
+            citations = validated_citations(candidate, evidence.passages)
+        except CitationValidationError as exc:
+            return self._finalize(
+                self._policy_refusal(
+                    trace,
+                    quota,
+                    f"The model response failed source-span validation: {exc.message}",
+                    code="answer_output_validation",
+                ),
+                deadline,
+                generation_started,
+            )
         if not citations:
             return self._finalize(
                 self._policy_refusal(
@@ -357,12 +369,16 @@ class GroundedAnswerPolicy:
 
     @staticmethod
     def _policy_refusal(
-        trace: RetrievalTrace, quota: QuotaStatus, message: str
+        trace: RetrievalTrace,
+        quota: QuotaStatus,
+        message: str,
+        *,
+        code: str = "grounding_policy_rejected",
     ) -> AnswerResponse:
         return AnswerResponse(
             outcome="refusal",
             error=ApiError(
-                code="grounding_policy_rejected",
+                code=code,
                 message=message,
                 status=502,
             ),

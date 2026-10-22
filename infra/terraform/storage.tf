@@ -9,14 +9,5 @@ resource "google_storage_bucket" "corpus" {
     enabled = true
   }
 
-  lifecycle_rule {
-    condition {
-      age = 30
-    }
-    action {
-      type = "Delete"
-    }
-  }
-
   depends_on = [google_project_service.required]
 }

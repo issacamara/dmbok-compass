@@ -25,8 +25,9 @@ main configuration. The backend configuration files are
 
 The default region is `europe-west1`. The corpus bucket is regional, private,
 uniformly access-controlled, versioned, and protected against public access.
-Replacing the source object preserves the previous generation for rollback;
-objects older than 30 days are lifecycle-managed. Runtime configuration is deliberately
+Replacing the source object preserves the previous generation for rollback.
+Source generations are not lifecycle-deleted by Terraform: release-aware retention
+is an authenticated, dry-run operational procedure. Runtime configuration is deliberately
 not deployed here yet: Cloud Run services and jobs will consume the identity
 outputs when their application modules are implemented. The scheduler identity
 also receives no project-wide `run.invoker` grant; that permission belongs on
@@ -76,9 +77,9 @@ compare-and-set promotion and rollback.
 Firestore application and vector data is protected by the managed daily backup
 schedule in `backup.tf`. Its 30-day retention is the explicit upper bound for
 scheduled copies: one daily backup per day means no more than 30 retained
-copies. Backup retention is independent of the corpus recovery path; the
-source PDF and its versioned generation remain the authoritative input for a
-deterministic index rebuild. Follow
+copies. Backup retention is independent of source retention and the corpus
+recovery path; the source PDF and its versioned generation remain the
+authoritative input for a deterministic index rebuild. Follow
 [`documents/runbooks/firestore-restore.md`](../../documents/runbooks/firestore-restore.md)
 for the restore drill and evidence record.
 

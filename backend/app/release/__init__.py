@@ -23,6 +23,16 @@ from .evidence import (
     validate_durable_promotion,
     validate_release_evidence,
 )
+from .source_retention import (
+    ConcurrentReferenceChange,
+    ReferenceSnapshot,
+    ReleaseSourceReference,
+    RetentionInventory,
+    RetentionPolicy,
+    SourceGeneration,
+    SourceRetentionError,
+    inventory,
+)
 
 __all__ = [
     "InMemoryReleaseDecisionStore",
@@ -42,4 +52,12 @@ __all__ = [
     "ReleaseEvidenceResult",
     "validate_durable_promotion",
     "validate_release_evidence",
+    "ConcurrentReferenceChange",
+    "ReferenceSnapshot",
+    "ReleaseSourceReference",
+    "RetentionInventory",
+    "RetentionPolicy",
+    "SourceGeneration",
+    "SourceRetentionError",
+    "inventory",
 ]

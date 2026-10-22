@@ -105,6 +105,24 @@ resource "google_cloud_run_v2_service" "api" {
           memory = "512Mi"
         }
       }
+      startup_probe {
+        http_get {
+          path = "/health/ready"
+        }
+        initial_delay_seconds = 0
+        timeout_seconds       = 2
+        period_seconds        = 5
+        failure_threshold     = 12
+      }
+      liveness_probe {
+        http_get {
+          path = "/health/live"
+        }
+        initial_delay_seconds = 10
+        timeout_seconds       = 2
+        period_seconds        = 10
+        failure_threshold     = 3
+      }
     }
     max_instance_request_concurrency = 8
   }

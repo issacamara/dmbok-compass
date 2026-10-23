@@ -106,7 +106,8 @@ jobs:
           cache-dependency-path: backend/requirements.lock
 
       - name: Install release evidence validator dependencies
-        run: python -m pip install --require-hashes -r backend/requirements.lock
+        working-directory: backend
+        run: python -m pip install --require-hashes -r requirements.lock
 
       - name: Validate durable approval and exact candidate evidence
         env:

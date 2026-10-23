@@ -1,0 +1,148 @@
+name: Promote reviewed release
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: GCP/GitHub environment to promote
+        required: true
+        default: development
+        type: choice
+        options: [development, production]
+      preview_run_id:
+        description: Successful Immutable delivery run that produced the reviewed preview
+        required: true
+        type: string
+      release_decision:
+        description: Approved durable release decision identifier
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+  id-token: write
+
+concurrency:
+  group: promotion-${{ inputs.target_environment }}
+  cancel-in-progress: false
+
+env:
+  REGION: europe-west1
+  API_SERVICE: dmbok-compass-api
+
+jobs:
+  promote:
+    name: Promote reviewed preview
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.target_environment }}
+    env:
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      HOSTING_SITE: ${{ vars.GCP_PROJECT_ID }}
+      PREVIEW_RUN_ID: ${{ inputs.preview_run_id }}
+      RELEASE_DECISION: ${{ inputs.release_decision }}
+      RELEASE_EVIDENCE_BUCKET: ${{ vars.RELEASE_EVIDENCE_BUCKET || format('{0}-release-evidence', vars.GCP_PROJECT_ID) }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate preview run
+        id: preview
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [[ "$PREVIEW_RUN_ID" =~ ^[0-9]+$ ]]
+          run="$(gh run view "$PREVIEW_RUN_ID" --repo "$GITHUB_REPOSITORY" \
+            --json workflowName,headBranch,status,conclusion,headSha)"
+          jq -e '
+            .workflowName == "Immutable delivery" and
+            .headBranch == "main" and
+            .status == "completed" and
+            .conclusion == "success"
+          ' <<< "$run" >/dev/null
+          echo "head_sha=$(jq -r .headSha <<< "$run")" >> "$GITHUB_OUTPUT"
+
+      - name: Download exact preview artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: delivery-evidence-${{ steps.preview.outputs.head_sha }}
+          path: delivery-evidence
+          run-id: ${{ inputs.preview_run_id }}
+          github-token: ${{ github.token }}
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_BUILD_SERVICE_ACCOUNT }}
+
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Attach private reviewed release bundle
+        run: |
+          [[ "$RELEASE_DECISION" =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]]
+          test -n "$RELEASE_EVIDENCE_BUCKET"
+          for file in release-evidence.json release-manifest.json release-decision.json; do
+            gcloud storage cp \
+              "gs://${RELEASE_EVIDENCE_BUCKET}/release-bundles/${RELEASE_DECISION}/${file}" \
+              "delivery-evidence/${file}"
+          done
+          python3 scripts/verify_delivery_manifest.py delivery-evidence/delivery-manifest.json
+          test "$(sha256sum delivery-evidence/frontend.tar | cut -d' ' -f1)" = \
+            "$(jq -r .frontend_digest delivery-evidence/delivery-manifest.json)"
+          jq -e --arg sha "${{ steps.preview.outputs.head_sha }}" \
+            --arg environment "${{ inputs.target_environment }}" \
+            '.commit == $sha and .target_environment == $environment' \
+            delivery-evidence/delivery-manifest.json >/dev/null
+          test "$(jq -r '.release_id' delivery-evidence/release-manifest.json)" = "$RELEASE_DECISION"
+          test "$(jq -r '.decision.release_id' delivery-evidence/release-decision.json)" = "$RELEASE_DECISION"
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: backend/requirements.lock
+
+      - name: Install release evidence validator dependencies
+        run: python -m pip install --require-hashes -r backend/requirements.lock
+
+      - name: Validate durable approval and exact candidate evidence
+        env:
+          PYTHONPATH: backend
+        run: |
+          python scripts/verify_release_evidence.py \
+            delivery-evidence/release-evidence.json \
+            --manifest delivery-evidence/release-manifest.json \
+            --decision delivery-evidence/release-decision.json \
+            --delivery delivery-evidence/delivery-manifest.json
+
+      - name: Promote exact preview artifacts
+        run: |
+          revision="$(jq -r .preview_revision delivery-evidence/delivery-manifest.json)"
+          test -n "$revision"
+          firebase_dir="$RUNNER_TEMP/firebase-deploy"
+          mkdir -p "$firebase_dir"
+          tar -xf delivery-evidence/frontend.tar -C "$firebase_dir"
+          jq -n --arg service "$API_SERVICE" --arg region "$REGION" \
+            '{hosting: [{target: "app", public: ".", rewrites: [{source: "/api/**", run: {serviceId: $service, region: $region}}]}]}' \
+            > "$firebase_dir/firebase.json"
+          jq -n --arg project "$PROJECT_ID" --arg site "$HOSTING_SITE" \
+            '{projects: {default: $project}, targets: {($project): {hosting: {app: [$site]}}}}' \
+            > "$firebase_dir/.firebaserc"
+          (cd "$firebase_dir" && npx --yes firebase-tools@13 deploy \
+            --project="$PROJECT_ID" --non-interactive)
+          gcloud run services update-traffic "$API_SERVICE" --region="$REGION" \
+            --project="$PROJECT_ID" --to-revisions="${revision}=100" --quiet
+          jq --arg decision "$RELEASE_DECISION" --arg revision "$revision" \
+            '.release_decision = $decision | .release_revision = $revision' \
+            delivery-evidence/delivery-manifest.json > delivery-evidence/delivery-manifest.promoted.json
+
+      - name: Publish promoted delivery evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: promoted-delivery-evidence-${{ steps.preview.outputs.head_sha }}
+          path: delivery-evidence
+          if-no-files-found: error
+          retention-days: 30

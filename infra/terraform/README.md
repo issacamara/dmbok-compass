@@ -3,16 +3,23 @@
 This directory is the infrastructure source of truth for the first-release
 GCP foundation. It provisions the regional managed services, Firebase project
 and email/password Authentication, deny-by-default Firestore rules, the corpus
-bucket, Artifact Registry, Firebase Hosting metadata, Secret Manager metadata,
-and separate service identities for runtime, worker, scheduler, build, and
-hosting concerns. GitHub Actions authenticates as the build identity through
-the repository-restricted Workload Identity Federation provider.
+and private release-evidence buckets, Artifact Registry, Firebase Hosting
+metadata, Secret Manager metadata, and separate service identities for runtime,
+worker, scheduler, build, and hosting concerns. GitHub Actions authenticates as
+the build identity through the repository-restricted Workload Identity
+Federation provider.
 
 Apply this foundation separately to the `dev-dmbok-compass` and
 `prod-dmbok-compass` projects. Each project has its own Artifact Registry,
 Cloud Run resources, Firebase Hosting site, secrets, service identities, and
 GitHub OIDC provider. Store the resulting provider and build-service-account
 outputs in the matching GitHub `development` or `production` environment.
+The promotion workflow derives the release-evidence bucket from the project ID
+unless `RELEASE_EVIDENCE_BUCKET` is overridden in that GitHub environment. The
+bucket is private and versioned; the build identity can read bundles but cannot
+write them. Upload approved bundles through a separately authorized operator
+identity under `release-bundles/<release-decision-id>/`, with the three JSON
+files documented in `documents/release/README.md`.
 
 Terraform state is stored remotely in separate, versioned GCS buckets:
 

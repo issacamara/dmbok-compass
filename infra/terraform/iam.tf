@@ -80,6 +80,12 @@ resource "google_storage_bucket_iam_member" "worker_corpus_writer" {
   member = "serviceAccount:${google_service_account.workload["worker"].email}"
 }
 
+resource "google_storage_bucket_iam_member" "build_release_evidence_reader" {
+  bucket = google_storage_bucket.release_evidence.name
+  role   = "roles/storage.objectViewer"
+  member = "serviceAccount:${google_service_account.workload["build"].email}"
+}
+
 locals {
   secret_access = {
     for pair in setproduct(["runtime", "worker"], var.secret_names) :

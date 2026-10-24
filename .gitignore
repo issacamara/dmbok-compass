@@ -13,3 +13,6 @@ web/vite.config.js
 infra/terraform/.terraform/
 infra/terraform/terraform.tfstate*
 .pnpm-store/
+graphify-out/
+.archify/
+documents/

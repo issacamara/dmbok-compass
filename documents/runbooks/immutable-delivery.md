@@ -10,18 +10,10 @@ by the workflow.
 
 ## Preview
 
-Pushes to `main` target the `development` environment and, with promotion
-disabled, create a Cloud Run revision with zero traffic and a Firebase preview
-channel in `dev-dmbok-compass`; they never change production traffic. Manual
-runs may target either environment. Save the generated workflow artifact containing
-`delivery-manifest.json`, the Terraform plan, preview URL, and evaluation
-result with the release decision.
-## Preview
-
-Pushes to `main` target the `development` environment and, with promotion
-disabled, create a Cloud Run revision with zero traffic and a Firebase preview
-channel in the development project; they never change production traffic.
-Manual runs may target either environment. Save the generated workflow artifact
+Pushes to `main` target the `development` environment: they create a Cloud Run
+revision with zero traffic and update the development Firebase Hosting site.
+They do not route API traffic to the new revision or change production. Manual
+runs may target either environment. Save the generated workflow artifact
 containing `delivery-manifest.json`, the Terraform plan, preview URL, and
 evaluation result with the release decision.
 
@@ -30,20 +22,20 @@ tag is not a promotable artifact. Do not rebuild between preview and promotion.
 
 ## Promotion
 
-After the sponsor records the release decision and the evaluation gates pass,
-manually run the workflow with the target environment, `promote=true`, and a
-non-empty `release_decision` identifier. Production promotion requires
-approval from the protected `production` GitHub environment. The promotion
-step first validates the saved manifest, then routes 100% of Cloud Run traffic
-in the selected project to the exact preview revision and deploys the
-already-built frontend artifact to that environment's Firebase Hosting site.
-The promotion step first validates the saved manifest, then routes 100% of
-Cloud Run traffic in the selected project to the exact preview revision and
-deploys the already-built frontend artifact to that environment's Firebase
-Hosting site.
+After the sponsor records the release decision and all evaluation gates pass,
+store `release-evidence.json`, `release-manifest.json`, and
+`release-decision.json` in the private release-evidence bucket at
+`release-bundles/<release-decision-id>/`. The delivery identity has read-only
+access; an authorized operator uploads the bundle. The promotion workflow
+downloads those records and validates them against the exact preview artifact
+before changing Firebase Hosting or Cloud Run traffic. Production additionally
+requires approval from the protected `production` GitHub environment.
 
-There is no automatic production promotion. An empty or false release decision
-leaves production unchanged.
+Run `Promote reviewed release` manually with the target environment, successful
+preview run ID, and release decision ID. There is no automatic promotion. The
+current `documents/release/langchain/release-evidence.json` is blocked, so it
+cannot be used to promote a release until valid evidence and the sponsor's
+recorded approval replace that blocked state.
 
 ## Rollback drill
 

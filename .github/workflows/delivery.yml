@@ -11,15 +11,6 @@ on:
         default: development
         type: choice
         options: [development, production]
-      promote:
-        description: Promote the reviewed preview to production
-        required: true
-        default: false
-        type: boolean
-      release_decision:
-        description: Release decision identifier required for promotion
-        required: false
-        type: string
       corpus_version_id:
         description: Immutable corpus version bound to this delivery
         required: false
@@ -133,9 +124,10 @@ jobs:
           configuration_digest="$(printf '%s' "$configuration" | sha256sum | cut -d' ' -f1)"
           jq -n --arg commit "$GITHUB_SHA" --arg image "${IMAGE_REPOSITORY}/api@${api_digest}" \
             --arg digest "$api_digest" --arg frontend_digest "$frontend_digest" \
+            --arg target_environment "$DEPLOY_ENVIRONMENT" \
             --arg corpus_version "$CORPUS_VERSION_ID" --arg collection "$CORPUS_COLLECTION" \
             --arg schema "$CORPUS_SCHEMA_VERSION" --arg index "$CORPUS_INDEX" --arg configuration_digest "$configuration_digest" \
-            '{commit: $commit, api_image: $image, admin_image: $image, api_digest: $digest, frontend_digest: $frontend_digest, api_schema_version: $schema, serving_binding: {corpus_version_id: $corpus_version, collection: $collection, schema_version: $schema, index: $index, configuration_digest: $configuration_digest}, preview_revision: "", release_revision: ""}' \
+            '{commit: $commit, target_environment: $target_environment, api_image: $image, admin_image: $image, api_digest: $digest, frontend_digest: $frontend_digest, api_schema_version: $schema, serving_binding: {corpus_version_id: $corpus_version, collection: $collection, schema_version: $schema, index: $index, configuration_digest: $configuration_digest}, preview_revision: "", release_revision: ""}' \
             > "$RUNNER_TEMP/delivery-manifest.json"
 
       - name: Plan Terraform against immutable image
@@ -208,87 +200,6 @@ jobs:
           path: ${{ runner.temp }}/delivery-evidence
           if-no-files-found: error
           retention-days: 14
-
-  promote:
-    name: Promote reviewed release
-    needs: preview
-    if: ${{ github.event_name == 'workflow_dispatch' && inputs.promote == true }}
-    runs-on: ubuntu-latest
-    environment: ${{ inputs.target_environment || 'development' }}
-    env:
-      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
-      IMAGE_REPOSITORY: europe-west1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/dmbok-compass
-      HOSTING_SITE: ${{ vars.GCP_PROJECT_ID }}
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v4
-
-      - name: Validate promotion input
-        env:
-          RELEASE_DECISION: ${{ inputs.release_decision }}
-        run: test -n "$RELEASE_DECISION"
-
-      - name: Download release evidence
-        uses: actions/download-artifact@v4
-        with:
-          name: delivery-evidence-${{ github.sha }}
-          path: delivery-evidence
-
-      - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
-        with:
-          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
-          service_account: ${{ vars.GCP_BUILD_SERVICE_ACCOUNT }}
-
-      - name: Set up Google Cloud SDK
-        uses: google-github-actions/setup-gcloud@v2
-
-      - name: Validate durable approval and exact candidate evidence
-        env:
-          RELEASE_DECISION: ${{ inputs.release_decision }}
-        run: |
-          test -f delivery-evidence/release-evidence.json
-          test -f delivery-evidence/release-manifest.json
-          test -f delivery-evidence/release-decision.json
-          test "$(jq -r '.release_id' delivery-evidence/release-manifest.json)" = "$RELEASE_DECISION"
-          test "$(jq -r '.decision.release_id' delivery-evidence/release-decision.json)" = "$RELEASE_DECISION"
-          python3 scripts/verify_release_evidence.py \
-            delivery-evidence/release-evidence.json \
-            --manifest delivery-evidence/release-manifest.json \
-            --decision delivery-evidence/release-decision.json \
-            --delivery delivery-evidence/delivery-manifest.json
-
-      - name: Promote exact preview artifacts
-        env:
-          RELEASE_DECISION: ${{ inputs.release_decision }}
-        run: |
-          python3 scripts/verify_delivery_manifest.py delivery-evidence/delivery-manifest.json
-          revision="$(jq -r .preview_revision delivery-evidence/delivery-manifest.json)"
-          test -n "$revision"
-          gcloud run services update-traffic "$API_SERVICE" --region="$REGION" \
-            --to-revisions="${revision}=100" --quiet
-          firebase_dir="$RUNNER_TEMP/firebase-deploy"
-          mkdir -p "$firebase_dir"
-          tar -xf delivery-evidence/frontend.tar -C "$firebase_dir"
-          jq -n --arg service "$API_SERVICE" --arg region "$REGION" \
-            '{hosting: [{target: "app", public: ".", rewrites: [{source: "/api/**", run: {serviceId: $service, region: $region}}]}]}' \
-            > "$firebase_dir/firebase.json"
-          jq -n --arg project "$PROJECT_ID" --arg site "$HOSTING_SITE" \
-            '{projects: {default: $project}, targets: {($project): {hosting: {app: [$site]}}}}' \
-            > "$firebase_dir/.firebaserc"
-          (cd "$firebase_dir" && npx --yes firebase-tools@13 deploy \
-            --project="$PROJECT_ID" --non-interactive)
-          jq --arg decision "$RELEASE_DECISION" --arg revision "$revision" \
-            '.release_decision = $decision | .release_revision = $revision' \
-            delivery-evidence/delivery-manifest.json > delivery-evidence/delivery-manifest.promoted.json
-
-      - name: Publish promotion evidence
-        uses: actions/upload-artifact@v4
-        with:
-          name: promoted-delivery-evidence-${{ github.sha }}
-          path: delivery-evidence
-          if-no-files-found: error
-          retention-days: 30
 
   rollback-preflight:
     name: Preflight coupled rollback

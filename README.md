@@ -122,8 +122,10 @@ these variables separately in each environment from the matching Terraform
 outputs and reviewed project settings: `GCP_PROJECT_ID`,
 `CORPUS_BUCKET_NAME`, `GCP_WORKLOAD_IDENTITY_PROVIDER`, and
 `GCP_BUILD_SERVICE_ACCOUNT`. Set `GCP_PROJECT_ID` to `dev-dmbok-compass` in
-development and `prod-dmbok-compass` in production. Protect the `production`
-environment with required reviewers.
+development and `prod-dmbok-compass` in production. The promotion workflow
+derives its private evidence bucket from the project ID unless
+`RELEASE_EVIDENCE_BUCKET` is overridden. Protect `production` with required
+reviewers.
 
 Firebase Hosting uses the environment project IDs as the site IDs, so the
 stable frontend URLs are:
@@ -134,9 +136,9 @@ stable frontend URLs are:
 If a GitHub environment has a `HOSTING_SITE` variable, set it to the matching
 project ID; otherwise the workflow derives it from `GCP_PROJECT_ID`.
 
-Pushes to `main` target development by default. Manual runs can select either
-environment; a run with `promote=true` and a release decision identifier
-promotes the exact reviewed artifacts in the selected project.
+Pushes to `main` create a development preview by default. Promotion is a
+separate manual `Promote reviewed release` workflow that validates the exact
+preview artifacts against durable release evidence before changing traffic.
 
 ## Workspace boundaries
 

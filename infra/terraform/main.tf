@@ -43,6 +43,20 @@ resource "google_firestore_database" "default" {
   depends_on = [google_project_service.required]
 }
 
+resource "google_storage_bucket" "release_evidence" {
+  project                     = var.project_id
+  name                        = "${var.project_id}-release-evidence"
+  location                    = var.region
+  uniform_bucket_level_access = true
+  public_access_prevention    = "enforced"
+
+  versioning {
+    enabled = true
+  }
+
+  depends_on = [google_project_service.required]
+}
+
 resource "google_firebase_project" "default" {
   provider = google-beta
   project  = var.project_id

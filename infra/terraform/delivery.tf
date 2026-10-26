@@ -107,7 +107,9 @@ resource "google_cloud_run_v2_service" "api" {
       }
       startup_probe {
         http_get {
-          path = "/health/ready"
+          # Startup only verifies that the process serves HTTP. Release
+          # readiness depends on a selected Firestore release.
+          path = "/health/live"
         }
         initial_delay_seconds = 0
         timeout_seconds       = 2

@@ -64,13 +64,13 @@ locals {
 
   terraform_apply_roles = toset([
     "roles/artifactregistry.admin",
-    "roles/billingbudgets.admin",
     "roles/cloudscheduler.admin",
     "roles/datastore.owner",
     "roles/firebase.admin",
     "roles/firebasehosting.admin",
     "roles/iam.serviceAccountAdmin",
     "roles/iam.serviceAccountUser",
+    "roles/iam.workloadIdentityPoolAdmin",
     "roles/identitytoolkit.admin",
     "roles/logging.configWriter",
     "roles/monitoring.editor",

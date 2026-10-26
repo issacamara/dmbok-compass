@@ -3,7 +3,6 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import Field
 from app.contracts import EvaluationRun, EvaluationRunSelection, UserProfile
-from app.contracts.api import ContractModel
 from app.evaluation import EvaluationJobService, EvaluationRunError
 from app.identity import get_admin_user
 

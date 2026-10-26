@@ -5,14 +5,12 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, HTTPException, status
 
 from app.contracts import UserProfile
-from app.evaluation.candidate_outputs import FirestoreCandidateOutputStore
 from app.evaluation.job import FirestoreEvaluationRunStore
 from app.evaluation.reviews import (
     AssessmentConflictError,
     AssessmentError,
     AssessmentRepository,
     AssessmentNotFoundError,
-    FirestoreAssessmentRepository,
     OutputStore,
     RunItemAssessment,
     RunItemAssessmentRecord,

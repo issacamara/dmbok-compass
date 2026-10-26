@@ -113,7 +113,8 @@ def metrics(
         raise ValueError("cases and results must have the same length")
     rows = tuple(_metric_row(case, result) for case, result in zip(cases, results))
     count = len(rows)
-    average = lambda key: round(sum(row[key] for row in rows) / count, 6) if count else 0.0
+    def average(key: str) -> float:
+        return round(sum(row[key] for row in rows) / count, 6) if count else 0.0
     grouped: dict[str, list[dict[str, float | int]]] = defaultdict(list)
     for row in rows:
         grouped[f"category:{row['category'] if row['category'] else 'unknown'}"].append(row)

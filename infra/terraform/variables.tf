@@ -8,6 +8,12 @@ variable "project_id" {
   }
 }
 
+variable "production_project_id" {
+  description = "Production project whose build identity may read development images for promotion."
+  type        = string
+  default     = "prod-dmbok-compass"
+}
+
 variable "billing_account_id" {
   description = "Billing account that owns the EUR monthly budget, for example 000000-000000-000000."
   type        = string
@@ -87,6 +93,39 @@ variable "github_repository" {
   validation {
     condition     = can(regex("^[^/]+/[^/]+$", var.github_repository))
     error_message = "github_repository must be in owner/repository form."
+  }
+}
+
+variable "github_branch" {
+  description = "Protected GitHub branch permitted to authenticate for this project."
+  type        = string
+  default     = "development"
+
+  validation {
+    condition     = can(regex("^(development|main)$", var.github_branch))
+    error_message = "github_branch must be development or main."
+  }
+}
+
+variable "github_environment" {
+  description = "GitHub Environment claim required for workload identity exchange."
+  type        = string
+  default     = "development"
+
+  validation {
+    condition     = can(regex("^(development|production)$", var.github_environment))
+    error_message = "github_environment must be development or production."
+  }
+}
+
+variable "github_deploy_workflow" {
+  description = "GitHub Actions workflow name allowed to use the application build identity."
+  type        = string
+  default     = "deploy-development"
+
+  validation {
+    condition     = can(regex("^deploy-(development|production)$", var.github_deploy_workflow))
+    error_message = "github_deploy_workflow must be deploy-development or deploy-production."
   }
 }
 

@@ -1,0 +1,176 @@
+name: terraform
+
+on:
+  pull_request:
+    branches: [development, main]
+    paths:
+      - infra/terraform/**
+      - .github/workflows/terraform.yml
+  push:
+    branches: [development, main]
+    paths:
+      - infra/terraform/**
+      - .github/workflows/terraform.yml
+  workflow_dispatch:
+    inputs:
+      target_environment:
+        description: Environment to plan or apply
+        required: true
+        type: choice
+        options: [development, production]
+      apply:
+        description: Apply the reviewed plan
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: terraform-${{ github.event_name == 'workflow_dispatch' && inputs.target_environment || github.base_ref || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  plan-development:
+    name: Plan development
+    if: >-
+      ${{ (github.event_name == 'pull_request' && github.base_ref == 'development') ||
+          (github.event_name == 'workflow_dispatch' && inputs.target_environment == 'development' && inputs.apply == false) }}
+    runs-on: ubuntu-latest
+    environment: development
+    env:
+      TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
+      TF_VAR_billing_account_id: ${{ vars.GCP_BILLING_ACCOUNT_ID }}
+      TF_VAR_corpus_bucket_name: ${{ vars.CORPUS_BUCKET_NAME }}
+      TF_VAR_hosting_site_id: ${{ vars.HOSTING_SITE }}
+      TF_VAR_runtime_secret_version: ${{ vars.RUNTIME_SECRET_VERSION }}
+      TF_VAR_corpus_version_id: ${{ vars.CORPUS_VERSION_ID }}
+      TF_VAR_github_branch: development
+      TF_VAR_github_environment: development
+      TF_VAR_github_deploy_workflow: deploy-development
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_BUILD_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+      - name: Initialize Terraform
+        working-directory: infra/terraform
+        run: terraform init -backend-config=backends/development.hcl -reconfigure -input=false
+      - name: Check formatting and validate
+        working-directory: infra/terraform
+        run: |
+          terraform fmt -check -recursive .
+          terraform validate
+      - name: Plan
+        working-directory: infra/terraform
+        run: terraform plan -input=false -no-color
+
+  plan-production:
+    name: Plan production
+    if: >-
+      ${{ (github.event_name == 'pull_request' && github.base_ref == 'main') ||
+          (github.event_name == 'workflow_dispatch' && inputs.target_environment == 'production' && inputs.apply == false) }}
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
+      TF_VAR_billing_account_id: ${{ vars.GCP_BILLING_ACCOUNT_ID }}
+      TF_VAR_corpus_bucket_name: ${{ vars.CORPUS_BUCKET_NAME }}
+      TF_VAR_hosting_site_id: ${{ vars.HOSTING_SITE }}
+      TF_VAR_runtime_secret_version: ${{ vars.RUNTIME_SECRET_VERSION }}
+      TF_VAR_corpus_version_id: ${{ vars.CORPUS_VERSION_ID }}
+      TF_VAR_github_branch: main
+      TF_VAR_github_environment: production
+      TF_VAR_github_deploy_workflow: deploy-production
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_BUILD_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+      - name: Initialize Terraform
+        working-directory: infra/terraform
+        run: terraform init -backend-config=backends/production.hcl -reconfigure -input=false
+      - name: Check formatting and validate
+        working-directory: infra/terraform
+        run: |
+          terraform fmt -check -recursive .
+          terraform validate
+      - name: Plan
+        working-directory: infra/terraform
+        run: terraform plan -input=false -no-color
+
+  apply-development:
+    name: Apply development
+    if: >-
+      ${{ (github.event_name == 'push' && github.ref_name == 'development') ||
+          (github.event_name == 'workflow_dispatch' && inputs.target_environment == 'development' && inputs.apply == true) }}
+    runs-on: ubuntu-latest
+    environment: development
+    env:
+      TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
+      TF_VAR_billing_account_id: ${{ vars.GCP_BILLING_ACCOUNT_ID }}
+      TF_VAR_corpus_bucket_name: ${{ vars.CORPUS_BUCKET_NAME }}
+      TF_VAR_hosting_site_id: ${{ vars.HOSTING_SITE }}
+      TF_VAR_runtime_secret_version: ${{ vars.RUNTIME_SECRET_VERSION }}
+      TF_VAR_corpus_version_id: ${{ vars.CORPUS_VERSION_ID }}
+      TF_VAR_github_branch: development
+      TF_VAR_github_environment: development
+      TF_VAR_github_deploy_workflow: deploy-development
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_BUILD_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+      - name: Initialize Terraform
+        working-directory: infra/terraform
+        run: terraform init -backend-config=backends/development.hcl -reconfigure -input=false
+      - name: Plan and apply
+        working-directory: infra/terraform
+        run: |
+          terraform plan -input=false -out="$RUNNER_TEMP/development.tfplan"
+          terraform apply -input=false -auto-approve "$RUNNER_TEMP/development.tfplan"
+
+  apply-production:
+    name: Apply production
+    if: >-
+      ${{ (github.event_name == 'push' && github.ref_name == 'main') ||
+          (github.event_name == 'workflow_dispatch' && inputs.target_environment == 'production' && inputs.apply == true) }}
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      TF_VAR_project_id: ${{ vars.GCP_PROJECT_ID }}
+      TF_VAR_billing_account_id: ${{ vars.GCP_BILLING_ACCOUNT_ID }}
+      TF_VAR_corpus_bucket_name: ${{ vars.CORPUS_BUCKET_NAME }}
+      TF_VAR_hosting_site_id: ${{ vars.HOSTING_SITE }}
+      TF_VAR_runtime_secret_version: ${{ vars.RUNTIME_SECRET_VERSION }}
+      TF_VAR_corpus_version_id: ${{ vars.CORPUS_VERSION_ID }}
+      TF_VAR_github_branch: main
+      TF_VAR_github_environment: production
+      TF_VAR_github_deploy_workflow: deploy-production
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_BUILD_SERVICE_ACCOUNT }}
+      - uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd # v3
+      - name: Initialize Terraform
+        working-directory: infra/terraform
+        run: terraform init -backend-config=backends/production.hcl -reconfigure -input=false
+      - name: Plan and apply
+        working-directory: infra/terraform
+        run: |
+          terraform plan -input=false -out="$RUNNER_TEMP/production.tfplan"
+          terraform apply -input=false -auto-approve "$RUNNER_TEMP/production.tfplan"

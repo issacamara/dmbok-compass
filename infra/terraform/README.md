@@ -13,13 +13,14 @@ Apply this foundation separately to the `dev-dmbok-compass` and
 `prod-dmbok-compass` projects. Each project has its own Artifact Registry,
 Cloud Run resources, Firebase Hosting site, secrets, service identities, and
 GitHub OIDC provider. Store the resulting provider and build-service-account
-outputs in the matching GitHub `development` or `production` environment.
-The promotion workflow derives the release-evidence bucket from the project ID
-unless `RELEASE_EVIDENCE_BUCKET` is overridden in that GitHub environment. The
-bucket is private and versioned; the build identity can read bundles but cannot
-write them. Upload approved bundles through a separately authorized operator
-identity under `release-bundles/<release-decision-id>/`, with the three JSON
-files documented in `documents/release/README.md`.
+outputs as `GCP_WORKLOAD_IDENTITY_PROVIDER` and `GCP_BUILD_SERVICE_ACCOUNT`
+variables in the matching GitHub environment. The Terraform plan/apply
+jobs use the same build service account. The updated provider accepts
+the `development` branch and environment only in the development project,
+and the `main` branch and `production` environment only in production.
+The production build identity is granted read access to the development image
+repository so it can copy an image by digest. Apply the development IAM change
+before the first production promotion.
 
 Terraform state is stored remotely in separate, versioned GCS buckets:
 
@@ -47,10 +48,9 @@ instance. These limits keep the initial deployment aligned with the three-user
 capacity target and the monthly infrastructure budget.
 
 `delivery.tf` defines the API service and bounded ingestion/evaluation jobs.
-GitHub Actions supplies an immutable registry-digest image during the reviewed
-plan; its preview step creates a zero-traffic revision and the production step
-routes traffic only after an explicit release decision and protected
-`production` environment approval. See
+GitHub Actions builds an API image on `development`, then copies the same
+digest into the production registry when `main` is pushed. Production uses
+the protected `production` environment approval and wait timer. See
 `documents/runbooks/immutable-delivery.md` for the evidence and rollback drill.
 
 Secret values must be created out of band with `gcloud secrets versions add` or

@@ -134,6 +134,15 @@ resource "google_cloud_run_v2_service" "api" {
     percent = 100
   }
 
+  lifecycle {
+    # CD workflows own revisions and runtime env expansion after provisioning.
+    # Terraform remains the owner of the service, identity, probes, and sizing.
+    ignore_changes = [
+      template[0].containers[0].image,
+      template[0].containers[0].env,
+    ]
+  }
+
   depends_on = [
     google_project_service.required,
     google_secret_manager_secret_iam_member.workload_access,
@@ -196,6 +205,10 @@ resource "google_cloud_run_v2_job" "ingestion" {
         }
       }
     }
+  }
+
+  lifecycle {
+    ignore_changes = [template[0].template[0].containers[0].image, template[0].template[0].containers[0].env]
   }
 
   depends_on = [google_project_service.required]
@@ -270,6 +283,10 @@ resource "google_cloud_run_v2_job" "evaluation" {
         }
       }
     }
+  }
+
+  lifecycle {
+    ignore_changes = [template[0].template[0].containers[0].image, template[0].template[0].containers[0].env]
   }
 
   depends_on = [google_project_service.required]

@@ -1,54 +1,24 @@
-# Immutable preview and production delivery
+# Development and production delivery
 
-The GitHub Actions workflow in `.github/workflows/delivery.yml` builds the API
-once, pushes it under the commit SHA, resolves the registry digest, and records
-that digest in `delivery-manifest.json`. The same digest is used for the
-zero-traffic Cloud Run revision. The frontend is tarred and hashed once; the
-preview and production hosting steps consume that same uploaded artifact.
-`delivery.tfplan.txt` is the human-review evidence for the Terraform plan used
-by the workflow.
+## Normal path
 
-## Preview
+1. Merge work into the protected `development` branch through a pull request. The `CI` workflow checks backend tests and dependency audit, final API image smoke test, frontend tests/build/audit, Terraform, and LangChain compatibility.
+2. The development workflow builds the backend image once, tags it with the commit SHA, and deploys its digest to the development Cloud Run API and jobs. It builds the frontend with development Firebase client settings and deploys Firebase Hosting.
+3. Merge the validated work into the protected `main` branch through a pull request. The production workflow searches development history for a commit whose `backend/` tree matches the production commit. If none exists, first merge and deploy that backend source on `development`.
+4. GitHub's `production` environment holds the required reviewer and wait timer gate. After approval, the workflow copies the source image by digest from the development Artifact Registry to the production project. It checks that the destination digest matches before deploying the API and jobs. It builds the frontend with production Firebase client settings and deploys production Firebase Hosting.
+5. Each run uploads `deployment.json` with source commit, deployment commit, project, and image digest. Both SHAs are also set on Cloud Run as `SOURCE_COMMIT_SHA` and `DEPLOYMENT_COMMIT_SHA`.
 
-Pushes to `main` target the `development` environment: they create a Cloud Run
-revision with zero traffic and update the development Firebase Hosting site.
-They do not route API traffic to the new revision or change production. Manual
-runs may target either environment. Save the generated workflow artifact
-containing `delivery-manifest.json`, the Terraform plan, preview URL, and
-evaluation result with the release decision.
+A hotfix branched from `main` must also be merged into `development` and built there. A production deployment with a backend tree that has not been built on development stops before the approval gate.
 
-The manifest is valid only when `api_image` ends in `@api_digest`; a mutable
-tag is not a promotable artifact. Do not rebuild between preview and promotion.
+## Prerequisites
 
-## Promotion
+- Apply the Terraform IAM changes in both projects. Development WIF accepts `development`; production WIF accepts `main`. The production build service account can read the development Artifact Registry repository.
+- GitHub environment variables for each project: `GCP_PROJECT_DEVELOPMENT` or `GCP_PROJECT_PRODUCTION`, `WIF_PROVIDER`, `GCP_SA_DEVELOPMENT` or `GCP_SA_PRODUCTION`, `CORPUS_VERSION_ID`, `RUNTIME_SECRET_VERSION`, `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID`, and `VITE_FIREBASE_APP_ID`.
+- Secret Manager in each project has the selected `answer-provider-api-key` version. GitHub stores no service account JSON key or runtime API key.
+- Protect both branches with pull requests; require CI. Configure required reviewers and a wait timer on the `production` GitHub environment.
 
-After the sponsor records the release decision and all evaluation gates pass,
-store `release-evidence.json`, `release-manifest.json`, and
-`release-decision.json` in the private release-evidence bucket at
-`release-bundles/<release-decision-id>/`. The delivery identity has read-only
-access; an authorized operator uploads the bundle. The promotion workflow
-downloads those records and validates them against the exact preview artifact
-before changing Firebase Hosting or Cloud Run traffic. Production additionally
-requires approval from the protected `production` GitHub environment.
+## Rollback
 
-Run `Promote reviewed release` manually with the target environment, successful
-preview run ID, and release decision ID. There is no automatic promotion. The
-current `documents/release/langchain/release-evidence.json` is blocked, so it
-cannot be used to promote a release until valid evidence and the sponsor's
-recorded approval replace that blocked state.
+Record the current Cloud Run API revision, job image digests, Firebase Hosting release, and corpus version before rollback. Route the API back to its previous revision with `gcloud run services update-traffic`, restore the prior Firebase Hosting release, and redeploy the prior image digest to the ingestion/evaluation jobs. If corpus state changed, restore its prior active version as described in the corpus recovery procedure. Verify health, citations, and the frontend before accepting the rollback. The previous deployment artifacts identify the source and deployment commits and image digest; do not rebuild the backend for rollback.
 
-## Rollback drill
-
-1. Record the active Cloud Run revision and Firebase release before a drill.
-2. Route Cloud Run traffic to the immediately prior known-good revision:
-   `gcloud run services update-traffic SERVICE --region=europe-west1 --to-revisions=REVISION=100`.
-3. Restore the prior Firebase Hosting release using the Firebase console or
-   the documented release identifier; do not rebuild the frontend.
-4. If the corpus is implicated, use the application’s immutable corpus-version
-   rollback operation and verify the active-version pointer before serving
-   traffic.
-5. Run the smoke and citation checks, record timestamps and revision IDs, and
-   return traffic only after the release approver accepts the evidence.
-
-The drill passes only when the prior API revision, frontend release, and (when
-needed) corpus version are restored without rebuilding or mutating an artifact.
+The earlier manual release-evidence bundle and zero-traffic preview workflow is retired by this branch-driven process. The release-evidence storage and verification scripts remain in the repository for historical records and manual investigations.

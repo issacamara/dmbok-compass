@@ -18,11 +18,13 @@ locals {
   ])
 
   service_accounts = {
-    runtime   = "${var.name_prefix}-runtime"
-    worker    = "${var.name_prefix}-worker"
-    scheduler = "${var.name_prefix}-scheduler"
-    build     = "${var.name_prefix}-build"
-    hosting   = "${var.name_prefix}-hosting"
+    runtime         = "${var.name_prefix}-runtime"
+    worker          = "${var.name_prefix}-worker"
+    scheduler       = "${var.name_prefix}-scheduler"
+    build           = "${var.name_prefix}-build"
+    terraform_plan  = "${var.name_prefix}-terraform-plan"
+    terraform_apply = "${var.name_prefix}-terraform-apply"
+    hosting         = "${var.name_prefix}-hosting"
   }
 }
 

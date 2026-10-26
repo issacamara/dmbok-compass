@@ -184,7 +184,7 @@ def test_migration_baseline_matches_artifacts_and_effective_routes() -> None:
     assert effective["vertexRoute"]["enabled"] is False
     assert "release gate" in effective["vertexRoute"]["releaseGate"].lower()
 
-    delivery = (root / ".github/workflows/delivery.yml").read_text()
+    delivery = (root / "scripts/deploy_cloud_run.sh").read_text()
     compose = (root / "docker-compose.yml").read_text()
     for value in effective["localCompose"].values():
         assert str(value) in compose

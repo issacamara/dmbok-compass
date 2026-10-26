@@ -24,11 +24,15 @@ resource "google_iam_workload_identity_pool_provider" "github_actions" {
   display_name                       = "GitHub Actions OIDC"
 
   attribute_mapping = {
-    "google.subject"       = "assertion.sub"
-    "attribute.repository" = "assertion.repository"
+    "google.subject"           = "assertion.sub"
+    "attribute.repository"     = "assertion.repository"
+    "attribute.workflow"       = "assertion.workflow"
+    "attribute.workflow_event" = "assertion.workflow + ':' + assertion.event_name"
   }
 
-  attribute_condition = "assertion.repository == '${var.github_repository}' && assertion.ref == 'refs/heads/main'"
+  # PR plans use the pull request ref and base_ref; merged applies use the
+  # protected branch ref. Both paths require the matching GitHub Environment.
+  attribute_condition = "assertion.repository == '${var.github_repository}' && (assertion.ref == 'refs/heads/${var.github_branch}' || (assertion.event_name == 'pull_request' && assertion.base_ref == '${var.github_branch}')) && assertion.environment == '${var.github_environment}'"
 
   oidc {
     issuer_uri = "https://token.actions.githubusercontent.com"
@@ -50,6 +54,48 @@ locals {
     "roles/logging.logWriter",
     "roles/monitoring.metricWriter",
   ])
+}
+
+locals {
+  terraform_plan_roles = toset([
+    "roles/iam.securityReviewer",
+    "roles/viewer",
+  ])
+
+  terraform_apply_roles = toset([
+    "roles/artifactregistry.admin",
+    "roles/billingbudgets.admin",
+    "roles/cloudscheduler.admin",
+    "roles/datastore.owner",
+    "roles/firebase.admin",
+    "roles/firebasehosting.admin",
+    "roles/iam.serviceAccountAdmin",
+    "roles/iam.serviceAccountUser",
+    "roles/identitytoolkit.admin",
+    "roles/logging.configWriter",
+    "roles/monitoring.editor",
+    "roles/resourcemanager.projectIamAdmin",
+    "roles/run.admin",
+    "roles/secretmanager.admin",
+    "roles/serviceusage.serviceUsageAdmin",
+    "roles/storage.admin",
+  ])
+}
+
+resource "google_project_iam_member" "terraform_plan" {
+  for_each = local.terraform_plan_roles
+
+  project = var.project_id
+  role    = each.value
+  member  = "serviceAccount:${google_service_account.workload["build"].email}"
+}
+
+resource "google_project_iam_member" "terraform_apply" {
+  for_each = local.terraform_apply_roles
+
+  project = var.project_id
+  role    = each.value
+  member  = "serviceAccount:${google_service_account.workload["build"].email}"
 }
 
 resource "google_project_iam_member" "runtime" {
@@ -80,6 +126,12 @@ resource "google_storage_bucket_iam_member" "worker_corpus_writer" {
   member = "serviceAccount:${google_service_account.workload["worker"].email}"
 }
 
+resource "google_storage_bucket_iam_member" "build_release_evidence_reader" {
+  bucket = google_storage_bucket.release_evidence.name
+  role   = "roles/storage.objectViewer"
+  member = "serviceAccount:${google_service_account.workload["build"].email}"
+}
+
 locals {
   secret_access = {
     for pair in setproduct(["runtime", "worker"], var.secret_names) :
@@ -99,6 +151,17 @@ resource "google_project_iam_member" "build_artifact_writer" {
   project = var.project_id
   role    = "roles/artifactregistry.writer"
   member  = "serviceAccount:${google_service_account.workload["build"].email}"
+}
+
+# Production copies the exact development image digest without rebuilding it.
+# This grant is confined to the development repository.
+resource "google_artifact_registry_repository_iam_member" "production_image_reader" {
+  count      = var.project_id == "dev-dmbok-compass" ? 1 : 0
+  project    = var.project_id
+  location   = var.region
+  repository = google_artifact_registry_repository.containers.repository_id
+  role       = "roles/artifactregistry.reader"
+  member     = "serviceAccount:${var.name_prefix}-build@${var.production_project_id}.iam.gserviceaccount.com"
 }
 
 resource "google_project_iam_member" "build_cloud_run_developer" {
@@ -124,7 +187,23 @@ resource "google_service_account_iam_member" "build_runtime_user" {
 resource "google_service_account_iam_member" "github_actions_workload_identity_user" {
   service_account_id = google_service_account.workload["build"].name
   role               = "roles/iam.workloadIdentityUser"
-  member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github_actions.name}/attribute.repository/${var.github_repository}"
+  member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github_actions.name}/attribute.workflow_event/${var.github_deploy_workflow}:push"
+}
+
+resource "google_service_account_iam_member" "github_actions_terraform_workload_identity_user" {
+  for_each = toset(["terraform:push", "terraform:workflow_dispatch"])
+
+  service_account_id = google_service_account.workload["build"].name
+  role               = "roles/iam.workloadIdentityUser"
+  member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github_actions.name}/attribute.workflow_event/${each.value}"
+}
+
+resource "google_service_account_iam_member" "github_actions_terraform_plan_workload_identity_user" {
+  for_each = toset(["terraform:pull_request", "terraform:workflow_dispatch"])
+
+  service_account_id = google_service_account.workload["build"].name
+  role               = "roles/iam.workloadIdentityUser"
+  member             = "principalSet://iam.googleapis.com/${google_iam_workload_identity_pool.github_actions.name}/attribute.workflow_event/${each.value}"
 }
 
 # Cloud Scheduler receives only an identity here. The run.invoker grant is

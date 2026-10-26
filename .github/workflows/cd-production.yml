@@ -1,0 +1,136 @@
+name: deploy-production
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  select-source:
+    runs-on: ubuntu-latest
+    outputs:
+      source_sha: ${{ steps.source.outputs.sha }}
+    steps:
+      - name: Check out repository history
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - name: Find development build with identical backend source
+        id: source
+        run: |
+          git fetch origin development
+          target_tree="$(git rev-parse HEAD:backend)"
+          source_sha=""
+          for commit in $(git rev-list origin/development); do
+            if [ "$(git rev-parse "$commit:backend")" = "$target_tree" ]; then
+              source_sha="$commit"
+              break
+            fi
+          done
+          if [ -z "$source_sha" ]; then
+            echo "No development commit has the production backend tree; deploy it to development first." >&2
+            exit 1
+          fi
+          echo "sha=$source_sha" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    needs: select-source
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      PROJECT_ID: ${{ vars.GCP_PROJECT_PRODUCTION }}
+      DEVELOPMENT_PROJECT_ID: dev-dmbok-compass
+      CORPUS_VERSION_ID: ${{ vars.CORPUS_VERSION_ID }}
+      RUNTIME_SECRET_VERSION: ${{ vars.RUNTIME_SECRET_VERSION }}
+      SOURCE_SHA: ${{ needs.select-source.outputs.source_sha }}
+      DEPLOY_SHA: ${{ github.sha }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Check required environment configuration
+        env:
+          PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          SERVICE_ACCOUNT: ${{ vars.GCP_SA_PRODUCTION }}
+        run: |
+          test -n "$PROJECT_ID" && test -n "$PROVIDER" && test -n "$SERVICE_ACCOUNT"
+          test -n "$CORPUS_VERSION_ID" && test -n "$RUNTIME_SECRET_VERSION"
+          test "$PROJECT_ID" != "$DEVELOPMENT_PROJECT_ID"
+      - name: Authenticate to production GCP
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_SA_PRODUCTION }}
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2
+      - name: Configure Artifact Registry authentication
+        run: gcloud auth configure-docker europe-west1-docker.pkg.dev --quiet
+      - name: Resolve development image digest
+        id: image
+        run: |
+          source="europe-west1-docker.pkg.dev/${DEVELOPMENT_PROJECT_ID}/dmbok-compass/api:${SOURCE_SHA}"
+          digest="$(gcloud artifacts docker images describe "$source" --format='value(image_summary.digest)')"
+          test -n "$digest"
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: Set up Go for digest preserving copy
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: "1.23.8"
+      - name: Install pinned gcrane
+        run: go install github.com/google/go-containerregistry/cmd/gcrane@v0.20.6
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build production frontend
+        working-directory: web
+        env:
+          VITE_FIREBASE_API_KEY: ${{ vars.VITE_FIREBASE_API_KEY }}
+          VITE_FIREBASE_AUTH_DOMAIN: ${{ vars.VITE_FIREBASE_AUTH_DOMAIN }}
+          VITE_FIREBASE_PROJECT_ID: ${{ vars.VITE_FIREBASE_PROJECT_ID }}
+          VITE_FIREBASE_APP_ID: ${{ vars.VITE_FIREBASE_APP_ID }}
+        run: |
+          test -n "$VITE_FIREBASE_API_KEY" && test -n "$VITE_FIREBASE_AUTH_DOMAIN"
+          test -n "$VITE_FIREBASE_PROJECT_ID" && test -n "$VITE_FIREBASE_APP_ID"
+          npm ci
+          npm run build
+      - name: Promote and verify exact API image
+        id: promoted
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          source="europe-west1-docker.pkg.dev/${DEVELOPMENT_PROJECT_ID}/dmbok-compass/api@${DIGEST}"
+          destination="europe-west1-docker.pkg.dev/${PROJECT_ID}/dmbok-compass/api:${SOURCE_SHA}"
+          "$HOME/go/bin/gcrane" cp "$source" "$destination"
+          copied_digest="$("$HOME/go/bin/gcrane" digest "$destination")"
+          test "$copied_digest" = "$DIGEST"
+          echo "image=europe-west1-docker.pkg.dev/${PROJECT_ID}/dmbok-compass/api@${DIGEST}" >> "$GITHUB_OUTPUT"
+      - name: Deploy exact API image to Cloud Run
+        env:
+          API_IMAGE: ${{ steps.promoted.outputs.image }}
+        run: bash scripts/deploy_cloud_run.sh
+      - name: Deploy production Firebase Hosting
+        run: bash scripts/deploy_firebase.sh
+      - name: Record deployment evidence
+        env:
+          DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          jq -n --arg source "$SOURCE_SHA" --arg deployment "$DEPLOY_SHA" \
+            --arg project "$PROJECT_ID" --arg digest "$DIGEST" \
+            '{source_commit: $source, deployment_commit: $deployment, project: $project, image_digest: $digest}' \
+            > deployment.json
+      - name: Upload deployment evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: production-deployment-${{ github.sha }}
+          path: deployment.json
+          if-no-files-found: error
+          retention-days: 30

@@ -10,6 +10,8 @@ from contextlib import asynccontextmanager
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
+from app.settings import startup_configuration
+
 
 class ShutdownCoordinator:
     """Stop admission and cancel in-flight requests during process shutdown."""
@@ -76,5 +78,6 @@ async def lifecycle_middleware(request: Request, call_next):
 
 @asynccontextmanager
 async def lifespan(app) -> AsyncIterator[None]:
+    app.state.runtime_configuration = startup_configuration()
     yield
     await app.state.shutdown_coordinator.shutdown()

@@ -9,6 +9,8 @@ const api = vi.hoisted(() => ({
   importEvaluationDataset: vi.fn(),
   getActiveEvaluationGeneration: vi.fn(),
   reviewEvaluationItem: vi.fn(),
+  bindEvaluationItem: vi.fn(),
+  assessEvaluationItem: vi.fn(),
   recordReleaseDecision: vi.fn(),
 }));
 
@@ -19,6 +21,15 @@ const completedRun = {
   configuration_version_id: "config-v1", model_version_id: "model-v1", status: "completed",
   selected_item_ids: ["item-1"], item_results: [], error: null,
   metrics: [{ metric_name: "retrieval_success", numerator: 1, denominator: 1, percentage: 100, threshold: 90, passed: true }],
+};
+
+const completedRunWithReview = {
+  ...completedRun,
+  item_results: [{
+    item_id: "item-1", retrieval_success: true, grounded: false, citation_correct: false,
+    answer_quality: false, refusal_correct: false, response_time_ms: 120, assessment_status: "pending",
+    output: { response_sha256: "c".repeat(64), outcome: "answer", answer_text: "Candidate answer", claims: [], evidence: [] },
+  }],
 };
 
 describe("EvaluationPanel", () => {
@@ -33,6 +44,8 @@ describe("EvaluationPanel", () => {
       ],
     });
     api.recordReleaseDecision.mockResolvedValue({ ...completedRun, decision: "approved" });
+    api.bindEvaluationItem.mockResolvedValue({ generation_id: "generation-v1", item_id: "item-1", review_status: "candidate", binding_version: "candidate-binding-v1", expected_refusal: false, reviewed_chunk_ids: ["chunk-1"] });
+    api.assessEvaluationItem.mockResolvedValue({ assessment_status: "reviewed", response_sha256: "c".repeat(64), scorer_version: "scorer-v1", claim_support: true, claim_citation_support: true, rubric_passed: true, expected_refusal: false });
   });
 
   it("launches the full evaluation and displays version-bound gate evidence", async () => {
@@ -91,5 +104,33 @@ describe("EvaluationPanel", () => {
       release_id: "release-eval-1", decision: "approved", gate_report_ids: ["report-1"],
     })));
     expect(await screen.findByRole("status")).toHaveTextContent("Release decision recorded: approved.");
+  });
+
+  it("saves a candidate-bound support mapping without approving the item", async () => {
+    const user = userEvent.setup();
+    render(<EvaluationPanel token="admin-token" />);
+    await user.type((await screen.findAllByLabelText("Support chunk ID"))[0], "chunk-1");
+    await user.type(screen.getAllByLabelText("Support content hash")[0], "d".repeat(64));
+    await user.click(screen.getAllByRole("button", { name: "Save support binding" })[0]);
+
+    await waitFor(() => expect(api.bindEvaluationItem).toHaveBeenCalledWith("admin-token", "generation-v1", "item-1", expect.objectContaining({
+      corpus_version_id: "corpus-v1", reviewed_chunk_ids: ["chunk-1"], reviewed_chunk_hashes: { "chunk-1": "d".repeat(64) }, expected_refusal: false,
+    })));
+    expect(await screen.findByRole("status")).toHaveTextContent("Support binding saved for item-1");
+  });
+
+  it("submits an exact candidate output assessment", async () => {
+    const user = userEvent.setup();
+    api.launchEvaluation.mockResolvedValue(completedRunWithReview);
+    render(<EvaluationPanel token="admin-token" />);
+    await user.click(screen.getByRole("button", { name: "Run full evaluation" }));
+    expect(await screen.findByText("Candidate answer")).toBeInTheDocument();
+    await user.click(screen.getByLabelText("claim support"));
+    await user.click(screen.getByRole("button", { name: "Submit exact output review" }));
+
+    await waitFor(() => expect(api.assessEvaluationItem).toHaveBeenCalledWith("admin-token", "eval-1", "item-1", expect.objectContaining({
+      response_sha256: "c".repeat(64), scorer_version: "scorer-v1", claim_support: true,
+    })));
+    expect(await screen.findByRole("status")).toHaveTextContent("Exact output review saved for item-1");
   });
 });

@@ -77,15 +77,16 @@ def test_preflight_requires_existing_gate_and_owner(gate: bool, owner: bool) -> 
         rollback.build_plan(manifest(), manifest("v1"), protected_gate_approved=gate, owner_approved=owner)
 
 
-def test_delivery_workflow_records_one_image_and_complete_binding() -> None:
-    workflow = (ROOT / ".github" / "workflows" / "delivery.yml").read_text(encoding="utf-8")
+def test_both_deployments_use_one_image_for_api_and_jobs() -> None:
+    development = (ROOT / ".github/workflows/cd-development.yml").read_text(encoding="utf-8")
+    production = (ROOT / ".github/workflows/cd-production.yml").read_text(encoding="utf-8")
+    deploy = (ROOT / "scripts/deploy_cloud_run.sh").read_text(encoding="utf-8")
 
-    assert "admin_image: $image" in workflow
-    assert "serving_binding:" in workflow
-    assert "RAG_CORPUS_VERSION_ID=${CORPUS_VERSION_ID}" in workflow
-    assert "rollback-preflight:" in workflow
-    rollback_job = workflow.split("  rollback-preflight:", 1)[1]
-    assert "gcloud run services update-traffic" not in rollback_job
+    assert "bash scripts/deploy_cloud_run.sh" in development
+    assert "bash scripts/deploy_cloud_run.sh" in production
+    assert 'test "$copied_digest" = "$DIGEST"' in production
+    assert deploy.count('--image="$API_IMAGE"') == 3
+    assert "RAG_CORPUS_VERSION_ID=${CORPUS_VERSION_ID}" in deploy
 
 
 def test_terraform_couples_admin_images_and_retains_both_indexes() -> None:

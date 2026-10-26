@@ -29,7 +29,7 @@ class LoggingTelemetryAdapter:
     def emit(self, event: TelemetryEvent) -> None:
         payload = event.model_dump(exclude_none=True, mode="json")
         validate_telemetry_payload(payload)
-        logger.info("telemetry %s", json.dumps(payload, sort_keys=True))
+        logger.info(json.dumps(payload, sort_keys=True))
 
 
 class InMemoryTelemetryAdapter:
@@ -48,7 +48,7 @@ def response_event(response: AnswerResponse, started: float) -> TelemetryEvent:
 
     return TelemetryEvent(
         request_count=1,
-        outcome=response.outcome,
+        outcome="error" if response.outcome == "operational_error" else response.outcome,
         duration_ms=_elapsed_ms(started),
         provider_model=response.trace.selected_model,
         model_attempts=response.trace.model_attempts or None,

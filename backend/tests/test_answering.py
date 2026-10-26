@@ -83,7 +83,7 @@ class BudgetAdapter:
             candidate=GenerationCandidate(
                 outcome="answer",
                 answer_text="Grounded.",
-                citations=[{"citation_id": "chunk-1", "page": 1, "section": "x", "excerpt": "y"}],
+                citations=[{"citation_id": "chunk-1", "page": 4, "section": "Governance", "excerpt": "Stored excerpt chunk-1"}],
             ),
             usage=UsageMetadata(provider="test", model="test-model"),
         )
@@ -118,7 +118,7 @@ def test_retrieved_answer_service_uses_active_version_and_top_five_limit() -> No
             {
                 "outcome": "answer",
                 "answer_text": "Grounded.",
-                "citations": [{"citation_id": "chunk-1", "page": 1, "section": "x", "excerpt": "y"}],
+                "citations": [{"citation_id": "chunk-1", "page": 4, "section": "Governance", "excerpt": "Stored excerpt chunk-1"}],
             }
         )
     )
@@ -160,9 +160,9 @@ def test_retrieved_answer_service_resolves_one_retriever_from_active_binding() -
                     "citations": [
                         {
                             "citation_id": "bound",
-                            "page": 1,
-                            "section": "model",
-                            "excerpt": "model citation",
+                            "page": 4,
+                            "section": "Governance",
+                            "excerpt": "Stored excerpt bound",
                         }
                     ],
                 }
@@ -191,7 +191,7 @@ def test_retrieved_answer_service_refuses_without_active_corpus() -> None:
         )
     )
 
-    assert response.outcome == "refusal"
+    assert response.outcome == "operational_error"
     assert response.error is not None
     assert response.error.code == "active_corpus_unavailable"
 
@@ -214,8 +214,8 @@ def test_strong_answer_uses_stored_citation_provenance_and_labels_synthesis() ->
             answer_text="Governance coordinates decisions.",
             synthesis=False,
             citations=[
-                {"citation_id": "chunk-1", "page": 999, "section": "fake", "excerpt": "fake"},
-                {"citation_id": "chunk-2", "page": 999, "section": "fake", "excerpt": "fake"},
+                {"citation_id": "chunk-1", "page": 4, "section": "Governance", "excerpt": "Stored excerpt chunk-1"},
+                {"citation_id": "chunk-2", "page": 4, "section": "Governance", "excerpt": "Stored excerpt chunk-2"},
             ],
         ),
         model="primary-model",
@@ -245,7 +245,7 @@ def test_partial_evidence_forces_qualified_outcome() -> None:
         {
             "outcome": "answer",
             "answer_text": "A limited answer.",
-            "citations": [{"citation_id": "chunk-1", "page": 1, "section": "x", "excerpt": "y"}],
+            "citations": [{"citation_id": "chunk-1", "page": 4, "section": "Governance", "excerpt": "Stored excerpt chunk-1"}],
         }
     )
     response = asyncio.run(GroundedAnswerPolicy(adapter).answer(
@@ -268,9 +268,9 @@ def test_unmapped_citation_is_rejected() -> None:
         "Explain this.", [passage("chunk-1", 0.9)], quota()
     ))
 
-    assert response.outcome == "refusal"
+    assert response.outcome == "operational_error"
     assert response.error is not None
-    assert response.error.code == "grounding_policy_rejected"
+    assert response.error.code == "answer_output_validation"
 
 
 def test_retrieved_service_includes_retrieval_timing_in_ephemeral_trace() -> None:
@@ -333,7 +333,7 @@ def test_whole_request_exhaustion_is_an_operational_refusal_without_generation()
     ).ainvoke(AnswerInvocation(question="What is governance?", quota=quota())))
 
     assert adapter.budgets == []
-    assert response.outcome == "refusal"
+    assert response.outcome == "operational_error"
     assert response.error is not None
     assert response.error.code == "answer_provider_timeout"
     assert response.trace.timings_ms["total_ms"] == 14_000
@@ -348,14 +348,14 @@ def test_generation_that_overruns_the_shared_deadline_is_not_a_success() -> None
         "What is governance?", [passage("chunk-1", 0.9)], quota(), deadline=deadline
     ))
 
-    assert response.outcome == "refusal"
+    assert response.outcome == "operational_error"
     assert response.error is not None
     assert response.error.code == "answer_provider_timeout"
 
 
 @pytest.mark.parametrize(
     ("request_timeout", "generation_timeout"),
-    [("0", "1"), ("28000", "28001"), ("not-ms", "16000")],
+    [("0", "1"), ("14000", "14001"), ("not-ms", "8000")],
 )
 def test_timeout_settings_reject_invalid_or_legacy_configuration(
     request_timeout: str, generation_timeout: str
@@ -365,7 +365,7 @@ def test_timeout_settings_reject_invalid_or_legacy_configuration(
 
 
 def test_timeout_settings_use_the_approved_provisional_budget() -> None:
-    assert timeout_settings("28000", "16000") == (28_000, 16_000)
+    assert timeout_settings("14000", "8000") == (14_000, 8_000)
 
 
 def test_provider_failure_is_safe_refusal() -> None:
@@ -387,7 +387,7 @@ def test_provider_failure_is_safe_refusal() -> None:
         "Explain this.", [passage("chunk-1", 0.9)], quota()
     ))
 
-    assert response.outcome == "refusal"
+    assert response.outcome == "operational_error"
     assert response.error is not None
     assert response.error.retryable is True
     assert response.trace.selected_model == "fallback"
@@ -402,8 +402,8 @@ def test_langchain_rag_runnable_composes_active_retrieval_and_answering() -> Non
         GroundedAnswerPolicy(FakeAdapter({
             "outcome": "answer", "answer_text": "Grounded.",
             "citations": [{
-                "citation_id": "chunk-1", "page": 1,
-                "section": "model", "excerpt": "model citation",
+                "citation_id": "chunk-1", "page": 4,
+                "section": "Governance", "excerpt": "Stored excerpt chunk-1",
             }],
         })),
     )

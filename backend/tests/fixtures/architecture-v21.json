@@ -1,0 +1,77 @@
+{
+  "schemaVersion": "2.1",
+  "source": {
+    "sha256": "3741ed3aba3571cabd23972e21a75e74bab01bd644ca13401c664df07e3e9730",
+    "sections": ["§13", "§7", "§8"]
+  },
+  "candidateIdentity": {
+    "artifact_id": "backend@2.1.0",
+    "installed_lock_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "corpus_version_id": "corpus-2026-10-21",
+    "configuration_version_id": "config-2.1",
+    "scorer_version": "scorer-1"
+  },
+  "runtimeSettings": {
+    "project": "dmbok-compass-dev",
+    "location": "europe-west1",
+    "provider": "openrouter",
+    "primary_model": "primary-model",
+    "fallback_model": "fallback-model",
+    "secret_version": "openrouter-key-v3",
+    "lexical_artifact_id": "lexical-bm25-v1"
+  },
+  "retrievalResult": {
+    "ordered_chunk_ids": ["chunk-1", "chunk-2"],
+    "scores": [0.91, 0.72],
+    "score_semantics": "cosine_similarity",
+    "strategy": "dense",
+    "stage_status": "succeeded",
+    "search_ready": true
+  },
+  "evaluationCase": {
+    "case_id": "case-1",
+    "question": "What is the retention policy?",
+    "expected_outcome": "answer",
+    "relevant_chunk_ids": ["chunk-1"],
+    "expected_claim_ids": ["claim-1"]
+  },
+  "runItemResult": {
+    "case_id": "case-1",
+    "retrieval_success": true,
+    "grounded": true,
+    "citation_correct": true,
+    "answer_quality": true,
+    "refusal_correct": false,
+    "response_time_ms": 125.0,
+    "stage_status": "succeeded"
+  },
+  "answerOutcome": {
+    "outcome": "evidence_refusal",
+    "answer_text": "The available evidence does not support an answer.",
+    "claims": [],
+    "evidence": [],
+    "error": null
+  },
+  "operationalErrorStatus": {
+    "invalid_output": 502,
+    "unavailable": 503,
+    "deadline": 504,
+    "evidence_refusal": 200
+  },
+  "compatibility": {
+    "current": "2.1",
+    "accepted": ["2.1"],
+    "rejected": ["2.0", "3.0"],
+    "rules": [
+      "A candidate identity is immutable once referenced by a run.",
+      "Retrieval scores must remain aligned with ordered chunk IDs.",
+      "Evidence refusal is a completed HTTP-200 outcome; operational errors are non-2xx.",
+      "Runtime settings may contain secret references but never secret values."
+    ]
+  },
+  "negativeCases": {
+    "candidateIdentity": ["bad-lock-digest", "missing-scorer"],
+    "retrievalResult": ["misaligned-scores", "search-ready-failed-stage"],
+    "answerOutcome": ["operational-error-without-error", "evidence-refusal-with-error"]
+  }
+}

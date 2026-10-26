@@ -21,6 +21,7 @@ from app.contracts import (
     AnswerResponse,
     ApiError,
     CorpusVersion,
+    OPERATIONAL_ERROR_STATUS,
     QuotaStatus,
     RetrievedPassage,
     RetrievalTrace,
@@ -40,30 +41,22 @@ from model.protocol import (
     TimeoutBudget,
 )
 
-from .citations import validated_citations
+from .citations import CitationValidationError, validated_citations
 
 EvidenceOutcome = Literal["strong", "partial", "absent"]
 STRONG_EVIDENCE_THRESHOLD = 0.75
 PARTIAL_EVIDENCE_THRESHOLD = 0.45
 MAX_EVIDENCE_PASSAGES = 5
-DEFAULT_REQUEST_TIMEOUT_MS = 28_000
-DEFAULT_GENERATION_TIMEOUT_MS = 16_000
+DEFAULT_REQUEST_TIMEOUT_MS = 14_000
+DEFAULT_GENERATION_TIMEOUT_MS = 8_000
 
 REFUSAL_TEXT = "I could not find enough relevant evidence in the DMBOK corpus to answer that question."
-GROUNDING_PROMPT = """You are a DMBOK Compass answerer.
-Answer the user's question using only the supplied DMBOK evidence.
-Do not use general model knowledge, invent facts, or cite anything outside
-the supplied passages. If the evidence is incomplete, state the limitation
-and return a qualified answer. Mark synthesis when combining passages.
-Every material claim in an answer must be supported by one or more supplied
-passage IDs. Return structured JSON matching the response schema.
-
-User question:
+PROMPT_VERSION = "grounded-answer-policy-v2"
+GROUNDING_PROMPT = """<user_question>
 {question}
+</user_question>
 
-Evidence strength:
-{evidence_outcome}
-"""
+<evidence_strength>{evidence_outcome}</evidence_strength>"""
 
 
 @dataclass(frozen=True)
@@ -288,7 +281,19 @@ class GroundedAnswerPolicy:
                 deadline,
             )
 
-        citations = validated_citations(candidate, evidence.passages)
+        try:
+            citations = validated_citations(candidate, evidence.passages)
+        except CitationValidationError as exc:
+            return self._finalize(
+                self._policy_refusal(
+                    trace,
+                    quota,
+                    f"The model response failed source-span validation: {exc.message}",
+                    code="answer_output_validation",
+                ),
+                deadline,
+                generation_started,
+            )
         if not citations:
             return self._finalize(
                 self._policy_refusal(
@@ -340,8 +345,21 @@ class GroundedAnswerPolicy:
         deadline = deadline or RequestDeadline.start(self._timeout_ms)
         timings = {"retrieval_ms": retrieval_ms} if retrieval_ms is not None else {}
         return self._finalize(AnswerResponse(
-            outcome="refusal",
-            error=ApiError(code=code, message=message, retryable=True, status=503),
+            outcome="operational_error",
+            error=ApiError(
+                code=code,
+                message=(
+                    "Answer retrieval exceeded the request deadline."
+                    if code == "answer_request_timeout"
+                    else "The answer service is unavailable."
+                ),
+                retryable=True,
+                status=(
+                    OPERATIONAL_ERROR_STATUS["deadline"]
+                    if code == "answer_request_timeout"
+                    else OPERATIONAL_ERROR_STATUS["unavailable"]
+                ),
+            ),
             trace=RetrievalTrace(
                 retrieved_passages=[], selected_model=self._model_name, timings_ms=timings
             ),
@@ -352,35 +370,53 @@ class GroundedAnswerPolicy:
         self, trace: RetrievalTrace, quota: QuotaStatus, error: GenerationError
     ) -> AnswerResponse:
         return AnswerResponse(
-            outcome="refusal",
+            outcome="operational_error",
             error=ApiError(
                 code=f"answer_provider_{error.code.value}",
-                message=error.message,
+                message=_safe_generation_error_message(error.code),
                 retryable=error.retryable,
-                status=503 if error.retryable else 502,
+                status=(
+                    OPERATIONAL_ERROR_STATUS["invalid_output"]
+                    if error.code is GenerationErrorCode.INVALID_OUTPUT
+                    else OPERATIONAL_ERROR_STATUS["deadline"]
+                    if error.code is GenerationErrorCode.TIMEOUT
+                    else OPERATIONAL_ERROR_STATUS["unavailable"]
+                ),
             ),
-            trace=trace,
+            trace=trace.model_copy(update={"model_output": None}),
             quota=quota,
         )
 
     @staticmethod
     def _policy_refusal(
-        trace: RetrievalTrace, quota: QuotaStatus, message: str
+        trace: RetrievalTrace,
+        quota: QuotaStatus,
+        message: str,
+        *,
+        code: str = "grounding_policy_rejected",
     ) -> AnswerResponse:
         return AnswerResponse(
-            outcome="refusal",
+            outcome="operational_error",
             error=ApiError(
-                code="grounding_policy_rejected",
-                message=message,
+                code=code,
+                message="The answer output could not be validated.",
                 status=502,
             ),
-            trace=trace,
+            trace=trace.model_copy(update={"model_output": None}),
             quota=quota,
         )
 
 
 def _elapsed_ms(started: float) -> float:
     return round(max(0.0, (perf_counter() - started) * 1000), 3)
+
+
+def _safe_generation_error_message(code: GenerationErrorCode) -> str:
+    if code is GenerationErrorCode.INVALID_OUTPUT:
+        return "The provider returned an invalid answer."
+    if code is GenerationErrorCode.TIMEOUT:
+        return "Answer generation exceeded the request deadline."
+    return "The answer provider is temporarily unavailable."
 
 
 class QuestionAnswerer(Protocol):
@@ -398,6 +434,11 @@ class PassageRetriever(Protocol):
 class ActiveCorpusStore(Protocol):
     def active(self) -> Any | None:
         """Return the active corpus version, if one exists."""
+
+
+class ServingCorpusStore(Protocol):
+    def active(self) -> Any | None:
+        """Return the corpus selected by the approved serving publication."""
 
 
 @dataclass(frozen=True)
@@ -426,6 +467,7 @@ class LangChainRagPipeline(Runnable[AnswerInvocation, AnswerResponse]):
         request_timeout_ms: int = DEFAULT_REQUEST_TIMEOUT_MS,
         clock: Callable[[], float] = perf_counter,
         retriever_for_binding: Callable[[CorpusVersion], PassageRetriever] | None = None,
+        serving_release: ServingCorpusStore | None = None,
     ) -> None:
         self._retriever = retriever
         self._corpus_versions = corpus_versions
@@ -433,6 +475,7 @@ class LangChainRagPipeline(Runnable[AnswerInvocation, AnswerResponse]):
         self._request_timeout_ms = request_timeout_ms
         self._clock = clock
         self._retriever_for_binding = retriever_for_binding
+        self._serving_release = serving_release
 
     def invoke(
         self,
@@ -459,7 +502,15 @@ class LangChainRagPipeline(Runnable[AnswerInvocation, AnswerResponse]):
         if not isinstance(input, AnswerInvocation):
             raise TypeError("input must be an AnswerInvocation")
         deadline = RequestDeadline.start(self._request_timeout_ms, clock=self._clock)
-        active = self._corpus_versions.active()
+        try:
+            active = (self._serving_release or self._corpus_versions).active()
+        except Exception:
+            return self._policy.service_refusal(
+                input.quota,
+                code="active_corpus_unavailable",
+                message="The active corpus could not be loaded.",
+                deadline=deadline,
+            )
         if active is None:
             return self._policy.service_refusal(
                 input.quota,
@@ -487,6 +538,13 @@ class LangChainRagPipeline(Runnable[AnswerInvocation, AnswerResponse]):
                 message="Answer retrieval exceeded the whole-request deadline.",
                 deadline=deadline,
             )
+        except Exception:
+            return self._policy.service_refusal(
+                input.quota,
+                code="answer_retrieval_unavailable",
+                message="Answer retrieval could not complete.",
+                deadline=deadline,
+            )
         return await self._policy.answer(
             input.question,
             passages,
@@ -506,6 +564,7 @@ class RetrievedAnswerService:
         *,
         request_timeout_ms: int = DEFAULT_REQUEST_TIMEOUT_MS,
         retriever_for_binding: Callable[[CorpusVersion], PassageRetriever] | None = None,
+        serving_release: ServingCorpusStore | None = None,
     ) -> None:
         self._pipeline = LangChainRagPipeline(
             retriever,
@@ -513,6 +572,7 @@ class RetrievedAnswerService:
             policy,
             request_timeout_ms=request_timeout_ms,
             retriever_for_binding=retriever_for_binding,
+            serving_release=serving_release,
         )
 
     async def answer(self, question: str, quota: QuotaStatus) -> AnswerResponse:

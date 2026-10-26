@@ -18,11 +18,13 @@ locals {
   ])
 
   service_accounts = {
-    runtime   = "${var.name_prefix}-runtime"
-    worker    = "${var.name_prefix}-worker"
-    scheduler = "${var.name_prefix}-scheduler"
-    build     = "${var.name_prefix}-build"
-    hosting   = "${var.name_prefix}-hosting"
+    runtime         = "${var.name_prefix}-runtime"
+    worker          = "${var.name_prefix}-worker"
+    scheduler       = "${var.name_prefix}-scheduler"
+    build           = "${var.name_prefix}-build"
+    terraform_plan  = "${var.name_prefix}-terraform-plan"
+    terraform_apply = "${var.name_prefix}-terraform-apply"
+    hosting         = "${var.name_prefix}-hosting"
   }
 }
 
@@ -39,6 +41,20 @@ resource "google_firestore_database" "default" {
   name        = "(default)"
   location_id = var.region
   type        = "FIRESTORE_NATIVE"
+
+  depends_on = [google_project_service.required]
+}
+
+resource "google_storage_bucket" "release_evidence" {
+  project                     = var.project_id
+  name                        = "${var.project_id}-release-evidence"
+  location                    = var.region
+  uniform_bucket_level_access = true
+  public_access_prevention    = "enforced"
+
+  versioning {
+    enabled = true
+  }
 
   depends_on = [google_project_service.required]
 }

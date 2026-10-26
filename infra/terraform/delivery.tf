@@ -95,7 +95,7 @@ resource "google_cloud_run_v2_service" "api" {
         value_source {
           secret_key_ref {
             secret  = google_secret_manager_secret.managed["answer-provider-api-key"].secret_id
-            version = "latest"
+            version = var.runtime_secret_version
           }
         }
       }
@@ -104,6 +104,24 @@ resource "google_cloud_run_v2_service" "api" {
           cpu    = "1"
           memory = "512Mi"
         }
+      }
+      startup_probe {
+        http_get {
+          path = "/health/ready"
+        }
+        initial_delay_seconds = 0
+        timeout_seconds       = 2
+        period_seconds        = 5
+        failure_threshold     = 12
+      }
+      liveness_probe {
+        http_get {
+          path = "/health/live"
+        }
+        initial_delay_seconds = 10
+        timeout_seconds       = 2
+        period_seconds        = 10
+        failure_threshold     = 3
       }
     }
     max_instance_request_concurrency = 8
@@ -114,6 +132,15 @@ resource "google_cloud_run_v2_service" "api" {
     # Cloud Run requires initial service creation to allocate traffic. The
     # delivery workflow creates subsequent revisions with zero traffic.
     percent = 100
+  }
+
+  lifecycle {
+    # CD workflows own revisions and runtime env expansion after provisioning.
+    # Terraform remains the owner of the service, identity, probes, and sizing.
+    ignore_changes = [
+      template[0].containers[0].image,
+      template[0].containers[0].env,
+    ]
   }
 
   depends_on = [
@@ -178,6 +205,10 @@ resource "google_cloud_run_v2_job" "ingestion" {
         }
       }
     }
+  }
+
+  lifecycle {
+    ignore_changes = [template[0].template[0].containers[0].image, template[0].template[0].containers[0].env]
   }
 
   depends_on = [google_project_service.required]
@@ -246,12 +277,16 @@ resource "google_cloud_run_v2_job" "evaluation" {
           value_source {
             secret_key_ref {
               secret  = google_secret_manager_secret.managed["answer-provider-api-key"].secret_id
-              version = "latest"
+              version = var.runtime_secret_version
             }
           }
         }
       }
     }
+  }
+
+  lifecycle {
+    ignore_changes = [template[0].template[0].containers[0].image, template[0].template[0].containers[0].env]
   }
 
   depends_on = [google_project_service.required]

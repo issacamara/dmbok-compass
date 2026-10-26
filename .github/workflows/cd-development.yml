@@ -1,0 +1,91 @@
+name: deploy-development
+
+on:
+  push:
+    branches: [development]
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-development
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: development
+    env:
+      PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+      CORPUS_VERSION_ID: ${{ vars.CORPUS_VERSION_ID }}
+      RUNTIME_SECRET_VERSION: ${{ vars.RUNTIME_SECRET_VERSION }}
+      IMAGE: europe-west1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/dmbok-compass/api:${{ github.sha }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Check required environment configuration
+        env:
+          PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          SERVICE_ACCOUNT: ${{ vars.GCP_BUILD_SERVICE_ACCOUNT }}
+        run: |
+          test -n "$PROJECT_ID" && test -n "$PROVIDER" && test -n "$SERVICE_ACCOUNT"
+          test -n "$CORPUS_VERSION_ID" && test -n "$RUNTIME_SECRET_VERSION"
+      - name: Authenticate to development GCP
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_BUILD_SERVICE_ACCOUNT }}
+      - name: Set up Google Cloud SDK
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2
+      - name: Configure Artifact Registry authentication
+        run: gcloud auth configure-docker europe-west1-docker.pkg.dev --quiet
+      - name: Build and push API image
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: backend
+          file: backend/Dockerfile
+          push: true
+          tags: ${{ env.IMAGE }}
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Build development frontend
+        working-directory: web
+        env:
+          VITE_FIREBASE_API_KEY: ${{ vars.VITE_FIREBASE_API_KEY }}
+          VITE_FIREBASE_AUTH_DOMAIN: ${{ vars.VITE_FIREBASE_AUTH_DOMAIN }}
+          VITE_FIREBASE_PROJECT_ID: ${{ vars.VITE_FIREBASE_PROJECT_ID }}
+          VITE_FIREBASE_APP_ID: ${{ vars.VITE_FIREBASE_APP_ID }}
+        run: |
+          test -n "$VITE_FIREBASE_API_KEY" && test -n "$VITE_FIREBASE_AUTH_DOMAIN"
+          test -n "$VITE_FIREBASE_PROJECT_ID" && test -n "$VITE_FIREBASE_APP_ID"
+          npm ci
+          npm run build
+      - name: Deploy exact API image to Cloud Run
+        env:
+          API_IMAGE: europe-west1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/dmbok-compass/api@${{ steps.build.outputs.digest }}
+          SOURCE_SHA: ${{ github.sha }}
+          DEPLOY_SHA: ${{ github.sha }}
+        run: bash scripts/deploy_cloud_run.sh
+      - name: Deploy development Firebase Hosting
+        run: bash scripts/deploy_firebase.sh
+      - name: Record deployment evidence
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          jq -n --arg source "$GITHUB_SHA" --arg deployment "$GITHUB_SHA" \
+            --arg project "$PROJECT_ID" --arg image "$IMAGE" --arg digest "$DIGEST" \
+            '{source_commit: $source, deployment_commit: $deployment, project: $project, source_image: $image, image_digest: $digest}' \
+            > deployment.json
+      - name: Upload deployment evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: development-deployment-${{ github.sha }}
+          path: deployment.json
+          if-no-files-found: error
+          retention-days: 30

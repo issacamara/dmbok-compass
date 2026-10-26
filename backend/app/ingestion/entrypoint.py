@@ -22,6 +22,7 @@ from app.corpus.firestore import FirestoreCorpusVersionStore
 from app.ingestion.extract import extract_pdf
 from app.ingestion.job import CorpusIngestionJob, IngestionInterrupted
 from app.rag import LangChainRagFactory, LangChainRagSettings
+from app.settings import RuntimeConfiguration
 
 
 def main() -> None:
@@ -37,8 +38,19 @@ def main() -> None:
 
 
 def _run(termination_requested: Callable[[], bool]) -> None:
-    project = _required("GOOGLE_CLOUD_PROJECT")
-    settings = LangChainRagSettings.from_environment()
+    configuration = RuntimeConfiguration.from_environment()
+    project = configuration.runtime.project
+    runtime = configuration.runtime
+    settings = LangChainRagSettings(
+        project=runtime.project,
+        location=runtime.location,
+        vector_collection=configuration.vector_collection,
+        answer_provider=runtime.provider,
+        primary_model=runtime.primary_model,
+        fallback_model=runtime.fallback_model,
+        json_schema_supported=configuration.json_schema_supported,
+        output_token_cap=configuration.output_token_cap,
+    )
     client = firestore.Client(project=project)
     versions = FirestoreCorpusVersionStore(client, vector_collection=settings.vector_collection)
     cleanup_version_id = os.environ.get("CORPUS_CLEANUP_VERSION", "").strip()
@@ -111,7 +123,10 @@ def _run(termination_requested: Callable[[], bool]) -> None:
             versions,
             writer,
         ).run(version, chunks, termination_requested=termination_requested)
-        print(f"Activated corpus version {result.version.version_id} with {len(result.chunks)} chunks.")
+        print(
+            f"Corpus version {result.version.version_id} is ready_for_evaluation "
+            f"with {len(result.chunks)} chunks; serving publication is separate."
+        )
 
 
 def _required(name: str) -> str:

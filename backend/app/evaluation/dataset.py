@@ -34,6 +34,12 @@ class CandidateBindingError(EvaluationDatasetError):
     """Raised when remapping data is not bound to one candidate assessment."""
 
 
+class CandidateChunkLookup(Protocol):
+    """Resolve chunks only within the candidate corpus named by a request."""
+
+    def get(self, *, corpus_version_id: str, chunk_id: str) -> DocumentChunk | None: ...
+
+
 @dataclass(frozen=True)
 class CandidateGoldBinding:
     """Immutable candidate identities required before a gold item can be reviewed."""
@@ -78,11 +84,12 @@ class GoldAnnotationRemap:
 
     item_id: str
     relevant_chunk_ids: tuple[str, ...]
-    remap_status: Literal["matched", "ambiguous", "missing", "changed", "unknown"]
+    remap_status: Literal["matched", "refusal", "ambiguous", "missing", "changed", "unknown"]
     page: int | None
     section: str | None
     section_origin: Literal["explicit", "carried"] | None
     review_reasons: tuple[str, ...]
+    content_hash: str | None = None
 
     def model_dump(self) -> dict[str, object]:
         return {
@@ -94,6 +101,7 @@ class GoldAnnotationRemap:
             "section": self.section,
             "section_origin": self.section_origin,
             "review_reasons": list(self.review_reasons),
+            "content_hash": self.content_hash,
         }
 
 
@@ -103,11 +111,21 @@ class CandidateGoldReview:
 
     binding: CandidateGoldBinding
     remaps: tuple[GoldAnnotationRemap, ...]
+    binding_version: str = "candidate-binding-v1"
+    expected_refusal: bool = False
+    reviewed_by: str | None = None
+    reviewed_at: str | None = None
+    chunk_hashes: dict[str, str] | None = None
 
     def model_dump(self) -> dict[str, object]:
         return {
             "binding": self.binding.model_dump(),
             "remaps": [remap.model_dump() for remap in self.remaps],
+            "binding_version": self.binding_version,
+            "expected_refusal": self.expected_refusal,
+            "reviewed_by": self.reviewed_by,
+            "reviewed_at": self.reviewed_at,
+            "chunk_hashes": dict(self.chunk_hashes or {}),
         }
 
     def remap_for(self, item_id: str) -> GoldAnnotationRemap:
@@ -141,7 +159,10 @@ def remap_gold_annotations(
 def candidate_review_fingerprint(review: CandidateGoldReview) -> str:
     """Return a stable binding fingerprint for durable generation metadata."""
 
-    encoded = json.dumps(review.model_dump(), sort_keys=True, separators=(",", ":")).encode()
+    payload = review.model_dump()
+    payload.pop("reviewed_by", None)
+    payload.pop("reviewed_at", None)
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return sha256(encoded).hexdigest()
 
 

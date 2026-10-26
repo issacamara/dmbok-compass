@@ -51,8 +51,12 @@ workspace Python path used by the backend:
 PYTHONPATH=backend python scripts/verify_release_evidence.py release-evidence.json
 ```
 
-Store the validated JSON, `delivery-manifest.json`, Terraform plan text,
-evaluation report, preview URL, provider decision, recovery drill, and release
-decision together. Do not put questions, answers, retrieved passages, or
-request traces in this bundle; only evaluator-authored test records and
-content-free operational evidence belong here.
+Store the validated `release-evidence.json`, durable `release-manifest.json`,
+and durable `release-decision.json` in the private GCS release-evidence bucket
+at `release-bundles/<release-decision-id>/`. Keep the preview's
+`delivery-manifest.json`, Terraform plan, evaluation report, preview URL,
+provider decision, and recovery drill with the supporting operational records.
+Do not put questions, answers, retrieved passages, or request traces in the
+release bundle; only evaluator-authored test records and content-free
+operational evidence belong there. The repository is public, so do not commit
+approval records, actor identifiers, or release bundles into Git.

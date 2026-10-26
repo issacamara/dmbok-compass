@@ -43,6 +43,18 @@ def test_hallucinated_cited_nonempty_response_fails_reviewed_semantic_metrics() 
     assert (score.grounded, score.citation_correct, score.answer_quality) == (False, False, False)
 
 
+def test_retrieval_success_does_not_depend_on_answer_digest() -> None:
+    reviewed = assessment(answer="Reviewed answer", cited={"chunk-1"})
+
+    score = score_assessment(
+        annotation(reviewed), outcome="answer", answer_text="Same answer with punctuation.",
+        retrieved_chunk_ids={"chunk-1"}, cited_chunk_ids={"chunk-1"}, scorer_version="evaluation-gates-v1",
+    )
+
+    assert score.retrieval_success is True
+    assert (score.grounded, score.citation_correct, score.answer_quality) == (False, False, False)
+
+
 def test_wrong_claim_support_citation_and_unreviewed_response_fail_closed() -> None:
     reviewed = assessment(answer="Correct words, wrong support.", cited={"chunk-2"}, claim_citation_support=False)
 
@@ -59,7 +71,8 @@ def test_wrong_claim_support_citation_and_unreviewed_response_fail_closed() -> N
     assert unreviewed.applicable_metrics == frozenset({
         "retrieval_success", "grounded_claims", "citation_correctness", "answer_quality", "refusal_correctness",
     })
-    assert not any((unreviewed.retrieval_success, unreviewed.grounded, unreviewed.citation_correct, unreviewed.answer_quality, unreviewed.refusal_correct))
+    assert unreviewed.retrieval_success is True
+    assert not any((unreviewed.grounded, unreviewed.citation_correct, unreviewed.answer_quality, unreviewed.refusal_correct))
 
 
 def test_refusal_and_partial_cases_have_metric_specific_applicability() -> None:
@@ -80,3 +93,18 @@ def test_refusal_and_partial_cases_have_metric_specific_applicability() -> None:
     assert refusal_score.applicable_metrics == frozenset({"refusal_correctness"})
     assert refusal_score.refusal_correct is True
     assert partial_score.applicable_metrics == frozenset({"retrieval_success", "grounded_claims", "citation_correctness", "answer_quality"})
+
+
+def test_operational_refusal_never_receives_refusal_credit() -> None:
+    refusal = ReviewedSemanticAssessment(
+        response_sha256="a" * 64, scorer_version="evaluation-gates-v1", expected_refusal=True,
+    )
+
+    score = score_assessment(
+        GoldAnnotation(item_id="refusal", expected_answer_or_rubric="Refuse", relevant_chunk_ids=[], review_status="approved", semantic_assessment=refusal),
+        outcome="refusal", answer_text=None, retrieved_chunk_ids=set(), cited_chunk_ids=set(),
+        scorer_version="evaluation-gates-v1", operational_error=True,
+    )
+
+    assert score.refusal_correct is False
+    assert score.applicable_metrics == frozenset({"refusal_correctness"})

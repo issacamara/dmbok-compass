@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from hashlib import sha256
 import json
+from datetime import datetime, timezone
 from typing import Any, Protocol
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from pydantic import BaseModel, Field, model_validator
 
 from app.contracts import (
     EvaluationDataset,
@@ -21,8 +23,16 @@ from app.contracts import (
     MAX_EVALUATION_IMPORT_ITEMS,
     UserProfile,
     ReviewDecision,
+    DocumentChunk,
 )
 from app.evaluation import ConcurrentActivationError, EvaluationGenerationError, ReviewStateError
+from app.evaluation.dataset import (
+    CandidateBindingError,
+    CandidateChunkLookup,
+    CandidateGoldBinding,
+    CandidateGoldReview,
+    GoldAnnotationRemap,
+)
 from app.identity import get_admin_user
 
 router = APIRouter(prefix="/api/admin/evaluation-datasets", tags=["evaluation datasets"])
@@ -41,6 +51,63 @@ class EvaluationGenerationStore(Protocol):
 
     def review(self, generation_id: str, item_id: str, review_status: str) -> GoldAnnotation: ...
 
+    def bind_candidate_review(
+        self, generation_id: str, item_id: str, candidate_review: CandidateGoldReview
+    ) -> GoldAnnotation: ...
+
+
+class CandidateBindingPayload(BaseModel):
+    corpus_version_id: str = Field(min_length=1, max_length=128)
+    candidate_snapshot_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    source_provenance_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class CandidateChunkBinding(BaseModel):
+    chunk_id: str = Field(min_length=1, max_length=256)
+    content_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class CandidateBindingRequest(BaseModel):
+    """Admin-selected support for one item in one immutable candidate corpus."""
+
+    binding: CandidateBindingPayload | None = None
+    corpus_version_id: str | None = None
+    candidate_snapshot_sha256: str | None = None
+    source_provenance_sha256: str | None = None
+    reviewed_chunk_ids: list[str] = Field(default_factory=list, max_length=5)
+    reviewed_chunk_hashes: dict[str, str] = Field(default_factory=dict, max_length=5)
+    reviewed_chunks: list[CandidateChunkBinding] = Field(default_factory=list, max_length=5)
+    expected_refusal: bool = False
+    binding_version: str = Field(default="candidate-binding-v1", min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def normalise(self) -> "CandidateBindingRequest":
+        binding = self.binding
+        if binding is not None:
+            values = (self.corpus_version_id, self.candidate_snapshot_sha256, self.source_provenance_sha256)
+            if any(value is not None for value in values):
+                raise ValueError("binding must be supplied either nested or at the top level")
+            self.corpus_version_id = binding.corpus_version_id
+            self.candidate_snapshot_sha256 = binding.candidate_snapshot_sha256
+            self.source_provenance_sha256 = binding.source_provenance_sha256
+        if not all((self.corpus_version_id, self.candidate_snapshot_sha256, self.source_provenance_sha256)):
+            raise ValueError("candidate binding is required")
+        listed = {chunk.chunk_id: chunk.content_hash for chunk in self.reviewed_chunks}
+        if listed and self.reviewed_chunk_hashes and listed != self.reviewed_chunk_hashes:
+            raise ValueError("reviewed chunk hashes disagree")
+        if listed:
+            self.reviewed_chunk_hashes = listed
+        if self.reviewed_chunk_ids and set(self.reviewed_chunk_ids) != set(self.reviewed_chunk_hashes):
+            raise ValueError("reviewed chunk IDs and hashes must match")
+        self.reviewed_chunk_ids = list(self.reviewed_chunk_hashes)
+        if self.expected_refusal and self.reviewed_chunk_ids:
+            raise ValueError("expected-refusal items cannot bind relevant chunks")
+        if not self.expected_refusal and not self.reviewed_chunk_ids:
+            raise ValueError("answerable items require relevant chunks")
+        if any(chunk_id.startswith("imported-passage-") for chunk_id in self.reviewed_chunk_ids):
+            raise ValueError("placeholder passage IDs cannot be bound")
+        return self
+
 
 def evaluation_generation_store() -> EvaluationGenerationStore:
     """Configured in :mod:`app.main`; a default here is safe for test imports."""
@@ -49,6 +116,23 @@ def evaluation_generation_store() -> EvaluationGenerationStore:
         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         detail={"code": "evaluation_generation_store_unavailable", "message": "Evaluation imports are not configured."},
     )
+
+
+def candidate_chunk_lookup(
+    store: EvaluationGenerationStore = Depends(evaluation_generation_store),
+) -> CandidateChunkLookup:
+    lookup = getattr(store, "get_candidate_chunk", None)
+    if lookup is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "candidate_chunk_lookup_unavailable", "message": "Candidate chunk lookup is not configured."},
+        )
+
+    class _StoreLookup:
+        def get(self, *, corpus_version_id: str, chunk_id: str) -> DocumentChunk | None:
+            return lookup(corpus_version_id=corpus_version_id, chunk_id=chunk_id)
+
+    return _StoreLookup()
 
 
 @router.post("/import", response_model=EvaluationImportResponse, status_code=status.HTTP_201_CREATED)
@@ -186,6 +270,83 @@ def review_active_evaluation_item(
             detail={"code": "evaluation_generation_store_failed", "message": "The review could not be stored."},
         ) from exc
     return ItemReview(generation_id=generation_id, item_id=item_id, review_status=annotation.review_status)
+
+
+@router.put("/{generation_id}/items/{item_id}/binding")
+def bind_candidate_evaluation_item(
+    generation_id: str,
+    item_id: str,
+    request: CandidateBindingRequest,
+    admin: UserProfile = Depends(get_admin_user),
+    store: EvaluationGenerationStore = Depends(evaluation_generation_store),
+    chunks: CandidateChunkLookup = Depends(candidate_chunk_lookup),
+) -> dict[str, object]:
+    """Persist reviewed real chunk support without approving the annotation."""
+
+    binding = CandidateGoldBinding(
+        corpus_version_id=request.corpus_version_id or "",
+        candidate_snapshot_sha256=request.candidate_snapshot_sha256 or "",
+        source_provenance_sha256=request.source_provenance_sha256 or "",
+    )
+    resolved: list[DocumentChunk] = []
+    for chunk_id in request.reviewed_chunk_ids:
+        chunk = chunks.get(corpus_version_id=binding.corpus_version_id, chunk_id=chunk_id)
+        if chunk is None:
+            _reject(status.HTTP_404_NOT_FOUND, "candidate_chunk_not_found", "The selected candidate chunk does not exist.")
+        if chunk.corpus_version_id != binding.corpus_version_id:
+            _reject(status.HTTP_409_CONFLICT, "candidate_chunk_wrong_corpus", "The selected chunk is outside the pinned corpus.")
+        if chunk.content_hash != request.reviewed_chunk_hashes[chunk_id]:
+            _reject(status.HTTP_409_CONFLICT, "candidate_chunk_hash_changed", "The selected candidate chunk changed; refresh the binding.")
+        resolved.append(chunk)
+
+    first = resolved[0] if len(resolved) == 1 else None
+    remap = GoldAnnotationRemap(
+        item_id=item_id,
+        relevant_chunk_ids=tuple(request.reviewed_chunk_ids),
+        remap_status="refusal" if request.expected_refusal else "matched",
+        page=first.page if first else None,
+        section=first.section if first else None,
+        section_origin="explicit" if first else None,
+        review_reasons=("expected_refusal",) if request.expected_refusal else ("reviewed_candidate_chunks",),
+        content_hash=first.content_hash if first else None,
+    )
+    reviewed_at = datetime.now(timezone.utc).isoformat()
+    candidate_review = CandidateGoldReview(
+        binding=binding,
+        remaps=(remap,),
+        binding_version=request.binding_version,
+        expected_refusal=request.expected_refusal,
+        reviewed_by=admin.user_id,
+        reviewed_at=reviewed_at,
+        chunk_hashes=dict(request.reviewed_chunk_hashes),
+    )
+    try:
+        annotation = store.bind_candidate_review(generation_id, item_id, candidate_review)
+    except ReviewStateError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "invalid_evaluation_binding_transition", "message": str(exc)},
+        ) from exc
+    except (CandidateBindingError, EvaluationGenerationError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "invalid_evaluation_binding", "message": str(exc)},
+        ) from exc
+    except RuntimeError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "evaluation_binding_store_failed", "message": "The candidate binding could not be stored."},
+        ) from exc
+    return {
+        "generation_id": generation_id,
+        "item_id": item_id,
+        "review_status": annotation.review_status,
+        "binding_version": request.binding_version,
+        "expected_refusal": request.expected_refusal,
+        "reviewed_chunk_ids": list(request.reviewed_chunk_ids),
+        "reviewed_by": admin.user_id,
+        "reviewed_at": reviewed_at,
+    }
 
 
 def _validate_record(

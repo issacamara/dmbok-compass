@@ -1,5 +1,7 @@
 """Typed public API and durable-domain contracts."""
 
+from __future__ import annotations
+
 from datetime import datetime
 from typing import Literal
 
@@ -10,7 +12,8 @@ class ContractModel(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
 
 
-Outcome = Literal["answer", "qualified", "refusal"]
+Outcome = Literal["answer", "qualified", "refusal", "operational_error"]
+AnswerOutcomeKind = Literal["answer", "qualified", "evidence_refusal", "operational_error"]
 QuestionCategory = Literal["definitions", "explanations", "comparisons", "study", "scenarios"]
 ImportStatus = Literal["accepted", "rejected"]
 ReviewStatus = Literal["candidate", "approved", "rejected"]
@@ -25,11 +28,124 @@ MIN_APPROVED_GOLD_ITEMS = 30
 MAX_APPROVED_GOLD_ITEMS = 50
 
 
+class CandidateIdentity(ContractModel):
+    """Immutable identity of the candidate whose evidence is being assessed."""
+
+    artifact_id: str = Field(min_length=1, max_length=256)
+    installed_lock_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    corpus_version_id: str = Field(min_length=1, max_length=128)
+    configuration_version_id: str = Field(min_length=1, max_length=128)
+    scorer_version: str = Field(min_length=1, max_length=128)
+
+
+class RuntimeSettings(ContractModel):
+    """Non-secret references needed to reproduce one runtime candidate."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True, frozen=True)
+
+    project: str = Field(min_length=1, max_length=128)
+    location: str = Field(min_length=1, max_length=128)
+    provider: Literal["openrouter", "vertex"]
+    primary_model: str = Field(min_length=1, max_length=128)
+    fallback_model: str | None = Field(default=None, min_length=1, max_length=128)
+    secret_version: str | None = Field(default=None, min_length=1, max_length=256)
+    lexical_artifact_id: str | None = Field(default=None, min_length=1, max_length=256)
+
+
+StageStatus = Literal["pending", "running", "succeeded", "failed", "unavailable"]
+RetrievalStrategy = Literal["dense", "hybrid", "reranked"]
+RetrievalScoreSemantics = Literal["cosine_similarity", "distance", "calibrated"]
+
+
+class RetrievalResult(ContractModel):
+    """Ordered, candidate-pinned retrieval output with independent stage state."""
+
+    candidate: CandidateIdentity
+    ordered_chunk_ids: list[str] = Field(default_factory=list, max_length=5)
+    scores: list[float] = Field(default_factory=list, max_length=5)
+    score_semantics: RetrievalScoreSemantics
+    strategy: RetrievalStrategy
+    stage_status: StageStatus
+    search_ready: bool = False
+
+    @model_validator(mode="after")
+    def validate_scores(self) -> "RetrievalResult":
+        if len(self.scores) != len(self.ordered_chunk_ids):
+            raise ValueError("scores must align with ordered_chunk_ids")
+        if self.stage_status != "succeeded" and self.search_ready:
+            raise ValueError("search_ready requires a succeeded retrieval stage")
+        return self
+
+
+class EvaluationCase(ContractModel):
+    """Durable, content-bounded evaluation input owned by the evaluator."""
+
+    case_id: str = Field(min_length=1, max_length=128)
+    question: str = Field(min_length=1, max_length=2000)
+    expected_outcome: Literal["answer", "qualified", "evidence_refusal"]
+    relevant_chunk_ids: list[str] = Field(default_factory=list, max_length=5)
+    expected_claim_ids: list[str] = Field(default_factory=list, max_length=50)
+
+
+class RunItemResult(ContractModel):
+    """Content-free result for one candidate-pinned evaluation case."""
+
+    case_id: str = Field(min_length=1, max_length=128)
+    candidate: CandidateIdentity
+    retrieval_success: bool
+    grounded: bool
+    citation_correct: bool
+    answer_quality: bool
+    refusal_correct: bool
+    response_time_ms: float = Field(ge=0)
+    stage_status: StageStatus
+
+
+class CitationEvidence(ContractModel):
+    """A claim's bounded association to authoritative source spans."""
+
+    citation_id: str = Field(min_length=1, max_length=128)
+    claim_id: str = Field(min_length=1, max_length=128)
+    chunk_id: str = Field(min_length=1, max_length=256)
+    page: int = Field(ge=1)
+    section: str = Field(min_length=1, max_length=500)
+    excerpt: str = Field(min_length=1, max_length=5000)
+
+
+class AnswerOutcome(ContractModel):
+    """Safe public answer result, preserving trace and quota on all outcomes."""
+
+    outcome: AnswerOutcomeKind
+    answer_text: str | None = Field(default=None, max_length=20_000)
+    claims: list[str] = Field(default_factory=list, max_length=50)
+    evidence: list[CitationEvidence] = Field(default_factory=list, max_length=50)
+    trace: "RetrievalTrace"
+    quota: "QuotaStatus"
+    error: ApiError | None = None
+
+    @model_validator(mode="after")
+    def validate_outcome(self) -> "AnswerOutcome":
+        if self.outcome in {"answer", "qualified"} and not self.answer_text:
+            raise ValueError("answer_text is required for answer and qualified outcomes")
+        if self.outcome == "evidence_refusal" and self.error is not None:
+            raise ValueError("evidence refusal is a completed outcome, not an operational error")
+        if self.outcome == "operational_error" and self.error is None:
+            raise ValueError("operational errors require a safe error")
+        return self
+
+
 class ApiError(ContractModel):
     code: str = Field(pattern=r"^[a-z][a-z0-9_]{2,63}$")
     message: str = Field(min_length=1, max_length=500)
     retryable: bool = False
     status: int = Field(default=400, ge=400, le=599)
+
+
+OPERATIONAL_ERROR_STATUS = {
+    "invalid_output": 502,
+    "unavailable": 503,
+    "deadline": 504,
+}
 
 
 class QuotaStatus(ContractModel):

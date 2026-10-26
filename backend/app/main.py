@@ -8,16 +8,20 @@ from fastapi.responses import JSONResponse
 
 from app.api.evaluations import evaluation_service, router as evaluations_router
 from app.api.evaluation_datasets import evaluation_generation_store, router as evaluation_datasets_router
+from app.api.evaluation_assessments import (
+    assessment_repository,
+    evaluation_run_store,
+    output_store,
+    router as evaluation_assessments_router,
+)
 from app.answering import (
-    DEFAULT_GENERATION_TIMEOUT_MS,
-    DEFAULT_REQUEST_TIMEOUT_MS,
     GroundedAnswerPolicy,
     QuestionAnswerer,
     RetrievedAnswerService,
-    timeout_settings,
 )
 from app.contracts.api import (
     AggregateMetric,
+    AnswerOutcome,
     AnswerResponse,
     QuotaPolicy,
     QuotaStatus,
@@ -43,7 +47,7 @@ from app.quota import FirestoreQuotaRepository, QuotaExceededError, QuotaReposit
 from app.telemetry import LoggingTelemetryAdapter, TelemetryAdapter, error_event, response_event
 from app.corpus.firestore import FirestoreCorpusVersionStore
 from app.corpus.versions import legacy_serving_binding
-from app.rag import LangChainRagFactory
+from app.rag import LangChainRagFactory, LangChainRagSettings
 from app.evaluation import (
     CloudRunEvaluationJobDispatcher,
     CloudRunJobExecutor,
@@ -51,16 +55,33 @@ from app.evaluation import (
     EvaluationJobService,
     FirestoreEvaluationGenerationStore,
     FirestoreEvaluationRunStore,
+    FirestoreAssessmentRepository,
+    FirestoreCandidateOutputStore,
 )
 from app.evaluation.worker import FirestoreEvaluationCandidateSnapshotResolver
-from app.release import ReleaseDecisionError, ReleaseDecisionRequest, ReleaseDecisionService
+from app.release import (
+    FirestoreReleaseDecisionStore,
+    FirestoreReleaseManifestStore,
+    ReleaseDecisionError,
+    ReleaseDecisionRequest,
+    ReleaseDecisionService,
+    FirestoreServingReleaseStore,
+    PublishedCorpusResolver,
+)
 from app.lifecycle import ShutdownCoordinator, configured_shutdown_timeout, lifespan, lifecycle_middleware
+from app.health import (
+    FirestoreSelectedReleaseResolver,
+    NoopServiceChecker,
+    ReadinessChecker,
+)
+from app.settings import startup_configuration
 
 app = FastAPI(title="DMBOK Compass API", version="0.1.0", lifespan=lifespan)
 app.state.shutdown_coordinator = ShutdownCoordinator(configured_shutdown_timeout())
 app.middleware("http")(lifecycle_middleware)
 app.include_router(evaluations_router)
 app.include_router(evaluation_datasets_router)
+app.include_router(evaluation_assessments_router)
 
 
 @lru_cache(maxsize=1)
@@ -120,14 +141,58 @@ app.dependency_overrides[evaluation_generation_store] = configured_evaluation_ge
 
 
 @lru_cache(maxsize=1)
+def get_evaluation_run_store() -> FirestoreEvaluationRunStore:
+    from app.identity import _firebase_app
+    from firebase_admin import firestore
+
+    return FirestoreEvaluationRunStore(firestore.client(app=_firebase_app()))
+
+
+def configured_evaluation_run_store() -> FirestoreEvaluationRunStore:
+    return get_evaluation_run_store()
+
+
+@lru_cache(maxsize=1)
+def get_evaluation_output_store() -> FirestoreCandidateOutputStore:
+    from app.identity import _firebase_app
+    from firebase_admin import firestore
+
+    return FirestoreCandidateOutputStore(firestore.client(app=_firebase_app()))
+
+
+def configured_evaluation_output_store() -> FirestoreCandidateOutputStore:
+    return get_evaluation_output_store()
+
+
+@lru_cache(maxsize=1)
+def get_assessment_repository() -> FirestoreAssessmentRepository:
+    from app.identity import _firebase_app
+    from firebase_admin import firestore
+
+    return FirestoreAssessmentRepository(firestore.client(app=_firebase_app()))
+
+
+def configured_assessment_repository() -> FirestoreAssessmentRepository:
+    return get_assessment_repository()
+
+
+app.dependency_overrides[evaluation_run_store] = configured_evaluation_run_store
+app.dependency_overrides[output_store] = configured_evaluation_output_store
+app.dependency_overrides[assessment_repository] = configured_assessment_repository
+
+
+@lru_cache(maxsize=1)
 def get_release_decision_service() -> ReleaseDecisionService:
     service = configured_evaluation_service()
-    from app.release import InMemoryReleaseDecisionStore
+    from app.identity import _firebase_app
+    from firebase_admin import firestore
+    client = firestore.client(app=_firebase_app())
 
     return ReleaseDecisionService(
         service.runs,
-        InMemoryReleaseDecisionStore(),
+        FirestoreReleaseDecisionStore(client),
         configured_evaluation_generation_store(),
+        FirestoreReleaseManifestStore(client),
     )
 
 
@@ -182,10 +247,49 @@ def aggregate_metric_repository() -> AggregateMetricRepository:
     return get_aggregate_metric_repository()
 
 
+@app.get("/health/live", tags=["system"])
+def liveness() -> dict[str, str]:
+    """Report only that the process can respond; no dependency calls are made."""
+    return {"status": "ok"}
+
+
+@app.get("/health/ready", tags=["system"])
+async def readiness() -> JSONResponse:
+    """Report whether the selected release and required services are usable."""
+    checker = getattr(app.state, "readiness_checker", None)
+    if checker is None:
+        try:
+            configuration = app.state.runtime_configuration
+            from app.identity import _firebase_app
+            from firebase_admin import firestore
+
+            client = firestore.client(app=_firebase_app())
+            checker = ReadinessChecker(
+                configuration,
+                FirestoreSelectedReleaseResolver(
+                    FirestoreReleaseDecisionStore(client),
+                    FirestoreReleaseManifestStore(client),
+                    FirestoreCorpusVersionStore(
+                        client,
+                        vector_collection=configuration.vector_collection,
+                    ),
+                ),
+                NoopServiceChecker(),
+            )
+            app.state.readiness_checker = checker
+        except Exception:
+            return JSONResponse(
+                status_code=503,
+                content={"status": "not_ready", "checks": {"configuration": {"status": "failed"}}},
+            )
+    result = await checker.probe()
+    return JSONResponse(status_code=200 if result.ready else 503, content=result.as_dict())
+
+
 @app.get("/health", tags=["system"])
 def health() -> dict[str, str]:
-    """Report that the API process is ready to receive requests."""
-    return {"status": "ok"}
+    """Compatibility alias for liveness; use /health/live or /health/ready explicitly."""
+    return liveness()
 
 
 @app.post("/api/registration", response_model=UserProfile, status_code=status.HTTP_200_OK)
@@ -254,24 +358,41 @@ def configured_question_answerer() -> RetrievedAnswerService:
         firebase_admin.initialize_app()
     client = firestore.client()
     try:
-        factory = LangChainRagFactory.from_environment(client)
+        configuration = getattr(app.state, "runtime_configuration", None) or startup_configuration()
+        factory = LangChainRagFactory(client, LangChainRagSettings(
+            project=configuration.runtime.project,
+            location=configuration.runtime.location,
+            vector_collection=configuration.vector_collection,
+            answer_provider=configuration.runtime.provider,
+            primary_model=configuration.runtime.primary_model,
+            fallback_model=configuration.runtime.fallback_model,
+            json_schema_supported=configuration.json_schema_supported,
+            output_token_cap=configuration.output_token_cap,
+        ))
         adapter = factory.generation_adapter()
     except ValueError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    request_timeout_ms, generation_timeout_ms = timeout_settings(
-        os.environ.get("ANSWER_REQUEST_TIMEOUT_MS", str(DEFAULT_REQUEST_TIMEOUT_MS)),
-        os.environ.get("ANSWER_GENERATION_TIMEOUT_MS", str(DEFAULT_GENERATION_TIMEOUT_MS)),
-    )
+    request_timeout_ms = configuration.request_timeout_ms
+    generation_timeout_ms = configuration.generation_timeout_ms
     policy = GroundedAnswerPolicy(
         adapter,
         model_name=factory.selected_model(),
         timeout_ms=generation_timeout_ms,
     )
+    corpus_store = FirestoreCorpusVersionStore(
+        client, vector_collection=factory.settings.vector_collection
+    )
+    published_corpus = PublishedCorpusResolver(
+        FirestoreServingReleaseStore(client),
+        corpus_store,
+        configuration_version_id=os.environ.get("CONFIGURATION_VERSION_ID", ""),
+        vector_collection=factory.settings.vector_collection,
+        vector_schema_version=configuration.vector_schema_version,
+        artifact_id=os.environ.get("ARTIFACT_ID") or None,
+    )
     return RetrievedAnswerService(
         factory.retriever(),
-        FirestoreCorpusVersionStore(
-            client, vector_collection=factory.settings.vector_collection
-        ),
+        corpus_store,
         policy,
         request_timeout_ms=request_timeout_ms,
         retriever_for_binding=lambda corpus: factory.retriever_for_binding(
@@ -280,16 +401,17 @@ def configured_question_answerer() -> RetrievedAnswerService:
                 corpus, vector_collection=factory.settings.vector_collection
             )
         ),
+        serving_release=published_corpus,
     )
 
 
-@app.post("/api/questions", response_model=AnswerResponse)
+@app.post("/api/questions", response_model=None)
 async def answer_question(
     request: QuestionRequest,
     quota: QuotaStatus = Depends(reserve_request_quota),
     answerer: QuestionAnswerer = Depends(question_answerer),
     telemetry: TelemetryAdapter = Depends(telemetry_adapter),
-) -> AnswerResponse:
+) -> AnswerResponse | JSONResponse:
     """Reserve quota before invoking the request-scoped grounded answerer."""
     started = perf_counter()
     try:
@@ -298,6 +420,17 @@ async def answer_question(
         telemetry.emit(error_event(exc, started))
         raise
     telemetry.emit(response_event(response, started))
+    if response.outcome == "operational_error":
+        assert response.error is not None
+        outcome = AnswerOutcome(
+            outcome="operational_error",
+            trace=response.trace,
+            quota=response.quota,
+            error=response.error,
+        )
+        payload = outcome.model_dump(mode="json")
+        payload["detail"] = outcome.error.model_dump(mode="json")
+        return JSONResponse(status_code=response.error.status, content=payload)
     return response
 
 
@@ -350,11 +483,11 @@ def list_aggregate_metrics(
 @app.post("/api/releases", response_model=ReleaseDecision, status_code=status.HTTP_201_CREATED, tags=["admin"])
 def record_release_decision(
     request: ReleaseDecisionRequest,
-    _: UserProfile = Depends(get_admin_user),
+    admin: UserProfile = Depends(get_admin_user),
     service: ReleaseDecisionService = Depends(release_decision_service),
 ) -> ReleaseDecision:
     try:
-        return service.record(request)
+        return service.record(request, actor_user_id=admin.user_id)
     except ReleaseDecisionError as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,

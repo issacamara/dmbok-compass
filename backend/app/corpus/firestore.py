@@ -13,6 +13,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 
 from app.contracts import CorpusValidationEvidence, CorpusVersion
 from app.corpus.indexing import VECTOR_COLLECTION, VECTOR_SCHEMA_VERSION
+from app.corpus.search_probe import SearchReadinessEvidence
 from app.corpus.versions import (
     ConcurrentCorpusActivationError,
     CorpusVersionError,
@@ -47,6 +48,7 @@ class FirestoreCorpusVersionStore:
     state_collection_id = "corpus_state"
     active_pointer_id = "active"
     ingestion_run_collection_id = "corpus_ingestion_runs"
+    readiness_collection_id = "corpus_search_readiness"
 
     def __init__(
         self,
@@ -62,6 +64,7 @@ class FirestoreCorpusVersionStore:
             self.active_pointer_id
         )
         self.ingestion_runs = client.collection(self.ingestion_run_collection_id)
+        self.readiness = client.collection(self.readiness_collection_id)
         self._transaction_runner = transaction_runner
 
     def get(self, version_id: str) -> CorpusVersion | None:
@@ -139,6 +142,13 @@ class FirestoreCorpusVersionStore:
         self.ingestion_runs.document(version_id).set(
             {"status": status, "updated_at": datetime.now(timezone.utc).isoformat()}
         )
+
+    def persist_search_readiness(
+        self, version_id: str, evidence: SearchReadinessEvidence
+    ) -> None:
+        if evidence.complete.corpus_version_id != version_id:
+            raise CorpusVersionError("search readiness evidence is bound to another corpus")
+        self.readiness.document(version_id).set(evidence.model_dump())
 
     def cleanup_staging(self, version_id: str, *, dry_run: bool = True) -> CorpusCleanupResult:
         """Remove exactly one abandoned staged corpus after safety checks.

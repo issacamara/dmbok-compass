@@ -10,6 +10,11 @@ output "corpus_bucket_name" {
   value       = google_storage_bucket.corpus.name
 }
 
+output "release_evidence_bucket_name" {
+  description = "Private bucket for durable release evidence bundles."
+  value       = google_storage_bucket.release_evidence.name
+}
+
 output "artifact_repository" {
   description = "Fully qualified Artifact Registry repository."
   value       = google_artifact_registry_repository.containers.name

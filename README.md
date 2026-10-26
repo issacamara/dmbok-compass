@@ -76,15 +76,17 @@ yet available.
 
 ## Pull-request quality checks
 
-Pull requests and pushes to `main` run `.github/workflows/quality.yml`. The workflow
+Every pull request runs `.github/workflows/ci.yml`. The workflow
 uses read-only repository access and checks the two workspaces independently:
 
 - Backend: install the test extra, run `pytest`, and audit Python dependencies with
   `pip-audit`.
+- Python lint: run pinned Ruff checks.
 - Web: run `npm ci`, `npm test -- --run`, `npm run build`, and
   `npm audit --audit-level=high`.
 - Terraform: run formatting and configuration validation for
   `infra/terraform/`.
+- Compatibility: build the Python 3.11 LangChain contract image.
 
 Run the same checks locally before opening a pull request:
 
@@ -110,20 +112,62 @@ terraform init -backend=false -input=false
 terraform validate
 ```
 
-## GitHub Actions delivery
+## GitHub Actions delivery and resource provisioning
 
-`.github/workflows/delivery.yml` replaces Cloud Build for immutable preview and
-production delivery. It authenticates to GCP with GitHub OIDC and Terraform's
-repository-restricted Workload Identity Federation provider; no long-lived
-service-account key is stored in GitHub.
+`.github/workflows/cd-development.yml` deploys on pushes to `development`.
+It builds the API image once, tags it with the commit SHA, and deploys its
+registry digest to Cloud Run. `.github/workflows/cd-production.yml` runs on
+pushes to `main` behind the protected `production` environment. It finds a
+development commit with the same backend tree, copies that exact image digest
+to the production GCP project, verifies the copied digest, and deploys it.
+If the backend trees differ, production deployment stops until the change has
+been built on `development`. Hotfixes must be merged into both branches.
 
-Create GitHub environments named `development` and `production`. Configure
-these variables separately in each environment from the matching Terraform
-outputs and reviewed project settings: `GCP_PROJECT_ID`,
-`CORPUS_BUCKET_NAME`, `GCP_WORKLOAD_IDENTITY_PROVIDER`, and
-`GCP_BUILD_SERVICE_ACCOUNT`. Set `GCP_PROJECT_ID` to `dev-dmbok-compass` in
-development and `prod-dmbok-compass` in production. Protect the `production`
-environment with required reviewers.
+Both workflows use Workload Identity Federation with `id-token: write`.
+Configure the existing GitHub environment **variables**
+`GCP_WORKLOAD_IDENTITY_PROVIDER` in each environment. The development environment uses
+`GCP_PROJECT_ID` and `GCP_BUILD_SERVICE_ACCOUNT`; production uses
+`GCP_PROJECT_PRODUCTION` and `GCP_SA_PRODUCTION`.
+they are identifiers, so GitHub Actions secrets are unnecessary. Also set
+`CORPUS_VERSION_ID`, `RUNTIME_SECRET_VERSION`, and the four
+`VITE_FIREBASE_*` client variables in both environments. Set the project IDs
+to `dev-dmbok-compass` and `prod-dmbok-compass` respectively. The secret
+value itself remains in each project's Secret Manager.
+
+Protect `development` and `main` as PR-only branches. Configure the
+`production` GitHub environment with required reviewers and a wait timer.
+Apply the updated Terraform IAM configuration in both GCP projects before
+enabling the workflows: it limits development WIF to `development`, production
+WIF to `main`, and lets the production build identity read only the
+development image repository.
+
+`.github/workflows/terraform.yml` (`terraform`) plans infrastructure changes for pull requests
+targeting `development` or `main`, and applies the reviewed configuration after
+those branches receive a merge. Both production planning and production apply
+run through the protected `production` environment and require human approval.
+Terraform uses separate environment variables
+`GCP_BUILD_SERVICE_ACCOUNT` with the matching `GCP_WORKLOAD_IDENTITY_PROVIDER` value.
+Pull-request plans use the read-only identity; merged applies use the
+privileged identity.
+
+Set these GitHub Environment variables in both environments:
+
+- `GCP_PROJECT_ID` (mapped to `TF_VAR_PROJECT_ID`)
+- `GCP_BILLING_ACCOUNT_ID` (mapped to `TF_VAR_BILLING_ACCOUNT_ID`)
+- `CORPUS_BUCKET_NAME` (mapped to `TF_VAR_CORPUS_BUCKET_NAME`)
+- `HOSTING_SITE` (mapped to `TF_VAR_HOSTING_SITE_ID`)
+- `CORPUS_VERSION_ID` (`1`, mapped to `TF_VAR_CORPUS_VERSION_ID`)
+- `RUNTIME_SECRET_VERSION` (`3`, mapped to `TF_VAR_RUNTIME_SECRET_VERSION`)
+
+The GCS state buckets must exist before the first workflow run:
+`dev-dmbok-compass-tfstate` and `prod-dmbok-compass-tfstate`. They are separate
+state domains and use the backend files under `infra/terraform/backends/`.
+Create them through the approved GCP bootstrap process with uniform bucket-level
+access, public access prevention, object versioning, and access limited to the
+matching Terraform plan/apply service accounts. The main Terraform configuration
+cannot create its own backend bucket before `terraform init`; the first
+bootstrap must grant the initial state access, after which Terraform maintains
+the bucket IAM bindings.
 
 Firebase Hosting uses the environment project IDs as the site IDs, so the
 stable frontend URLs are:
@@ -131,12 +175,10 @@ stable frontend URLs are:
 - Development: `https://dev-dmbok-compass.web.app/`
 - Production: `https://prod-dmbok-compass.web.app/`
 
-If a GitHub environment has a `HOSTING_SITE` variable, set it to the matching
-project ID; otherwise the workflow derives it from `GCP_PROJECT_ID`.
-
-Pushes to `main` target development by default. Manual runs can select either
-environment; a run with `promote=true` and a release decision identifier
-promotes the exact reviewed artifacts in the selected project.
+The frontend is built separately for each environment because Firebase client
+configuration is embedded during its build. Each deployment records the image
+source SHA and deployment SHA in a workflow artifact and Cloud Run runtime
+environment. See `documents/runbooks/immutable-delivery.md` for rollback.
 
 ## Workspace boundaries
 

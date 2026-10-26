@@ -8,6 +8,12 @@ variable "project_id" {
   }
 }
 
+variable "production_project_id" {
+  description = "Production project whose build identity may read development images for promotion."
+  type        = string
+  default     = "prod-dmbok-compass"
+}
+
 variable "billing_account_id" {
   description = "Billing account that owns the EUR monthly budget, for example 000000-000000-000000."
   type        = string
@@ -90,6 +96,39 @@ variable "github_repository" {
   }
 }
 
+variable "github_branch" {
+  description = "Protected GitHub branch permitted to authenticate for this project."
+  type        = string
+  default     = "development"
+
+  validation {
+    condition     = can(regex("^(development|main)$", var.github_branch))
+    error_message = "github_branch must be development or main."
+  }
+}
+
+variable "github_environment" {
+  description = "GitHub Environment claim required for workload identity exchange."
+  type        = string
+  default     = "development"
+
+  validation {
+    condition     = can(regex("^(development|production)$", var.github_environment))
+    error_message = "github_environment must be development or production."
+  }
+}
+
+variable "github_deploy_workflow" {
+  description = "GitHub Actions workflow name allowed to use the application build identity."
+  type        = string
+  default     = "deploy-development"
+
+  validation {
+    condition     = can(regex("^deploy-(development|production)$", var.github_deploy_workflow))
+    error_message = "github_deploy_workflow must be deploy-development or deploy-production."
+  }
+}
+
 variable "secret_names" {
   description = "Secret Manager metadata to provision; values are created out of band."
   type        = set(string)
@@ -100,5 +139,15 @@ variable "secret_names" {
   validation {
     condition     = alltrue([for name in var.secret_names : can(regex("^[a-zA-Z0-9][a-zA-Z0-9_-]{0,254}$", name))])
     error_message = "Secret names must use Secret Manager's supported characters and length."
+  }
+}
+
+variable "runtime_secret_version" {
+  description = "Pinned Secret Manager version shared by the API and evaluation job runtime."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[1-9][0-9]*$", trimspace(var.runtime_secret_version)))
+    error_message = "runtime_secret_version must be a positive Secret Manager version number; latest is not allowed."
   }
 }

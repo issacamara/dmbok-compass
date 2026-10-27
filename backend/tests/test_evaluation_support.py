@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from hashlib import sha256
 
 import pytest
@@ -19,6 +20,7 @@ from app.evaluation.support import (
     StoredSupportChunk,
     SupportPreparationError,
     prepare_support,
+    review_support,
 )
 
 
@@ -82,6 +84,9 @@ class Source:
     def source_provenance_sha256(self, *, corpus_version_id: str) -> str:
         assert corpus_version_id == "corpus-v1"
         return self.provenance
+
+    def chunk(self, *, corpus_version_id: str, chunk_id: str) -> StoredSupportChunk | None:
+        return next((record for record in self.records if record.chunk_id == chunk_id), None)
 
 
 def run(item_ids: list[str]) -> EvaluationRun:
@@ -225,3 +230,36 @@ def test_stale_run_snapshot_is_rejected_before_any_evidence_is_written() -> None
     )
     with pytest.raises(SupportPreparationError, match="not bound"):
         prepare_support(stale, dataset, Source(()), InMemorySupportEvidenceStore())
+
+
+def test_exception_review_accepts_only_listed_chunk_and_is_idempotent() -> None:
+    dataset = EvaluationDataset(
+        dataset_version_id="dataset-v1",
+        items=[EvaluationItem(item_id="item-1", question="Q", dataset_version_id="dataset-v1")],
+        gold_annotations=[GoldAnnotation(
+            item_id="item-1", expected_answer_or_rubric="A", review_status="approved",
+            supporting_passage="missing",
+        )],
+    )
+    store = InMemorySupportEvidenceStore()
+    source = Source((chunk("candidate", "different support"),))
+    prepared = prepare_support(run(["item-1"]), dataset, source, store)
+
+    # The candidate must be listed by preparation; a chunk merely existing in
+    # the corpus cannot be smuggled into a review decision.
+    with pytest.raises(SupportPreparationError, match="server-listed"):
+        review_support(
+            prepared.evidence[0], candidate=chunk("unlisted", "support"),
+            reviewer_actor="admin", reviewed_at=datetime.now(timezone.utc), store=store,
+        )
+
+    rejected = review_support(
+        prepared.evidence[0], candidate=None,
+        reviewer_actor="admin", reviewed_at=datetime.now(timezone.utc), store=store,
+    )
+    repeated = review_support(
+        rejected, candidate=None,
+        reviewer_actor="another-admin", reviewed_at=datetime.now(timezone.utc), store=store,
+    )
+    assert rejected.match_status == "review_rejected"
+    assert repeated == rejected

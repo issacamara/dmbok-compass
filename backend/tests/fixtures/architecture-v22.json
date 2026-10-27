@@ -1,0 +1,49 @@
+{
+  "schemaVersion": "2.2",
+  "source": {
+    "sha256": "5ff60b4499ebe752d7552ed9369e281795b40142a25ebbf4355e2a9b6aed057d",
+    "sections": ["§5.2", "§5.3", "§7.2", "§8", "§11 A-23"]
+  },
+  "identities": {
+    "runId": "run-2026-10-27",
+    "itemId": "item-1",
+    "candidateSnapshotSha256": "a000000000000000000000000000000000000000000000000000000000000000",
+    "corpusVersionId": "corpus-2026-10-27",
+    "sourceProvenanceSha256": "b000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "verifiedChunk": {
+    "chunk_id": "chunk-unique",
+    "corpus_version_id": "corpus-2026-10-27",
+    "content_hash": "c000000000000000000000000000000000000000000000000000000000000000",
+    "page": 12,
+    "section": "Definitions",
+    "source_provenance_sha256": "b000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "supportEvidence": {
+    "schema_version": "run-bound-support-v1",
+    "run_id": "run-2026-10-27",
+    "item_id": "item-1",
+    "candidate_snapshot_sha256": "a000000000000000000000000000000000000000000000000000000000000000",
+    "corpus_version_id": "corpus-2026-10-27",
+    "source_provenance_sha256": "b000000000000000000000000000000000000000000000000000000000000000",
+    "match_status": "auto_approved",
+    "candidate_chunk_ids": ["chunk-unique"],
+    "verified_chunks": [],
+    "selected_chunk": null,
+    "expected_refusal": false
+  },
+  "a23Cases": [
+    {"id": "unique", "matchStatus": "auto_approved", "notes": "One complete normalized passage in one chunk."},
+    {"id": "repeated", "matchStatus": "ambiguous", "notes": "The complete passage occurs in multiple chunks."},
+    {"id": "missing", "matchStatus": "missing", "notes": "No chunk contains the complete passage."},
+    {"id": "invalid-metadata", "matchStatus": "invalid", "notes": "Chunk identity, hash, corpus, or provenance fails verification."},
+    {"id": "short-passage", "matchStatus": "auto_approved", "notes": "A short but complete passage is still matched contiguously."},
+    {"id": "boundary-crossing", "matchStatus": "missing", "notes": "A passage split across chunks is not one contiguous chunk match."},
+    {"id": "unanswerable", "matchStatus": "review_rejected", "notes": "Explicit refusal is reviewed and never auto-approved by passage matching."}
+  ],
+  "compatibility": {
+    "legacyCandidateBinding": "candidate-binding-v1",
+    "legacyAssessment": "RunItemAssessment",
+    "acceptedStatuses": ["auto_approved", "missing", "ambiguous", "invalid", "review_approved", "review_rejected"]
+  }
+}

@@ -1,4 +1,12 @@
-from app.contracts import GoldAnnotation, ReviewedSemanticAssessment
+from app.contracts import (
+    CorpusServingBinding,
+    EvaluationCandidateSnapshot,
+    EvaluationRun,
+    GoldAnnotation,
+    ReviewedSemanticAssessment,
+    RunBoundSupportEvidence,
+    VerifiedChunkChoice,
+)
 from app.evaluation.assessments import response_fingerprint, score_assessment
 
 
@@ -22,6 +30,67 @@ def annotation(review: ReviewedSemanticAssessment | None) -> GoldAnnotation:
         relevant_chunk_ids=["chunk-1"],
         review_status="approved",
         semantic_assessment=review,
+    )
+
+
+def run() -> EvaluationRun:
+    return EvaluationRun(
+        run_id="run-1",
+        dataset_version_id="dataset-1",
+        corpus_version_id="corpus-1",
+        status="running",
+        selected_item_ids=["item-1"],
+        configuration_version_id="config-1",
+        model_version_id="model-1",
+        candidate_snapshot=EvaluationCandidateSnapshot(
+            corpus_binding=CorpusServingBinding(
+                corpus_version_id="corpus-1",
+                vector_collection="chunks",
+                vector_schema_version="2",
+                embedding_model="embedding",
+                ingestion_fingerprint="a" * 64,
+                configuration_fingerprint="b" * 64,
+            ),
+            project="project",
+            location="location",
+            answer_provider="openrouter",
+            primary_model="model",
+            fallback_model=None,
+            json_schema_supported=True,
+            request_timeout_ms=1000,
+            generation_timeout_ms=1000,
+            prompt_version="prompt",
+            retrieval_policy_version="retrieval",
+            evidence_policy_version="evidence",
+            scorer_version="evaluation-gates-v1",
+            dependency_lock_sha256="c" * 64,
+            integration_artifact="artifact",
+            runtime_version="runtime",
+        ),
+    )
+
+
+def support(run_value: EvaluationRun) -> RunBoundSupportEvidence:
+    choice = VerifiedChunkChoice(
+        chunk_id="chunk-1",
+        corpus_version_id="corpus-1",
+        content_hash="d" * 64,
+        page=1,
+        section="Section",
+        source_provenance_sha256="e" * 64,
+    )
+    from app.evaluation.support import candidate_snapshot_sha256
+
+    return RunBoundSupportEvidence(
+        run_id=run_value.run_id,
+        item_id="item-1",
+        candidate_snapshot_sha256=candidate_snapshot_sha256(run_value),
+        corpus_version_id=run_value.corpus_version_id,
+        source_provenance_sha256="e" * 64,
+        match_status="auto_approved",
+        candidate_chunk_ids=[choice.chunk_id],
+        verified_chunks=[choice],
+        selected_chunk=choice,
     )
 
 
@@ -53,6 +122,28 @@ def test_retrieval_success_does_not_depend_on_answer_digest() -> None:
 
     assert score.retrieval_success is True
     assert (score.grounded, score.citation_correct, score.answer_quality) == (False, False, False)
+
+
+def test_run_bound_support_drives_retrieval_and_rejects_stale_evidence() -> None:
+    reviewed = assessment(answer="Reviewed answer", cited={"chunk-1"})
+    pinned = run()
+    evidence = support(pinned)
+
+    score = score_assessment(
+        annotation(reviewed), outcome="answer", answer_text="Changed answer",
+        retrieved_chunk_ids={"chunk-1"}, cited_chunk_ids={"chunk-1"},
+        scorer_version="evaluation-gates-v1", run=pinned, support_evidence=evidence,
+    )
+    stale = score_assessment(
+        annotation(reviewed), outcome="answer", answer_text="Changed answer",
+        retrieved_chunk_ids={"chunk-1"}, cited_chunk_ids={"chunk-1"},
+        scorer_version="evaluation-gates-v1", run=pinned,
+        support_evidence=evidence.model_copy(update={"candidate_snapshot_sha256": "f" * 64}),
+    )
+
+    assert score.retrieval_success is True
+    assert stale.retrieval_success is False
+    assert stale.applicable_metrics == frozenset()
 
 
 def test_wrong_claim_support_citation_and_unreviewed_response_fail_closed() -> None:

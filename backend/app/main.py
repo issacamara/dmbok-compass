@@ -127,6 +127,7 @@ def get_evaluation_service() -> EvaluationJobService:
         FirestoreEvaluationRunStore(client),
         dispatcher,
         FirestoreEvaluationCandidateSnapshotResolver(client),
+        FirestoreSupportEvidenceStore(client),
     )
 
 
@@ -245,6 +246,7 @@ def get_release_decision_service() -> ReleaseDecisionService:
         FirestoreReleaseDecisionStore(client),
         configured_evaluation_generation_store(),
         FirestoreReleaseManifestStore(client),
+        support_evidence=FirestoreSupportEvidenceStore(client),
     )
 
 

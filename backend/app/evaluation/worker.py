@@ -16,7 +16,7 @@ from app.answering import (
     GroundedAnswerPolicy,
     RetrievedAnswerService,
 )
-from app.contracts import EvaluationDataset, QuotaStatus
+from app.contracts import EvaluationDataset, EvaluationRun, QuotaStatus, RunBoundSupportEvidence
 from app.corpus.firestore import FirestoreCorpusVersionStore
 from app.evaluation.generations import FirestoreEvaluationGenerationStore
 from app.evaluation.assessments import score_assessment
@@ -117,6 +117,7 @@ def execute_run(
     termination_requested: Callable[[], bool] | None = None,
     stages: EvaluationStageStore | None = None,
     support_preparer: Callable[[object, EvaluationDataset], object] | None = None,
+    support_evidence: Callable[..., RunBoundSupportEvidence | None] | None = None,
 ) -> None:
     """Reload the run-pinned generation and persist its terminal outcome."""
 
@@ -133,6 +134,7 @@ def execute_run(
         evaluate,
         termination_requested=termination_requested,
         support_preparer=support_preparer,
+        support_evidence=support_evidence,
     )
 
 
@@ -140,11 +142,19 @@ class EvaluationAnswerEvaluator:
     """Produce content-free evaluation outcomes from the pinned corpus answer path."""
 
     def __init__(
-        self, dataset: EvaluationDataset, answerer: RetrievedAnswerService, *, scorer_version: str = "evaluation-gates-v1"
+        self,
+        dataset: EvaluationDataset,
+        answerer: RetrievedAnswerService,
+        *,
+        run: EvaluationRun | None = None,
+        support_evidence: Callable[..., RunBoundSupportEvidence | None] | None = None,
+        scorer_version: str = "evaluation-gates-v1",
     ) -> None:
         self._items = {item.item_id: item for item in dataset.items}
         self._annotations = {annotation.item_id: annotation for annotation in dataset.gold_annotations}
         self._answerer = answerer
+        self._run = run
+        self._support_evidence = support_evidence
         self._scorer_version = scorer_version
 
     def __call__(self, item_id: str) -> EvaluationOutcome:
@@ -161,6 +171,12 @@ class EvaluationAnswerEvaluator:
             cited_chunk_ids=cited,
             scorer_version=self._scorer_version,
             operational_error=response.error is not None,
+            run=self._run,
+            support_evidence=(
+                self._support_evidence(run_id=self._run.run_id, item_id=item_id)
+                if self._run is not None and self._support_evidence is not None
+                else None
+            ),
         )
         return EvaluationOutcome(
             retrieval_success=score.retrieval_success,
@@ -197,16 +213,22 @@ def main() -> None:
                 stages=stages,
             )
             return
+        support_store = FirestoreSupportEvidenceStore(client)
         execute_run(
             run_id,
             datasets=datasets,
             runs=runs,
             evaluate=EvaluationAnswerEvaluator(
-                dataset, _pinned_answerer(project, run), scorer_version=run.candidate_snapshot.scorer_version
+                dataset,
+                _pinned_answerer(project, run),
+                run=run,
+                support_evidence=support_store.get_evidence,
+                scorer_version=run.candidate_snapshot.scorer_version,
             ),
             termination_requested=termination_requested.is_set,
             stages=stages,
             support_preparer=lambda pinned_run, pinned_dataset: _prepare_run_support(client, pinned_run, pinned_dataset),
+            support_evidence=support_store.get_evidence,
         )
     except EvaluationInterrupted:
         print(json.dumps({"event": "dmbok_evaluation_interrupted", "exit_code": 1}))

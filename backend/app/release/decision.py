@@ -9,8 +9,9 @@ from typing import Callable, Literal, Protocol
 
 from pydantic import Field
 
-from app.contracts import EvaluationReportEligibility, EvaluationRun, ReleaseDecision
+from app.contracts import EvaluationReportEligibility, EvaluationRun, ReleaseDecision, RunBoundSupportEvidence
 from app.evaluation import EvaluationRunStore
+from app.evaluation.support import approved_support_chunk_ids
 from app.contracts.api import ContractModel
 from app.release.firestore import (
     ReleaseManifest,
@@ -63,6 +64,12 @@ class ReleaseEvidenceStore(Protocol):
     def candidate_binding(self, generation_id: str) -> object | None: ...
 
 
+class RunSupportEvidenceStore(Protocol):
+    def get_marker(self, *, run_id: str) -> object | None: ...
+
+    def get_evidence(self, *, run_id: str, item_id: str) -> RunBoundSupportEvidence | None: ...
+
+
 class InMemoryReleaseDecisionStore:
     """Reference store with create-once semantics for immutable decisions."""
 
@@ -107,6 +114,7 @@ class ReleaseDecisionService:
         *,
         actor_user_id: str = "system",
         clock: Callable[[], datetime] | None = None,
+        support_evidence: RunSupportEvidenceStore | None = None,
     ) -> None:
         self.runs = runs
         self.decisions = decisions
@@ -114,6 +122,7 @@ class ReleaseDecisionService:
         self.manifests = manifests
         self.actor_user_id = actor_user_id
         self.clock = clock or (lambda: datetime.now(timezone.utc))
+        self.support_evidence = support_evidence
 
     def record(self, request: ReleaseDecisionRequest, *, actor_user_id: str | None = None) -> ReleaseDecision:
         run = self.runs.get(request.evaluation_run_id)
@@ -180,15 +189,37 @@ class ReleaseDecisionService:
 
     def _validate_current_evidence(self, run: EvaluationRun) -> None:
         eligibility = self.evidence.report_eligibility(run.dataset_version_id)
-        if run.report_eligibility is not None and run.report_eligibility.eligibility != "release_evidence":
-            raise ReleaseDecisionError("release evidence is exploratory and cannot support a release decision")
         if (
             eligibility.generation_id != run.dataset_version_id
-            or eligibility.eligibility != "release_evidence"
             or not eligibility.is_current_generation
             or eligibility.is_superseded
-            or not 30 <= eligibility.approved_gold_count <= 50
         ):
+            raise ReleaseDecisionError("release evidence is exploratory, superseded, or lacks 30–50 approved gold items")
+        if self.support_evidence is not None:
+            marker = self.support_evidence.get_marker(run_id=run.run_id)
+            if (
+                marker is None
+                or getattr(marker, "run_id", None) != run.run_id
+                or getattr(marker, "corpus_version_id", None) != run.corpus_version_id
+                or getattr(marker, "candidate_snapshot_sha256", None)
+                != _candidate_snapshot_sha256(run.candidate_snapshot)
+                or getattr(marker, "item_count", None) != len(run.selected_item_ids)
+                or getattr(marker, "prepared_item_count", None) != len(run.selected_item_ids)
+            ):
+                raise ReleaseDecisionError("run-bound support preparation is incomplete")
+            approved_count = 0
+            for item_id in run.selected_item_ids:
+                evidence = self.support_evidence.get_evidence(run_id=run.run_id, item_id=item_id)
+                if approved_support_chunk_ids(evidence, run=run):
+                    approved_count += 1
+            if not 30 <= approved_count <= 50:
+                raise ReleaseDecisionError("release evidence lacks 30–50 approved run-bound support items")
+        elif (
+            run.report_eligibility is not None
+            and run.report_eligibility.eligibility != "release_evidence"
+        ):
+            raise ReleaseDecisionError("release evidence is exploratory and cannot support a release decision")
+        elif not 30 <= eligibility.approved_gold_count <= 50:
             raise ReleaseDecisionError("release evidence is exploratory, superseded, or lacks 30–50 approved gold items")
         binding_reader = getattr(self.evidence, "candidate_binding", None)
         if binding_reader is not None:

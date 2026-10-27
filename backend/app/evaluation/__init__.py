@@ -65,6 +65,7 @@ from .support import (
     SupportPreparationError,
     SupportPreparationResult,
     prepare_support,
+    review_support,
 )
 
 __all__ = [
@@ -124,4 +125,5 @@ __all__ = [
     "SupportPreparationError",
     "SupportPreparationResult",
     "prepare_support",
+    "review_support",
 ]

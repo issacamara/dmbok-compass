@@ -32,6 +32,11 @@ from app.evaluation.job import (
     EvaluationWorker,
 )
 from app.evaluation.job import FirestoreEvaluationRunStore
+from app.evaluation.support import (
+    FirestoreRunPinnedChunkSource,
+    FirestoreSupportEvidenceStore,
+    prepare_support,
+)
 from app.rag import LangChainRagFactory, LangChainRagSettings
 from app.settings import RuntimeConfiguration
 
@@ -111,6 +116,7 @@ def execute_run(
     evaluate: Callable[[str], EvaluationOutcome],
     termination_requested: Callable[[], bool] | None = None,
     stages: EvaluationStageStore | None = None,
+    support_preparer: Callable[[object, EvaluationDataset], object] | None = None,
 ) -> None:
     """Reload the run-pinned generation and persist its terminal outcome."""
 
@@ -122,7 +128,11 @@ def execute_run(
         runs.update(run.model_copy(update={"status": "failed", "error": "evaluation dataset is unavailable"}))
         return
     EvaluationWorker(runs, stages=stages).execute(
-        run_id, dataset, evaluate, termination_requested=termination_requested
+        run_id,
+        dataset,
+        evaluate,
+        termination_requested=termination_requested,
+        support_preparer=support_preparer,
     )
 
 
@@ -196,6 +206,7 @@ def main() -> None:
             ),
             termination_requested=termination_requested.is_set,
             stages=stages,
+            support_preparer=lambda pinned_run, pinned_dataset: _prepare_run_support(client, pinned_run, pinned_dataset),
         )
     except EvaluationInterrupted:
         print(json.dumps({"event": "dmbok_evaluation_interrupted", "exit_code": 1}))
@@ -253,6 +264,29 @@ def _pinned_answerer(project: str, run) -> RetrievedAnswerService:
             snapshot.corpus_binding
         ),
     )
+
+
+def _prepare_run_support(client: firestore.Client, run, dataset: EvaluationDataset) -> object:
+    """Prepare evidence against the same immutable corpus binding as scoring."""
+
+    snapshot = run.candidate_snapshot
+    if snapshot is None:
+        raise EvaluationRunError("evaluation run has no immutable candidate snapshot")
+    corpus = FirestoreCorpusVersionStore(
+        client, vector_collection=snapshot.corpus_binding.vector_collection
+    ).get(run.corpus_version_id)
+    if corpus is None or corpus.validation_evidence is None:
+        raise EvaluationRunError("run corpus provenance evidence is unavailable")
+    if corpus.serving_binding != snapshot.corpus_binding:
+        raise EvaluationRunError("candidate corpus binding no longer matches the run snapshot")
+    source = FirestoreRunPinnedChunkSource(
+        client,
+        vector_collection=snapshot.corpus_binding.vector_collection,
+        provenance_by_corpus={run.corpus_version_id: corpus.validation_evidence.provenance_sha256},
+        ingestion_fingerprint=snapshot.corpus_binding.ingestion_fingerprint,
+        configuration_fingerprint=snapshot.corpus_binding.configuration_fingerprint,
+    )
+    return prepare_support(run, dataset, source, FirestoreSupportEvidenceStore(client))
 
 
 def _evaluation_quota() -> QuotaStatus:

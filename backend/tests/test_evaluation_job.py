@@ -14,6 +14,7 @@ from app.evaluation import (
     EvaluationOutcome,
     EvaluationInterrupted,
     EvaluationWorker,
+    ResolvedEvaluationCandidate,
 )
 from app.identity import IdentityError, get_admin_user
 from app.main import app
@@ -58,6 +59,19 @@ class SnapshotResolver:
             dependency_lock_sha256="c" * 64,
             integration_artifact="langchain-google-firestore==0.5.0.post2",
             runtime_version=self.runtime_version,
+        )
+
+    def resolve_candidate(self) -> ResolvedEvaluationCandidate:
+        snapshot = self.resolve(
+            corpus_version_id="corpus-v2",
+            configuration_version_id="config-v3",
+            model_version_id="model-v4",
+        )
+        return ResolvedEvaluationCandidate(
+            corpus_version_id="corpus-v2",
+            configuration_version_id="config-v3",
+            model_version_id="model-v4",
+            snapshot=snapshot,
         )
 
 
@@ -125,8 +139,6 @@ def test_admin_api_launch_and_status_require_admin_and_dispatch_once() -> None:
     try:
         client = TestClient(app)
         payload = {
-            "corpus_version_id": "corpus-v2",
-            "configuration_version_id": "config-v3", "model_version_id": "model-v4",
             "item_ids": ["item-1"],
         }
         created = client.post("/api/evaluations", json=payload)
@@ -136,6 +148,15 @@ def test_admin_api_launch_and_status_require_admin_and_dispatch_once() -> None:
         run_id = created.json()["run_id"]
         assert client.get(f"/api/evaluations/{run_id}").json() == created.json()
         assert len(dispatcher.dispatched) == 1
+        legacy = client.post(
+            "/api/evaluations",
+            json={
+                "corpus_version_id": "corpus-v2",
+                "configuration_version_id": "config-v3",
+                "model_version_id": "model-v4",
+            },
+        )
+        assert legacy.status_code == 422
     finally:
         app.dependency_overrides.clear()
 

@@ -1,7 +1,6 @@
 """Administrator-only evaluation launch and status endpoints."""
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import Field
 from app.contracts import EvaluationRun, EvaluationRunSelection, UserProfile
 from app.evaluation import EvaluationJobService, EvaluationRunError
 from app.identity import get_admin_user
@@ -11,10 +10,6 @@ router = APIRouter(prefix="/api/evaluations", tags=["evaluations"])
 
 class EvaluationLaunchRequest(EvaluationRunSelection):
     """The active dataset is resolved on the server, never selected by the client."""
-
-    corpus_version_id: str = Field(min_length=1, max_length=128)
-    configuration_version_id: str = Field(min_length=1, max_length=128)
-    model_version_id: str = Field(min_length=1, max_length=128)
 
 
 def evaluation_service() -> EvaluationJobService:
@@ -32,9 +27,6 @@ def launch_evaluation(
 ) -> EvaluationRun:
     try:
         return service.launch(
-            corpus_version_id=request.corpus_version_id,
-            configuration_version_id=request.configuration_version_id,
-            model_version_id=request.model_version_id,
             item_ids=request.item_ids,
         )
     except EvaluationRunError as exc:

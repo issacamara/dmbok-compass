@@ -17,6 +17,7 @@ from .generations import (
 from .job import (
     EvaluationJobDispatcher,
     EvaluationJobService,
+    ResolvedEvaluationCandidate,
     ActiveEvaluationDatasetStore,
     EvaluationItemStage,
     EvaluationReviewError,
@@ -70,6 +71,7 @@ __all__ = [
     "ReviewStateError",
     "EvaluationJobDispatcher",
     "EvaluationJobService",
+    "ResolvedEvaluationCandidate",
     "ActiveEvaluationDatasetStore",
     "EvaluationItemStage",
     "EvaluationReviewError",

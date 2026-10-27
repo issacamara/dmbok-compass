@@ -94,3 +94,7 @@ export type ReleaseDecisionInput = Omit<ReleaseDecision, "decision"> & { decisio
 export function recordReleaseDecision(token: string, payload: ReleaseDecisionInput): Promise<ReleaseDecision> {
   return request<ReleaseDecision>(API_ROUTES.releaseDecisions, token, { method: "POST", body: JSON.stringify(payload) });
 }
+
+export function publishRelease(token: string, releaseId: string): Promise<unknown> {
+  return request<unknown>(`${API_ROUTES.releaseDecisions}/${encodeURIComponent(releaseId)}/publish`, token, { method: "POST" });
+}

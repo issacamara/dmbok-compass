@@ -33,6 +33,12 @@ const completedRunWithReview = {
 };
 
 describe("EvaluationPanel", () => {
+  async function enterCandidateVersions(user: ReturnType<typeof userEvent.setup>) {
+    await user.type(document.getElementById("corpus-version")!, "corpus-v1");
+    await user.type(document.getElementById("configuration-version")!, "config-v1");
+    await user.type(document.getElementById("model-version")!, "model-v1");
+  }
+
   beforeEach(() => {
     vi.clearAllMocks();
     api.launchEvaluation.mockResolvedValue(completedRun);
@@ -51,6 +57,7 @@ describe("EvaluationPanel", () => {
   it("launches the full evaluation and displays version-bound gate evidence", async () => {
     const user = userEvent.setup();
     render(<EvaluationPanel token="admin-token" />);
+    await enterCandidateVersions(user);
 
     await user.click(screen.getByRole("button", { name: "Run full evaluation" }));
     await waitFor(() => expect(api.launchEvaluation).toHaveBeenCalledWith("admin-token", {
@@ -65,6 +72,7 @@ describe("EvaluationPanel", () => {
   it("sends only selected IDs for a subset run", async () => {
     const user = userEvent.setup();
     render(<EvaluationPanel token="admin-token" />);
+    await enterCandidateVersions(user);
     await user.click(screen.getByLabelText("Selected subset"));
     await user.click(await screen.findByRole("checkbox", { name: /item-1/ }));
     await user.click(screen.getByRole("checkbox", { name: /item-2/ }));
@@ -91,6 +99,7 @@ describe("EvaluationPanel", () => {
   it("requires explicit confirmation before recording a sponsor decision", async () => {
     const user = userEvent.setup();
     render(<EvaluationPanel token="admin-token" />);
+    await enterCandidateVersions(user);
     await user.click(screen.getByRole("button", { name: "Run full evaluation" }));
     await screen.findByText("Sponsor decision");
     await user.type(screen.getByLabelText("Gate report IDs"), "report-1");
@@ -109,6 +118,7 @@ describe("EvaluationPanel", () => {
   it("saves a candidate-bound support mapping without approving the item", async () => {
     const user = userEvent.setup();
     render(<EvaluationPanel token="admin-token" />);
+    await enterCandidateVersions(user);
     await user.type((await screen.findAllByLabelText("Support chunk ID"))[0], "chunk-1");
     await user.type(screen.getAllByLabelText("Support content hash")[0], "d".repeat(64));
     await user.click(screen.getAllByRole("button", { name: "Save support binding" })[0]);
@@ -123,6 +133,7 @@ describe("EvaluationPanel", () => {
     const user = userEvent.setup();
     api.launchEvaluation.mockResolvedValue(completedRunWithReview);
     render(<EvaluationPanel token="admin-token" />);
+    await enterCandidateVersions(user);
     await user.click(screen.getByRole("button", { name: "Run full evaluation" }));
     expect(await screen.findByText("Candidate answer")).toBeInTheDocument();
     await user.click(screen.getByLabelText("claim support"));

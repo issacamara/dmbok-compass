@@ -129,10 +129,12 @@ Configure the existing GitHub environment **variables**
 `GCP_PROJECT_ID` and `GCP_BUILD_SERVICE_ACCOUNT`; production uses
 `GCP_PROJECT_PRODUCTION` and `GCP_SA_PRODUCTION`.
 they are identifiers, so GitHub Actions secrets are unnecessary. Also set
-`CORPUS_VERSION_ID`, `RUNTIME_SECRET_VERSION`, and the four
+`CORPUS_VERSION_ID`, `CONFIGURATION_VERSION_ID`, `RUNTIME_SECRET_VERSION`, and the four
 `VITE_FIREBASE_*` client variables in both environments. Set the project IDs
 to `dev-dmbok-compass` and `prod-dmbok-compass` respectively. The secret
-value itself remains in each project's Secret Manager.
+value itself remains in each project's Secret Manager. `ARTIFACT_ID` is optional
+for the bootstrap deployment; after the first approved release, set it to that
+release manifest's `candidate_digest` before publishing the release.
 
 Protect `development` and `main` as PR-only branches. Configure the
 `production` GitHub environment with required reviewers and a wait timer.

@@ -286,6 +286,7 @@ class EvaluationWorker:
         evaluate: Callable[[str], EvaluationOutcome],
         *,
         termination_requested: Callable[[], bool] | None = None,
+        support_preparer: Callable[[EvaluationRun, EvaluationDataset], object] | None = None,
     ) -> EvaluationRun:
         run = self.runs.get(run_id)
         if run is None:
@@ -309,6 +310,8 @@ class EvaluationWorker:
             item_ids = set(run.selected_item_ids)
             if item_ids - {item.item_id for item in dataset.items}:
                 raise EvaluationRunError("run contains items outside its dataset version")
+            if support_preparer is not None:
+                support_preparer(run, dataset)
             results = []
             for item_id in run.selected_item_ids:
                 if termination_requested is not None and termination_requested():

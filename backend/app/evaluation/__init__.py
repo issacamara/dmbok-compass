@@ -57,6 +57,15 @@ from .reviews import (
     RunItemAssessment,
     RunItemAssessmentRecord,
 )
+from .support import (
+    FirestoreRunPinnedChunkSource,
+    FirestoreSupportEvidenceStore,
+    InMemorySupportEvidenceStore,
+    StoredSupportChunk,
+    SupportPreparationError,
+    SupportPreparationResult,
+    prepare_support,
+)
 
 __all__ = [
     "EvaluationDatasetError",
@@ -108,4 +117,11 @@ __all__ = [
     "InMemoryAssessmentRepository",
     "RunItemAssessment",
     "RunItemAssessmentRecord",
+    "FirestoreRunPinnedChunkSource",
+    "FirestoreSupportEvidenceStore",
+    "InMemorySupportEvidenceStore",
+    "StoredSupportChunk",
+    "SupportPreparationError",
+    "SupportPreparationResult",
+    "prepare_support",
 ]

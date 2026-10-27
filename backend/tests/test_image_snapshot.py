@@ -25,6 +25,7 @@ from app.evaluation import (
     InMemoryEvaluationDatasetStore,
     InMemoryEvaluationJobDispatcher,
     InMemoryEvaluationRunStore,
+    ResolvedEvaluationCandidate,
 )
 from app.identity import get_admin_user
 from app.main import app
@@ -56,6 +57,19 @@ class _SnapshotResolver:
         )
         return _factory().candidate_snapshot(
             binding, request_timeout_ms=14_000, generation_timeout_ms=8_000
+        )
+
+    def resolve_candidate(self) -> ResolvedEvaluationCandidate:
+        snapshot = self.resolve(
+            corpus_version_id="snapshot-corpus",
+            configuration_version_id="snapshot-config",
+            model_version_id="snapshot-model",
+        )
+        return ResolvedEvaluationCandidate(
+            corpus_version_id="snapshot-corpus",
+            configuration_version_id="snapshot-config",
+            model_version_id="snapshot-model",
+            snapshot=snapshot,
         )
 
 
@@ -93,11 +107,7 @@ def test_installed_lock_and_api_job_snapshot(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setitem(app.dependency_overrides, evaluation_service, lambda: service)
     response = TestClient(app).post(
         "/api/evaluations",
-        json={
-            "corpus_version_id": "snapshot-corpus",
-            "configuration_version_id": "snapshot-config",
-            "model_version_id": "snapshot-model",
-        },
+        json={},
     )
     assert response.status_code == 202
     api_run = response.json()

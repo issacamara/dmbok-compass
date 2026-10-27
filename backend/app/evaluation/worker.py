@@ -22,6 +22,7 @@ from app.evaluation.generations import FirestoreEvaluationGenerationStore
 from app.evaluation.assessments import score_assessment
 from app.evaluation.job import (
     EvaluationCandidateSnapshotResolver,
+    ResolvedEvaluationCandidate,
     EvaluationOutcome,
     EvaluationRunError,
     EvaluationRunStore,
@@ -75,6 +76,31 @@ class FirestoreEvaluationCandidateSnapshotResolver(EvaluationCandidateSnapshotRe
             )
         except ValueError as exc:
             raise EvaluationRunError(str(exc)) from exc
+
+    def resolve_candidate(self) -> ResolvedEvaluationCandidate:
+        configuration = RuntimeConfiguration.from_environment()
+        runtime = configuration.runtime
+        corpus_store = FirestoreCorpusVersionStore(
+            self.client, vector_collection=configuration.vector_collection
+        )
+        corpus = corpus_store.active()
+        if corpus is None or corpus.serving_binding is None:
+            raise EvaluationRunError("active corpus serving binding is unavailable")
+        configuration_version_id = os.environ.get("CONFIGURATION_VERSION_ID", "").strip()
+        if not configuration_version_id:
+            raise EvaluationRunError("runtime configuration version is unavailable")
+        model_version_id = os.environ.get("MODEL_VERSION_ID", "").strip() or runtime.primary_model
+        snapshot = self.resolve(
+            corpus_version_id=corpus.version_id,
+            configuration_version_id=configuration_version_id,
+            model_version_id=model_version_id,
+        )
+        return ResolvedEvaluationCandidate(
+            corpus_version_id=corpus.version_id,
+            configuration_version_id=configuration_version_id,
+            model_version_id=model_version_id,
+            snapshot=snapshot,
+        )
 
 
 def execute_run(

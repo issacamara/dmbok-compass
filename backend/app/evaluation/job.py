@@ -149,6 +149,18 @@ class EvaluationCandidateSnapshotResolver(Protocol):
         model_version_id: str,
     ) -> EvaluationCandidateSnapshot: ...
 
+    def resolve_candidate(self) -> "ResolvedEvaluationCandidate": ...
+
+
+@dataclass(frozen=True)
+class ResolvedEvaluationCandidate:
+    """The server-owned identity used to bind a newly launched run."""
+
+    corpus_version_id: str
+    configuration_version_id: str
+    model_version_id: str
+    snapshot: EvaluationCandidateSnapshot
+
 
 class InMemoryEvaluationRunStore:
     def __init__(self) -> None:
@@ -481,9 +493,9 @@ class EvaluationJobService:
     def launch(
         self,
         *,
-        corpus_version_id: str,
-        configuration_version_id: str,
-        model_version_id: str,
+        corpus_version_id: str | None = None,
+        configuration_version_id: str | None = None,
+        model_version_id: str | None = None,
         item_ids: list[str] | None,
     ) -> EvaluationRun:
         dataset = self.datasets.active_dataset()
@@ -491,11 +503,20 @@ class EvaluationJobService:
             raise EvaluationRunError("no active evaluation dataset")
         dataset_version_id = dataset.dataset_version_id
         selected = select_items(dataset, item_ids)
-        snapshot = self.snapshots.resolve(
-            corpus_version_id=corpus_version_id,
-            configuration_version_id=configuration_version_id,
-            model_version_id=model_version_id,
-        )
+        if all(value is None for value in (corpus_version_id, configuration_version_id, model_version_id)):
+            candidate = self.snapshots.resolve_candidate()
+            corpus_version_id = candidate.corpus_version_id
+            configuration_version_id = candidate.configuration_version_id
+            model_version_id = candidate.model_version_id
+            snapshot = candidate.snapshot
+        elif all(value is not None for value in (corpus_version_id, configuration_version_id, model_version_id)):
+            snapshot = self.snapshots.resolve(
+                corpus_version_id=corpus_version_id,
+                configuration_version_id=configuration_version_id,
+                model_version_id=model_version_id,
+            )
+        else:
+            raise EvaluationRunError("candidate identity must be fully specified or server-resolved")
         if snapshot.corpus_binding.corpus_version_id != corpus_version_id:
             raise EvaluationRunError("candidate snapshot does not match the requested corpus version")
         run = EvaluationRun(

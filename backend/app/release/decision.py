@@ -219,6 +219,8 @@ class ReleaseDecisionService:
             and run.report_eligibility.eligibility != "release_evidence"
         ):
             raise ReleaseDecisionError("release evidence is exploratory and cannot support a release decision")
+        elif not 30 <= eligibility.approved_gold_count <= 50:
+            raise ReleaseDecisionError("release evidence is exploratory, superseded, or lacks 30–50 approved gold items")
         binding_reader = getattr(self.evidence, "candidate_binding", None)
         if binding_reader is not None:
             binding = binding_reader(run.dataset_version_id)

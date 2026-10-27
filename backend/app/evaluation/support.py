@@ -16,6 +16,7 @@ from threading import RLock
 from typing import Any, Protocol
 
 from google.api_core.exceptions import AlreadyExists
+from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
 from app.contracts import (
@@ -57,6 +58,15 @@ class SupportEvidenceStore(Protocol):
     def get_marker(self, *, run_id: str) -> EvaluationPreparationComplete | None: ...
 
     def create_marker(self, marker: EvaluationPreparationComplete) -> EvaluationPreparationComplete: ...
+
+    def review_evidence(
+        self,
+        evidence: RunBoundSupportEvidence,
+        *,
+        selected_chunk: VerifiedChunkChoice | None,
+        reviewer_actor: str,
+        reviewed_at: datetime,
+    ) -> RunBoundSupportEvidence: ...
 
 
 @dataclass(frozen=True)
@@ -102,6 +112,28 @@ class InMemorySupportEvidenceStore:
             self._markers[marker.run_id] = marker.model_copy(deep=True)
             return deepcopy(marker)
 
+    def review_evidence(
+        self,
+        evidence: RunBoundSupportEvidence,
+        *,
+        selected_chunk: VerifiedChunkChoice | None,
+        reviewer_actor: str,
+        reviewed_at: datetime,
+    ) -> RunBoundSupportEvidence:
+        with self._lock:
+            current = self._evidence.get((evidence.run_id, evidence.item_id))
+            if current is None:
+                raise SupportPreparationError("support evidence was not prepared")
+            return _review_evidence(
+                current,
+                selected_chunk=selected_chunk,
+                reviewer_actor=reviewer_actor,
+                reviewed_at=reviewed_at,
+                save=lambda updated: self._evidence.__setitem__(
+                    (updated.run_id, updated.item_id), updated.model_copy(deep=True)
+                ),
+            )
+
 
 class FirestoreSupportEvidenceStore:
     """Durable per-item evidence and completion markers."""
@@ -110,6 +142,7 @@ class FirestoreSupportEvidenceStore:
     marker_collection_id = "evaluation_preparation"
 
     def __init__(self, client: Any) -> None:
+        self.client = client
         self.evidence = client.collection(self.evidence_collection_id)
         self.markers = client.collection(self.marker_collection_id)
 
@@ -149,6 +182,32 @@ class FirestoreSupportEvidenceStore:
             return existing
         return marker.model_copy(deep=True)
 
+    def review_evidence(
+        self,
+        evidence: RunBoundSupportEvidence,
+        *,
+        selected_chunk: VerifiedChunkChoice | None,
+        reviewer_actor: str,
+        reviewed_at: datetime,
+    ) -> RunBoundSupportEvidence:
+        reference = self.evidence.document(self._evidence_id(evidence.run_id, evidence.item_id))
+
+        @firestore.transactional
+        def apply(transaction: Any) -> RunBoundSupportEvidence:
+            snapshot = reference.get(transaction=transaction)
+            if not snapshot.exists:
+                raise SupportPreparationError("support evidence was not prepared")
+            current = RunBoundSupportEvidence.model_validate(snapshot.to_dict())
+            return _review_evidence(
+                current,
+                selected_chunk=selected_chunk,
+                reviewer_actor=reviewer_actor,
+                reviewed_at=reviewed_at,
+                save=lambda updated: transaction.set(reference, updated.model_dump(mode="json")),
+            )
+
+        return apply(self.client.transaction())
+
 
 class FirestoreRunPinnedChunkSource:
     """Read and verify only chunks in the run's pinned corpus version."""
@@ -174,6 +233,12 @@ class FirestoreRunPinnedChunkSource:
         except KeyError as exc:
             raise SupportPreparationError("run corpus provenance is unavailable") from exc
         return value
+
+    def chunk(self, *, corpus_version_id: str, chunk_id: str) -> StoredSupportChunk | None:
+        return next(
+            (record for record in self.chunks(corpus_version_id=corpus_version_id) if record.chunk_id == chunk_id),
+            None,
+        )
 
     def chunks(self, *, corpus_version_id: str) -> tuple[StoredSupportChunk, ...]:
         provenance = self.source_provenance_sha256(corpus_version_id=corpus_version_id)
@@ -289,6 +354,61 @@ def approved_support_chunk_ids(
     if evidence.selected_chunk.corpus_version_id != run.corpus_version_id:
         return frozenset()
     return frozenset({evidence.selected_chunk.chunk_id})
+
+
+def review_support(
+    evidence: RunBoundSupportEvidence,
+    *,
+    candidate: StoredSupportChunk | None,
+    reviewer_actor: str,
+    reviewed_at: datetime,
+    store: SupportEvidenceStore,
+) -> RunBoundSupportEvidence:
+    """Apply one administrator decision after the candidate was re-read."""
+
+    selected = None
+    if candidate is not None:
+        if not candidate.valid or candidate.chunk is None:
+            raise SupportPreparationError("selected chunk failed server verification")
+        selected = _choice(candidate, evidence.source_provenance_sha256)
+    return store.review_evidence(
+        evidence,
+        selected_chunk=selected,
+        reviewer_actor=reviewer_actor,
+        reviewed_at=reviewed_at,
+    )
+
+
+def _review_evidence(
+    evidence: RunBoundSupportEvidence,
+    *,
+    selected_chunk: VerifiedChunkChoice | None,
+    reviewer_actor: str,
+    reviewed_at: datetime,
+    save: Any,
+) -> RunBoundSupportEvidence:
+    if evidence.match_status == "auto_approved":
+        raise SupportPreparationError("automatically approved support cannot be reviewed")
+    if evidence.match_status in {"review_approved", "review_rejected"}:
+        same = evidence.selected_chunk == selected_chunk
+        if evidence.match_status == "review_rejected":
+            same = selected_chunk is None
+        if not same:
+            raise SupportPreparationError("support review is already bound to a different decision")
+        return evidence
+    if selected_chunk is not None and selected_chunk.chunk_id not in evidence.candidate_chunk_ids:
+        raise SupportPreparationError("selected chunk is not a server-listed candidate")
+    updated = evidence.model_copy(
+        update={
+            "match_status": "review_approved" if selected_chunk is not None else "review_rejected",
+            "verified_chunks": [selected_chunk] if selected_chunk is not None else [],
+            "selected_chunk": selected_chunk,
+            "reviewer_actor": reviewer_actor,
+            "reviewed_at": reviewed_at,
+        }
+    )
+    save(updated)
+    return updated
 
 
 def _prepare_item(

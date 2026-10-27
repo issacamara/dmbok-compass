@@ -20,9 +20,11 @@ from app.contracts import (
     EvaluationReportEligibility,
     EvaluationRun,
     RetrievalResult,
+    RunBoundSupportEvidence,
 )
 from app.contracts.api import AnswerOutcomeKind
 from app.evaluation.dataset import EvaluationDatasetStore
+from app.evaluation.support import approved_support_chunk_ids
 
 
 class EvaluationRunError(ValueError):
@@ -132,6 +134,12 @@ class ActiveEvaluationDatasetStore(EvaluationDatasetStore, Protocol):
     def active_dataset(self) -> EvaluationDataset | None: ...
 
     def report_eligibility(self, generation_id: str) -> EvaluationReportEligibility: ...
+
+
+class RunSupportEvidenceStore(Protocol):
+    def get_evidence(self, *, run_id: str, item_id: str) -> RunBoundSupportEvidence | None: ...
+
+    def get_marker(self, *, run_id: str) -> object | None: ...
 
 
 class EvaluationJobDispatcher(Protocol):
@@ -287,6 +295,7 @@ class EvaluationWorker:
         *,
         termination_requested: Callable[[], bool] | None = None,
         support_preparer: Callable[[EvaluationRun, EvaluationDataset], object] | None = None,
+        support_evidence: Callable[..., RunBoundSupportEvidence | None] | None = None,
     ) -> EvaluationRun:
         run = self.runs.get(run_id)
         if run is None:
@@ -314,6 +323,8 @@ class EvaluationWorker:
                 support_preparer(run, dataset)
             results = []
             for item_id in run.selected_item_ids:
+                if support_evidence is not None and support_evidence(run_id=run.run_id, item_id=item_id) is None:
+                    raise EvaluationRunError("run-bound support evidence is incomplete")
                 if termination_requested is not None and termination_requested():
                     raise EvaluationInterrupted("evaluation interrupted before next item")
                 try:
@@ -487,11 +498,13 @@ class EvaluationJobService:
         runs: EvaluationRunStore,
         dispatcher: EvaluationJobDispatcher,
         snapshots: EvaluationCandidateSnapshotResolver,
+        support_evidence: RunSupportEvidenceStore | None = None,
     ) -> None:
         self.datasets = datasets
         self.runs = runs
         self.dispatcher = dispatcher
         self.snapshots = snapshots
+        self.support_evidence = support_evidence
 
     def launch(
         self,
@@ -531,10 +544,9 @@ class EvaluationJobService:
             configuration_version_id=configuration_version_id,
             model_version_id=model_version_id,
             candidate_snapshot=snapshot,
-            report_eligibility=self._eligibility_for_selection(
-                dataset_version_id, selected, len(dataset.items)
-            ),
+            report_eligibility=None,
         )
+        run = run.model_copy(update={"report_eligibility": self._eligibility_for_run(run)})
         stored = self.runs.create_or_get(run)
         if stored.status == "queued":
             self.dispatcher.dispatch(stored, dataset)
@@ -545,11 +557,31 @@ class EvaluationJobService:
         if run is None:
             raise EvaluationRunError("unknown evaluation run")
         return run.model_copy(update={
-            "report_eligibility": self._eligibility_for_selection(
-                run.dataset_version_id,
-                tuple(run.selected_item_ids),
-                len(self.datasets.get(run.dataset_version_id).items),  # type: ignore[union-attr]
-            )
+            "report_eligibility": self._eligibility_for_run(run),
+        })
+
+    def _eligibility_for_run(self, run: EvaluationRun) -> EvaluationReportEligibility:
+        dataset = self.datasets.get(run.dataset_version_id)
+        if dataset is None:
+            raise EvaluationRunError("evaluation dataset is unavailable")
+        eligibility = self._eligibility_for_selection(
+            run.dataset_version_id, tuple(run.selected_item_ids), len(dataset.items)
+        )
+        if self.support_evidence is None:
+            return eligibility
+        if not eligibility.is_current_generation or len(run.selected_item_ids) != len(dataset.items):
+            return eligibility.model_copy(update={"eligibility": "exploratory", "approved_gold_count": 0})
+        marker = self.support_evidence.get_marker(run_id=run.run_id)
+        if marker is None:
+            return eligibility.model_copy(update={"eligibility": "exploratory", "approved_gold_count": 0})
+        approved = 0
+        for item_id in run.selected_item_ids:
+            evidence = self.support_evidence.get_evidence(run_id=run.run_id, item_id=item_id)
+            if approved_support_chunk_ids(evidence, run=run):
+                approved += 1
+        return eligibility.model_copy(update={
+            "approved_gold_count": approved,
+            "eligibility": "release_evidence" if 30 <= approved <= 50 else "exploratory",
         })
 
     def _eligibility_for_selection(

@@ -262,6 +262,35 @@ def prepare_support(
     return SupportPreparationResult(tuple(prepared), store.create_marker(marker))
 
 
+def candidate_snapshot_sha256(run: EvaluationRun) -> str:
+    """Return the digest used to bind support evidence to one evaluation run."""
+
+    return _snapshot_digest(run)
+
+
+def approved_support_chunk_ids(
+    evidence: RunBoundSupportEvidence | None,
+    *,
+    run: EvaluationRun,
+) -> frozenset[str]:
+    """Return approved support IDs only when evidence is bound to this run."""
+
+    if evidence is None:
+        return frozenset()
+    if (
+        evidence.run_id != run.run_id
+        or evidence.corpus_version_id != run.corpus_version_id
+        or evidence.candidate_snapshot_sha256 != candidate_snapshot_sha256(run)
+        or evidence.match_status not in {"auto_approved", "review_approved"}
+    ):
+        return frozenset()
+    if evidence.selected_chunk is None:
+        return frozenset()
+    if evidence.selected_chunk.corpus_version_id != run.corpus_version_id:
+        return frozenset()
+    return frozenset({evidence.selected_chunk.chunk_id})
+
+
 def _prepare_item(
     run: EvaluationRun,
     item_id: str,

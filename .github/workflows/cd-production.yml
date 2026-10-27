@@ -116,6 +116,8 @@ jobs:
       - name: Deploy exact API image to Cloud Run
         env:
           API_IMAGE: ${{ steps.promoted.outputs.image }}
+          CONFIGURATION_VERSION_ID: ${{ vars.CONFIGURATION_VERSION_ID }}
+          ARTIFACT_ID: ${{ vars.ARTIFACT_ID }}
         run: bash scripts/deploy_cloud_run.sh
       - name: Deploy production Firebase Hosting
         run: bash scripts/deploy_firebase.sh

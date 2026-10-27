@@ -66,6 +66,9 @@ from app.release import (
     ReleaseDecisionRequest,
     ReleaseDecisionService,
     FirestoreServingReleaseStore,
+    PublicationError,
+    ReleasePublisher,
+    PublishedRelease,
     PublishedCorpusResolver,
 )
 from app.lifecycle import ShutdownCoordinator, configured_shutdown_timeout, lifespan, lifecycle_middleware
@@ -507,4 +510,47 @@ def get_release_decision(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "release_decision_not_found", "message": str(exc)},
+        ) from exc
+
+
+@app.post("/api/releases/{release_id}/publish", response_model=PublishedRelease, tags=["admin"])
+def publish_release(
+    release_id: str,
+    _: UserProfile = Depends(get_admin_user),
+) -> PublishedRelease:
+    """Promote an approved, ready release into the serving pointer."""
+    from app.identity import _firebase_app
+    from firebase_admin import firestore
+
+    client = firestore.client(app=_firebase_app())
+    decisions = FirestoreReleaseDecisionStore(client)
+    manifests = FirestoreReleaseManifestStore(client)
+    decision = decisions.get(release_id)
+    manifest = manifests.get(release_id)
+    if decision is None or manifest is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"code": "release_not_found", "message": "release decision or manifest was not found"},
+        )
+    configuration = getattr(app.state, "runtime_configuration", None) or startup_configuration()
+    corpus_store = FirestoreCorpusVersionStore(client, vector_collection=configuration.vector_collection)
+    corpus = corpus_store.get(manifest.corpus_version_id)
+    if corpus is None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "release_not_publishable", "message": "candidate corpus version was not found"},
+        )
+    serving = FirestoreServingReleaseStore(client)
+    current = serving.current()
+    try:
+        return ReleasePublisher(serving).publish(
+            decision,
+            manifest,
+            corpus,
+            expected_previous_release_id=(current.release_id if current else None),
+        )
+    except PublicationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "release_not_publishable", "message": str(exc)},
         ) from exc

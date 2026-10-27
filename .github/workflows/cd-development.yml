@@ -71,6 +71,8 @@ jobs:
           API_IMAGE: europe-west1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/dmbok-compass/api@${{ steps.build.outputs.digest }}
           SOURCE_SHA: ${{ github.sha }}
           DEPLOY_SHA: ${{ github.sha }}
+          CONFIGURATION_VERSION_ID: ${{ vars.CONFIGURATION_VERSION_ID }}
+          ARTIFACT_ID: ${{ vars.ARTIFACT_ID }}
         run: bash scripts/deploy_cloud_run.sh
       - name: Deploy development Firebase Hosting
         run: bash scripts/deploy_firebase.sh

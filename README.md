@@ -129,8 +129,11 @@ Configure the existing GitHub environment **variables**
 `GCP_PROJECT_ID` and `GCP_BUILD_SERVICE_ACCOUNT`; production uses
 `GCP_PROJECT_PRODUCTION` and `GCP_SA_PRODUCTION`.
 they are identifiers, so GitHub Actions secrets are unnecessary. Also set
-`CORPUS_VERSION_ID`, `CONFIGURATION_VERSION_ID`, `RUNTIME_SECRET_VERSION`, and the four
-`VITE_FIREBASE_*` client variables in both environments. Set the project IDs
+`CONFIGURATION_VERSION_ID`, `RUNTIME_SECRET_VERSION`, and the four
+`VITE_FIREBASE_*` client variables in both environments. After authentication,
+the workflows resolve the active ready corpus from the target project's
+Firestore `corpus_state/active` publication; do not configure a corpus ID manually.
+Set the project IDs
 to `dev-dmbok-compass` and `prod-dmbok-compass` respectively. The secret
 value itself remains in each project's Secret Manager. `ARTIFACT_ID` is optional
 for the bootstrap deployment; after the first approved release, set it to that
@@ -158,7 +161,6 @@ Set these GitHub Environment variables in both environments:
 - `GCP_BILLING_ACCOUNT_ID` (mapped to `TF_VAR_BILLING_ACCOUNT_ID`)
 - `CORPUS_BUCKET_NAME` (mapped to `TF_VAR_CORPUS_BUCKET_NAME`)
 - `HOSTING_SITE` (mapped to `TF_VAR_HOSTING_SITE_ID`)
-- `CORPUS_VERSION_ID` (`1`, mapped to `TF_VAR_CORPUS_VERSION_ID`)
 - `RUNTIME_SECRET_VERSION` (`3`, mapped to `TF_VAR_RUNTIME_SECRET_VERSION`)
 
 The GCS state buckets must exist before the first workflow run:

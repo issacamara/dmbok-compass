@@ -13,7 +13,7 @@ A hotfix branched from `main` must also be merged into `development` and built t
 ## Prerequisites
 
 - Apply the Terraform IAM changes in both projects. Development WIF accepts `development`; production WIF accepts `main`. The production build service account can read the development Artifact Registry repository.
-- GitHub environment variables for each project: `GCP_PROJECT_DEVELOPMENT` or `GCP_PROJECT_PRODUCTION`, `WIF_PROVIDER`, `GCP_SA_DEVELOPMENT` or `GCP_SA_PRODUCTION`, `CORPUS_VERSION_ID`, `RUNTIME_SECRET_VERSION`, `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID`, and `VITE_FIREBASE_APP_ID`.
+- GitHub environment variables for each project: `GCP_PROJECT_DEVELOPMENT` or `GCP_PROJECT_PRODUCTION`, `WIF_PROVIDER`, `GCP_SA_DEVELOPMENT` or `GCP_SA_PRODUCTION`, `RUNTIME_SECRET_VERSION`, `VITE_FIREBASE_API_KEY`, `VITE_FIREBASE_AUTH_DOMAIN`, `VITE_FIREBASE_PROJECT_ID`, and `VITE_FIREBASE_APP_ID`. After authentication, workflows resolve and validate `corpus_state/active` and its ready `corpus_versions/{version_id}` record; no corpus ID is manually configured.
 - Secret Manager in each project has the selected `answer-provider-api-key` version. GitHub stores no service account JSON key or runtime API key.
 - Protect both branches with pull requests; require CI. Configure required reviewers and a wait timer on the `production` GitHub environment.
 

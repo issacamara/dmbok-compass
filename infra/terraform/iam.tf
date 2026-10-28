@@ -58,6 +58,7 @@ locals {
 
 locals {
   terraform_plan_roles = toset([
+    "roles/datastore.viewer",
     "roles/iam.securityReviewer",
     "roles/viewer",
   ])
@@ -150,6 +151,12 @@ resource "google_secret_manager_secret_iam_member" "workload_access" {
 resource "google_project_iam_member" "build_artifact_writer" {
   project = var.project_id
   role    = "roles/artifactregistry.writer"
+  member  = "serviceAccount:${google_service_account.workload["build"].email}"
+}
+
+resource "google_project_iam_member" "build_corpus_reader" {
+  project = var.project_id
+  role    = "roles/datastore.viewer"
   member  = "serviceAccount:${google_service_account.workload["build"].email}"
 }
 

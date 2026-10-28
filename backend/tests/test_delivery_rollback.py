@@ -89,6 +89,21 @@ def test_both_deployments_use_one_image_for_api_and_jobs() -> None:
     assert "RAG_CORPUS_VERSION_ID=${CORPUS_VERSION_ID}" in deploy
 
 
+def test_deployments_resolve_one_ready_corpus_before_mutation() -> None:
+    development = (ROOT / ".github/workflows/cd-development.yml").read_text(encoding="utf-8")
+    production = (ROOT / ".github/workflows/cd-production.yml").read_text(encoding="utf-8")
+    terraform = (ROOT / ".github/workflows/terraform.yml").read_text(encoding="utf-8")
+    manual_corpus_variable = "vars." + "CORPUS_VERSION_ID"
+
+    for workflow in (development, production, terraform):
+        assert "resolve_active_corpus.py" in workflow
+        assert manual_corpus_variable not in workflow
+    for workflow in (development, production):
+        assert workflow.index("Resolve active ready corpus") < workflow.index("Deploy exact API image")
+        assert "steps.resolve-corpus.outputs.corpus_version_id" in workflow
+    assert terraform.count("TF_VAR_corpus_version_id=${{ steps.resolve-corpus.outputs.corpus_version_id }}") == 4
+
+
 def test_terraform_couples_admin_images_and_retains_both_indexes() -> None:
     delivery = (ROOT / "infra" / "terraform" / "delivery.tf").read_text(encoding="utf-8")
     indexes = (ROOT / "infra" / "terraform" / "firestore_vector.tf").read_text(encoding="utf-8")

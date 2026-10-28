@@ -105,6 +105,7 @@ def test_installed_lock_and_api_job_snapshot(monkeypatch: pytest.MonkeyPatch) ->
     )
     monkeypatch.setitem(app.dependency_overrides, get_admin_user, lambda: admin)
     monkeypatch.setitem(app.dependency_overrides, evaluation_service, lambda: service)
+    monkeypatch.setenv("RAG_CORPUS_VERSION_ID", "snapshot-corpus")
     response = TestClient(app).post(
         "/api/evaluations",
         json={},

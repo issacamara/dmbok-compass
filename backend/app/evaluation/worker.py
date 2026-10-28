@@ -18,6 +18,7 @@ from app.answering import (
 )
 from app.contracts import EvaluationDataset, QuotaStatus
 from app.corpus.firestore import FirestoreCorpusVersionStore
+from app.corpus.versions import legacy_serving_binding
 from app.evaluation.generations import FirestoreEvaluationGenerationStore
 from app.evaluation.assessments import score_assessment
 from app.evaluation.job import (
@@ -48,7 +49,10 @@ class FirestoreEvaluationCandidateSnapshotResolver(EvaluationCandidateSnapshotRe
         configuration_version_id: str,
         model_version_id: str,
     ):
-        configuration = RuntimeConfiguration.from_environment()
+        try:
+            configuration = RuntimeConfiguration.from_environment()
+        except ValueError as exc:
+            raise EvaluationRunError(str(exc)) from exc
         runtime = configuration.runtime
         factory = LangChainRagFactory(self.client, LangChainRagSettings(
             project=runtime.project,
@@ -63,13 +67,16 @@ class FirestoreEvaluationCandidateSnapshotResolver(EvaluationCandidateSnapshotRe
         corpus = FirestoreCorpusVersionStore(
             self.client, vector_collection=factory.settings.vector_collection
         ).get(corpus_version_id)
-        if corpus is None or corpus.serving_binding is None:
-            raise EvaluationRunError("candidate corpus serving binding is unavailable")
+        if corpus is None:
+            raise EvaluationRunError("uploaded corpus is unavailable")
+        binding = _effective_binding(
+            corpus, vector_collection=factory.settings.vector_collection
+        )
         request_timeout_ms = configuration.request_timeout_ms
         generation_timeout_ms = configuration.generation_timeout_ms
         try:
             return factory.candidate_snapshot(
-                corpus.serving_binding,
+                binding,
                 request_timeout_ms=request_timeout_ms,
                 generation_timeout_ms=generation_timeout_ms,
             )
@@ -206,7 +213,10 @@ def _pinned_answerer(project: str, run) -> RetrievedAnswerService:
     ).get(run.corpus_version_id)
     if corpus is None:
         raise EvaluationRunError("run references an unavailable corpus version")
-    if corpus.serving_binding != snapshot.corpus_binding:
+    binding = _effective_binding(
+        corpus, vector_collection=snapshot.corpus_binding.vector_collection
+    )
+    if binding != snapshot.corpus_binding:
         raise EvaluationRunError("candidate corpus binding no longer matches the run snapshot")
     adapter = factory.generation_adapter_for_snapshot(snapshot)
 
@@ -236,6 +246,12 @@ def _evaluation_quota() -> QuotaStatus:
         global_used=0,
         global_limit=0,
         resets_at=datetime.now(timezone.utc) + timedelta(days=1),
+    )
+
+
+def _effective_binding(corpus, *, vector_collection: str):
+    return corpus.serving_binding or legacy_serving_binding(
+        corpus, vector_collection=vector_collection
     )
 
 

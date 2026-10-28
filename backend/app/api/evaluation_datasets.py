@@ -34,6 +34,7 @@ from app.evaluation.dataset import (
     GoldAnnotationRemap,
 )
 from app.identity import get_admin_user
+from app.corpus.selection import uploaded_corpus_version_id
 
 router = APIRouter(prefix="/api/admin/evaluation-datasets", tags=["evaluation datasets"])
 
@@ -57,7 +58,6 @@ class EvaluationGenerationStore(Protocol):
 
 
 class CandidateBindingPayload(BaseModel):
-    corpus_version_id: str = Field(min_length=1, max_length=128)
     candidate_snapshot_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     source_provenance_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
 
@@ -71,7 +71,6 @@ class CandidateBindingRequest(BaseModel):
     """Admin-selected support for one item in one immutable candidate corpus."""
 
     binding: CandidateBindingPayload | None = None
-    corpus_version_id: str | None = None
     candidate_snapshot_sha256: str | None = None
     source_provenance_sha256: str | None = None
     reviewed_chunk_ids: list[str] = Field(default_factory=list, max_length=5)
@@ -84,13 +83,12 @@ class CandidateBindingRequest(BaseModel):
     def normalise(self) -> "CandidateBindingRequest":
         binding = self.binding
         if binding is not None:
-            values = (self.corpus_version_id, self.candidate_snapshot_sha256, self.source_provenance_sha256)
+            values = (self.candidate_snapshot_sha256, self.source_provenance_sha256)
             if any(value is not None for value in values):
                 raise ValueError("binding must be supplied either nested or at the top level")
-            self.corpus_version_id = binding.corpus_version_id
             self.candidate_snapshot_sha256 = binding.candidate_snapshot_sha256
             self.source_provenance_sha256 = binding.source_provenance_sha256
-        if not all((self.corpus_version_id, self.candidate_snapshot_sha256, self.source_provenance_sha256)):
+        if not all((self.candidate_snapshot_sha256, self.source_provenance_sha256)):
             raise ValueError("candidate binding is required")
         listed = {chunk.chunk_id: chunk.content_hash for chunk in self.reviewed_chunks}
         if listed and self.reviewed_chunk_hashes and listed != self.reviewed_chunk_hashes:
@@ -280,11 +278,12 @@ def bind_candidate_evaluation_item(
     admin: UserProfile = Depends(get_admin_user),
     store: EvaluationGenerationStore = Depends(evaluation_generation_store),
     chunks: CandidateChunkLookup = Depends(candidate_chunk_lookup),
+    corpus_version_id: str = Depends(uploaded_corpus_version_id),
 ) -> dict[str, object]:
     """Persist reviewed real chunk support without approving the annotation."""
 
     binding = CandidateGoldBinding(
-        corpus_version_id=request.corpus_version_id or "",
+        corpus_version_id=corpus_version_id,
         candidate_snapshot_sha256=request.candidate_snapshot_sha256 or "",
         source_provenance_sha256=request.source_provenance_sha256 or "",
     )

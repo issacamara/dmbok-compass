@@ -8,6 +8,7 @@ from fastapi import status
 from fastapi.testclient import TestClient
 
 from app.api.evaluation_datasets import evaluation_generation_store
+from app.corpus.selection import uploaded_corpus_version_id
 from app.contracts import UserProfile
 from app.evaluation import FirestoreEvaluationGenerationStore
 from app.identity import IdentityError, get_admin_user
@@ -151,6 +152,7 @@ def test_active_dataset_and_review_require_admin_and_active_candidate() -> None:
     repository = _store(firestore)
     app.dependency_overrides[get_admin_user] = _admin
     app.dependency_overrides[evaluation_generation_store] = lambda: repository
+    app.dependency_overrides[uploaded_corpus_version_id] = lambda: "candidate-corpus"
     try:
         client = TestClient(app)
         assert client.get("/api/admin/evaluation-datasets/active").status_code == status.HTTP_404_NOT_FOUND
@@ -201,13 +203,13 @@ def test_binding_requires_real_candidate_chunk_and_persists_hash_before_approval
     }
     app.dependency_overrides[get_admin_user] = _admin
     app.dependency_overrides[evaluation_generation_store] = lambda: repository
+    app.dependency_overrides[uploaded_corpus_version_id] = lambda: "candidate-corpus"
     try:
         client = TestClient(app)
         imported = _post(client, [_record()]).json()
         item_id = client.get("/api/admin/evaluation-datasets/active").json()["item_reviews"][0]["item_id"]
         url = f"/api/admin/evaluation-datasets/{imported['generation_id']}/items/{item_id}/binding"
         payload = {
-            "corpus_version_id": "candidate-corpus",
             "candidate_snapshot_sha256": "a" * 64,
             "source_provenance_sha256": "b" * 64,
             "reviewed_chunks": [{"chunk_id": "chunk-real", "content_hash": chunk_hash}],
@@ -235,6 +237,7 @@ def test_expected_refusal_binding_has_no_supporting_chunk_and_can_be_approved() 
     repository = _store(firestore)
     app.dependency_overrides[get_admin_user] = _admin
     app.dependency_overrides[evaluation_generation_store] = lambda: repository
+    app.dependency_overrides[uploaded_corpus_version_id] = lambda: "candidate-corpus"
     try:
         client = TestClient(app)
         imported = _post(client, [_record()]).json()
@@ -244,7 +247,6 @@ def test_expected_refusal_binding_has_no_supporting_chunk_and_can_be_approved() 
             url,
             json={
                 "binding": {
-                    "corpus_version_id": "candidate-corpus",
                     "candidate_snapshot_sha256": "a" * 64,
                     "source_provenance_sha256": "b" * 64,
                 },

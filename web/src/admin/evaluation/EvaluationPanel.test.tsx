@@ -34,7 +34,6 @@ const completedRunWithReview = {
 
 describe("EvaluationPanel", () => {
   async function enterCandidateVersions(user: ReturnType<typeof userEvent.setup>) {
-    await user.type(document.getElementById("corpus-version")!, "corpus-v1");
     await user.type(document.getElementById("configuration-version")!, "config-v1");
     await user.type(document.getElementById("model-version")!, "model-v1");
   }
@@ -61,7 +60,6 @@ describe("EvaluationPanel", () => {
 
     await user.click(screen.getByRole("button", { name: "Run full evaluation" }));
     await waitFor(() => expect(api.launchEvaluation).toHaveBeenCalledWith("admin-token", {
-      corpus_version_id: "corpus-v1",
       configuration_version_id: "config-v1", model_version_id: "model-v1",
     }));
     expect(await screen.findByText("Top-5 retrieval success")).toBeInTheDocument();
@@ -124,7 +122,7 @@ describe("EvaluationPanel", () => {
     await user.click(screen.getAllByRole("button", { name: "Save support binding" })[0]);
 
     await waitFor(() => expect(api.bindEvaluationItem).toHaveBeenCalledWith("admin-token", "generation-v1", "item-1", expect.objectContaining({
-      corpus_version_id: "corpus-v1", reviewed_chunk_ids: ["chunk-1"], reviewed_chunk_hashes: { "chunk-1": "d".repeat(64) }, expected_refusal: false,
+      reviewed_chunk_ids: ["chunk-1"], reviewed_chunk_hashes: { "chunk-1": "d".repeat(64) }, expected_refusal: false,
     })));
     expect(await screen.findByRole("status")).toHaveTextContent("Support binding saved for item-1");
   });

@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 import pytest
 
 from app.api.evaluations import evaluation_service
+from app.corpus.selection import uploaded_corpus_version_id
 from app.contracts import CorpusServingBinding, EvaluationCandidateSnapshot, EvaluationDataset, EvaluationItem, EvaluationRun, UserProfile
 from app.evaluation import (
     EvaluationJobService,
@@ -15,6 +16,7 @@ from app.evaluation import (
     EvaluationInterrupted,
     EvaluationWorker,
 )
+from app.evaluation.worker import _effective_binding
 from app.identity import IdentityError, get_admin_user
 from app.main import app
 
@@ -27,6 +29,19 @@ def dataset() -> EvaluationDataset:
             for i in range(3)
         ],
     )
+
+
+def test_legacy_corpus_binding_is_consistent_between_launch_and_worker() -> None:
+    class LegacyCorpus:
+        version_id = "corpus-v2"
+        serving_binding = None
+        embedding_model = "gemini-embedding-001"
+        embedding_dimensions = 768
+
+    binding = _effective_binding(LegacyCorpus(), vector_collection="document_chunks_v2")
+
+    assert binding.corpus_version_id == "corpus-v2"
+    assert binding.vector_collection == "document_chunks_v2"
 
 
 class SnapshotResolver:
@@ -122,10 +137,10 @@ def test_admin_api_launch_and_status_require_admin_and_dispatch_once() -> None:
     )
     app.dependency_overrides[get_admin_user] = lambda: admin
     app.dependency_overrides[evaluation_service] = lambda: job
+    app.dependency_overrides[uploaded_corpus_version_id] = lambda: "corpus-v2"
     try:
         client = TestClient(app)
         payload = {
-            "corpus_version_id": "corpus-v2",
             "configuration_version_id": "config-v3", "model_version_id": "model-v4",
             "item_ids": ["item-1"],
         }
@@ -148,11 +163,11 @@ def test_evaluation_api_rejects_non_admin_callers() -> None:
 
     app.dependency_overrides[get_admin_user] = reject_non_admin
     app.dependency_overrides[evaluation_service] = lambda: job
+    app.dependency_overrides[uploaded_corpus_version_id] = lambda: "corpus-v2"
     try:
         response = TestClient(app).post(
             "/api/evaluations",
             json={
-                "corpus_version_id": "corpus-v2",
                 "configuration_version_id": "config-v3", "model_version_id": "model-v4",
             },
         )

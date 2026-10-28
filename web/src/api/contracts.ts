@@ -207,7 +207,6 @@ export interface EvaluationRun {
 }
 
 export interface CandidateBindingInput {
-  corpus_version_id: string;
   candidate_snapshot_sha256: string;
   source_provenance_sha256: string;
   reviewed_chunk_ids: string[];

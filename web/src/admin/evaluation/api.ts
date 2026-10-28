@@ -9,7 +9,6 @@ import {
   type ReleaseDecision,
   type RunItemAssessment,
   type ReviewStatus,
-  type SupportStatusResponse,
 } from "../../api/contracts";
 
 export class EvaluationApiError extends Error {
@@ -27,7 +26,7 @@ async function request<T>(path: string, token: string, init?: RequestInit): Prom
 }
 
 export type EvaluationLaunch = {
-  item_ids?: string[];
+  configuration_version_id: string; model_version_id: string; item_ids?: string[];
 };
 
 export function launchEvaluation(token: string, payload: EvaluationLaunch): Promise<EvaluationRun> {
@@ -70,28 +69,6 @@ export function bindEvaluationItem(
 ): Promise<CandidateBindingResult> {
   return request<CandidateBindingResult>(
     `${API_ROUTES.evaluationDatasets}/${encodeURIComponent(generationId)}/items/${encodeURIComponent(itemId)}/binding`,
-    token,
-    { method: "PUT", body: JSON.stringify(payload) },
-  );
-}
-
-export function getSupportStatus(token: string, runId: string, itemId: string): Promise<SupportStatusResponse> {
-  return request<SupportStatusResponse>(
-    `${API_ROUTES.evaluationSupport}/${encodeURIComponent(runId)}/items/${encodeURIComponent(itemId)}/support`,
-    token,
-  );
-}
-
-export type SupportReviewInput = { decision: "approve" | "reject"; selected_chunk_id?: string };
-
-export function reviewSupport(
-  token: string,
-  runId: string,
-  itemId: string,
-  payload: SupportReviewInput,
-): Promise<SupportStatusResponse> {
-  return request<SupportStatusResponse>(
-    `${API_ROUTES.evaluationSupport}/${encodeURIComponent(runId)}/items/${encodeURIComponent(itemId)}/support`,
     token,
     { method: "PUT", body: JSON.stringify(payload) },
   );

@@ -14,6 +14,12 @@ from app.api.evaluation_assessments import (
     output_store,
     router as evaluation_assessments_router,
 )
+from app.api.evaluation_support import (
+    pinned_chunk_source,
+    router as evaluation_support_router,
+    support_evidence_store,
+    evaluation_run_store as support_evaluation_run_store,
+)
 from app.answering import (
     GroundedAnswerPolicy,
     QuestionAnswerer,
@@ -57,6 +63,8 @@ from app.evaluation import (
     FirestoreEvaluationRunStore,
     FirestoreAssessmentRepository,
     FirestoreCandidateOutputStore,
+    FirestoreRunPinnedChunkSource,
+    FirestoreSupportEvidenceStore,
 )
 from app.evaluation.worker import FirestoreEvaluationCandidateSnapshotResolver
 from app.release import (
@@ -85,6 +93,7 @@ app.middleware("http")(lifecycle_middleware)
 app.include_router(evaluations_router)
 app.include_router(evaluation_datasets_router)
 app.include_router(evaluation_assessments_router)
+app.include_router(evaluation_support_router)
 
 
 @lru_cache(maxsize=1)
@@ -118,6 +127,7 @@ def get_evaluation_service() -> EvaluationJobService:
         FirestoreEvaluationRunStore(client),
         dispatcher,
         FirestoreEvaluationCandidateSnapshotResolver(client),
+        FirestoreSupportEvidenceStore(client),
     )
 
 
@@ -185,6 +195,46 @@ app.dependency_overrides[assessment_repository] = configured_assessment_reposito
 
 
 @lru_cache(maxsize=1)
+def get_support_evidence_store() -> FirestoreSupportEvidenceStore:
+    from app.identity import _firebase_app
+    from firebase_admin import firestore
+
+    return FirestoreSupportEvidenceStore(firestore.client(app=_firebase_app()))
+
+
+def configured_support_evidence_store() -> FirestoreSupportEvidenceStore:
+    return get_support_evidence_store()
+
+
+def configured_pinned_chunk_source(run_id: str) -> FirestoreRunPinnedChunkSource:
+    from app.identity import _firebase_app
+    from firebase_admin import firestore
+
+    run = get_evaluation_run_store().get(run_id)
+    if run is None or run.candidate_snapshot is None:
+        raise HTTPException(status_code=404, detail={"code": "evaluation_run_not_found", "message": "The evaluation run was not found."})
+    snapshot = run.candidate_snapshot
+    client = firestore.client(app=_firebase_app())
+    corpus = FirestoreCorpusVersionStore(
+        client, vector_collection=snapshot.corpus_binding.vector_collection
+    ).get(run.corpus_version_id)
+    if corpus is None or corpus.validation_evidence is None or corpus.serving_binding != snapshot.corpus_binding:
+        raise HTTPException(status_code=409, detail={"code": "stale_evaluation_run", "message": "The run-pinned corpus is no longer verifiable."})
+    return FirestoreRunPinnedChunkSource(
+        client,
+        vector_collection=snapshot.corpus_binding.vector_collection,
+        provenance_by_corpus={run.corpus_version_id: corpus.validation_evidence.provenance_sha256},
+        ingestion_fingerprint=snapshot.corpus_binding.ingestion_fingerprint,
+        configuration_fingerprint=snapshot.corpus_binding.configuration_fingerprint,
+    )
+
+
+app.dependency_overrides[support_evaluation_run_store] = configured_evaluation_run_store
+app.dependency_overrides[support_evidence_store] = configured_support_evidence_store
+app.dependency_overrides[pinned_chunk_source] = configured_pinned_chunk_source
+
+
+@lru_cache(maxsize=1)
 def get_release_decision_service() -> ReleaseDecisionService:
     service = configured_evaluation_service()
     from app.identity import _firebase_app
@@ -196,6 +246,7 @@ def get_release_decision_service() -> ReleaseDecisionService:
         FirestoreReleaseDecisionStore(client),
         configured_evaluation_generation_store(),
         FirestoreReleaseManifestStore(client),
+        support_evidence=FirestoreSupportEvidenceStore(client),
     )
 
 

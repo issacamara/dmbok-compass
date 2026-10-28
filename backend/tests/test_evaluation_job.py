@@ -5,7 +5,6 @@ from fastapi.testclient import TestClient
 import pytest
 
 from app.api.evaluations import evaluation_service
-from app.corpus.selection import uploaded_corpus_version_id
 from app.contracts import CorpusServingBinding, EvaluationCandidateSnapshot, EvaluationDataset, EvaluationItem, EvaluationRun, UserProfile
 from app.evaluation import (
     EvaluationJobService,
@@ -15,8 +14,8 @@ from app.evaluation import (
     EvaluationOutcome,
     EvaluationInterrupted,
     EvaluationWorker,
+    ResolvedEvaluationCandidate,
 )
-from app.evaluation.worker import _effective_binding
 from app.identity import IdentityError, get_admin_user
 from app.main import app
 
@@ -29,19 +28,6 @@ def dataset() -> EvaluationDataset:
             for i in range(3)
         ],
     )
-
-
-def test_legacy_corpus_binding_is_consistent_between_launch_and_worker() -> None:
-    class LegacyCorpus:
-        version_id = "corpus-v2"
-        serving_binding = None
-        embedding_model = "gemini-embedding-001"
-        embedding_dimensions = 768
-
-    binding = _effective_binding(LegacyCorpus(), vector_collection="document_chunks_v2")
-
-    assert binding.corpus_version_id == "corpus-v2"
-    assert binding.vector_collection == "document_chunks_v2"
 
 
 class SnapshotResolver:
@@ -73,6 +59,19 @@ class SnapshotResolver:
             dependency_lock_sha256="c" * 64,
             integration_artifact="langchain-google-firestore==0.5.0.post2",
             runtime_version=self.runtime_version,
+        )
+
+    def resolve_candidate(self) -> ResolvedEvaluationCandidate:
+        snapshot = self.resolve(
+            corpus_version_id="corpus-v2",
+            configuration_version_id="config-v3",
+            model_version_id="model-v4",
+        )
+        return ResolvedEvaluationCandidate(
+            corpus_version_id="corpus-v2",
+            configuration_version_id="config-v3",
+            model_version_id="model-v4",
+            snapshot=snapshot,
         )
 
 
@@ -137,11 +136,9 @@ def test_admin_api_launch_and_status_require_admin_and_dispatch_once() -> None:
     )
     app.dependency_overrides[get_admin_user] = lambda: admin
     app.dependency_overrides[evaluation_service] = lambda: job
-    app.dependency_overrides[uploaded_corpus_version_id] = lambda: "corpus-v2"
     try:
         client = TestClient(app)
         payload = {
-            "configuration_version_id": "config-v3", "model_version_id": "model-v4",
             "item_ids": ["item-1"],
         }
         created = client.post("/api/evaluations", json=payload)
@@ -151,6 +148,15 @@ def test_admin_api_launch_and_status_require_admin_and_dispatch_once() -> None:
         run_id = created.json()["run_id"]
         assert client.get(f"/api/evaluations/{run_id}").json() == created.json()
         assert len(dispatcher.dispatched) == 1
+        legacy = client.post(
+            "/api/evaluations",
+            json={
+                "corpus_version_id": "corpus-v2",
+                "configuration_version_id": "config-v3",
+                "model_version_id": "model-v4",
+            },
+        )
+        assert legacy.status_code == 422
     finally:
         app.dependency_overrides.clear()
 
@@ -163,11 +169,11 @@ def test_evaluation_api_rejects_non_admin_callers() -> None:
 
     app.dependency_overrides[get_admin_user] = reject_non_admin
     app.dependency_overrides[evaluation_service] = lambda: job
-    app.dependency_overrides[uploaded_corpus_version_id] = lambda: "corpus-v2"
     try:
         response = TestClient(app).post(
             "/api/evaluations",
             json={
+                "corpus_version_id": "corpus-v2",
                 "configuration_version_id": "config-v3", "model_version_id": "model-v4",
             },
         )
@@ -357,7 +363,84 @@ def test_worker_marks_legacy_run_without_a_snapshot_as_failed() -> None:
         selected_item_ids=["item-0"], configuration_version_id="config-v1", model_version_id="model-v1",
     ))
 
-    failed = EvaluationWorker(runs).execute("legacy", dataset(), lambda _: EvaluationOutcome(True, True, True, True, True, 1))
+    completed = EvaluationWorker(runs).execute(
+        "legacy", dataset(), lambda _: EvaluationOutcome(True, True, True, True, True, 1)
+    )
 
-    assert failed.status == "failed"
-    assert failed.error == "EvaluationRunError: immutable candidate snapshot is unavailable"
+    assert completed.status == "completed"
+    assert [item.item_id for item in completed.item_results] == ["item-0", "item-1", "item-2"]
+
+
+def test_simple_worker_evaluates_every_accepted_item_and_persists_aggregate_status() -> None:
+    runs = InMemoryEvaluationRunStore()
+    runs.create_or_get(EvaluationRun(
+        run_id="simple", dataset_version_id="dataset-v1", corpus_version_id="server-selected",
+        status="queued", selected_item_ids=[], configuration_version_id="server-selected",
+        model_version_id="server-selected",
+    ))
+    seen: list[str] = []
+
+    result = EvaluationWorker(runs).execute(
+        "simple",
+        dataset(),
+        lambda item_id: (seen.append(item_id) or EvaluationOutcome(True, True, True, True, True, 1)),
+    )
+
+    assert result.status == "completed"
+    assert seen == ["item-0", "item-1", "item-2"]
+    status_record = runs.status("simple")
+    assert status_record is not None
+    assert status_record.status == "completed"
+    assert status_record.dataset_version_id == "dataset-v1"
+    assert status_record.completed_at is not None
+    assert status_record.error is None
+
+
+def test_simple_worker_does_not_reexecute_a_terminal_failure_or_persist_provider_text() -> None:
+    runs = InMemoryEvaluationRunStore()
+    runs.create_or_get(EvaluationRun(
+        run_id="failed-simple", dataset_version_id="dataset-v1", corpus_version_id="server-selected",
+        status="queued", selected_item_ids=[], configuration_version_id="server-selected",
+        model_version_id="server-selected",
+    ))
+    calls = 0
+
+    def fail(_: str) -> EvaluationOutcome:
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("private question and answer")
+
+    first = EvaluationWorker(runs).execute("failed-simple", dataset(), fail)
+    second = EvaluationWorker(runs).execute(
+        "failed-simple", dataset(), lambda _: (_ for _ in ()).throw(AssertionError("replayed"))
+    )
+
+    assert first.status == second.status == "failed"
+    assert first.error == second.error == "RuntimeError: evaluation failed"
+    assert calls == 1
+    assert "private" not in str(runs.status("failed-simple"))
+
+
+def test_execute_run_fails_safely_when_current_corpus_is_unavailable() -> None:
+    class DatasetStore:
+        def get(self, _: str) -> EvaluationDataset:
+            raise AssertionError("dataset must not be loaded without a corpus")
+
+    runs = InMemoryEvaluationRunStore()
+    runs.create_or_get(EvaluationRun(
+        run_id="no-corpus", dataset_version_id="dataset-v1", corpus_version_id="server-selected",
+        status="queued", selected_item_ids=[], configuration_version_id="server-selected",
+        model_version_id="server-selected",
+    ))
+
+    from app.evaluation.worker import execute_run
+
+    execute_run(
+        "no-corpus", datasets=DatasetStore(), runs=runs, evaluate=lambda _: EvaluationOutcome(True, True, True, True, True, 1),
+        current_corpus_available=lambda: False,
+    )
+
+    result = runs.get("no-corpus")
+    assert result is not None
+    assert result.status == "failed"
+    assert result.error == "evaluation corpus unavailable"

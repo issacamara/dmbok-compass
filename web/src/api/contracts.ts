@@ -10,6 +10,7 @@ export const API_ROUTES = {
   releaseDecisions: "/api/releases",
   evaluationDatasets: "/api/admin/evaluation-datasets",
   evaluationAssessments: "/api/admin/evaluations",
+  evaluationSupport: "/api/admin/evaluations",
 } as const;
 
 export const ADMIN_ROUTES = {
@@ -24,6 +25,7 @@ export type ApprovalState = "pending" | "approved" | "rejected" | "deactivated";
 export type QuestionCategory = "definitions" | "explanations" | "comparisons" | "study" | "scenarios";
 export type ReviewStatus = "candidate" | "approved" | "rejected";
 export type RunEligibility = "exploratory" | "release_evidence";
+export type SupportMatchStatus = "auto_approved" | "missing" | "ambiguous" | "invalid" | "review_approved" | "review_rejected";
 export type ImportStatus = "accepted" | "rejected";
 export type AnswerOutcomeKind = "answer" | "qualified" | "evidence_refusal" | "operational_error";
 export type StageStatus = "pending" | "running" | "succeeded" | "failed" | "unavailable";
@@ -204,6 +206,39 @@ export interface EvaluationRun {
   model_version_id: string;
   error: string | null;
   report_eligibility?: EvaluationReportEligibility | null;
+  candidate_snapshot?: { [key: string]: unknown } | null;
+}
+
+export interface VerifiedChunkChoice {
+  chunk_id: string;
+  corpus_version_id: string;
+  content_hash: string;
+  page: number;
+  section: string;
+  source_provenance_sha256: string;
+}
+
+export interface RunBoundSupportEvidence {
+  schema_version: "run-bound-support-v1";
+  run_id: string;
+  item_id: string;
+  candidate_snapshot_sha256: string;
+  corpus_version_id: string;
+  source_provenance_sha256: string;
+  match_status: SupportMatchStatus;
+  candidate_chunk_ids: string[];
+  verified_chunks: VerifiedChunkChoice[];
+  selected_chunk: VerifiedChunkChoice | null;
+  reason: string | null;
+  expected_refusal: boolean;
+  reviewer_actor?: string | null;
+  reviewed_at?: string | null;
+  binding_version: string;
+}
+
+export interface SupportStatusResponse {
+  evidence: RunBoundSupportEvidence;
+  candidate_chunks: VerifiedChunkChoice[];
 }
 
 export interface CandidateBindingInput {

@@ -25,7 +25,14 @@ from app.contracts import (
     ReviewDecision,
     DocumentChunk,
 )
-from app.evaluation import ConcurrentActivationError, EvaluationGenerationError, ReviewStateError
+from app.evaluation import (
+    ConcurrentActivationError,
+    EvaluationGenerationError,
+    EvaluationJobService,
+    EvaluationRunError,
+    ReviewStateError,
+)
+from app.api.evaluations import evaluation_service
 from app.evaluation.dataset import (
     CandidateBindingError,
     CandidateChunkLookup,
@@ -39,6 +46,23 @@ from app.corpus.selection import uploaded_corpus_version_id
 router = APIRouter(prefix="/api/admin/evaluation-datasets", tags=["evaluation datasets"])
 
 _ALLOWED_CATEGORIES = frozenset({"definitions", "explanations", "comparisons", "study", "scenarios"})
+_ALLOWED_RECORD_FIELDS = frozenset(
+    {"question", "category", "expected_answer_or_rubric", "supporting_passage"}
+)
+
+
+class EvaluationUploadRunResponse(EvaluationImportResponse):
+    """Import summary plus the asynchronously dispatched run identity."""
+
+    run_id: str | None = Field(default=None, min_length=1, max_length=128)
+
+    @model_validator(mode="after")
+    def validate_run_id(self) -> "EvaluationUploadRunResponse":
+        if self.status == "accepted" and self.run_id is None:
+            raise ValueError("accepted uploads require a run_id")
+        if self.status == "rejected" and self.run_id is not None:
+            raise ValueError("rejected uploads cannot have a run_id")
+        return self
 
 
 class EvaluationGenerationStore(Protocol):
@@ -133,14 +157,17 @@ def candidate_chunk_lookup(
     return _StoreLookup()
 
 
-@router.post("/import", response_model=EvaluationImportResponse, status_code=status.HTTP_201_CREATED)
-async def import_evaluation_dataset(
+@router.post("/upload-and-run", response_model=EvaluationUploadRunResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/import", response_model=EvaluationUploadRunResponse, status_code=status.HTTP_201_CREATED)
+async def upload_and_run_evaluation(
     request: Request,
     response: Response,
     _: UserProfile = Depends(get_admin_user),
     store: EvaluationGenerationStore = Depends(evaluation_generation_store),
-) -> EvaluationImportResponse:
-    """Validate each JSON record, then stage and atomically activate valid data."""
+    service: EvaluationJobService = Depends(evaluation_service),
+    _uploaded_corpus_version_id: str = Depends(uploaded_corpus_version_id),
+) -> EvaluationUploadRunResponse:
+    """Validate, activate, and dispatch one full evaluation run atomically."""
 
     raw = await request.body()
     if len(raw) > MAX_EVALUATION_IMPORT_BYTES:
@@ -170,7 +197,7 @@ async def import_evaluation_dataset(
 
     if not valid_items:
         response.status_code = status.HTTP_200_OK
-        return EvaluationImportResponse(
+        return EvaluationUploadRunResponse(
             status="rejected",
             submitted_count=len(submitted),
             imported_count=0,
@@ -199,9 +226,18 @@ async def import_evaluation_dataset(
             detail={"code": "evaluation_import_storage_failed", "message": "The evaluation import could not be stored."},
         ) from exc
 
-    return EvaluationImportResponse(
+    try:
+        run = service.launch(item_ids=None)
+    except (EvaluationRunError, RuntimeError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "evaluation_run_unavailable", "message": "The evaluation run could not be started."},
+        ) from exc
+
+    return EvaluationUploadRunResponse(
         status="accepted",
         generation_id=generation_id,
+        run_id=run.run_id,
         submitted_count=len(submitted),
         imported_count=len(valid_items),
         skipped_count=len(errors),
@@ -353,6 +389,8 @@ def _validate_record(
 ) -> tuple[tuple[EvaluationItem, GoldAnnotation], None] | tuple[None, ImportValidationError]:
     if not isinstance(record, dict):
         return None, _validation_error(index, "invalid_record", "Record must be an object.")
+    if set(record) - _ALLOWED_RECORD_FIELDS:
+        return None, _validation_error(index, "invalid_record", "Record contains unsupported fields.")
     question = record.get("question")
     if not _is_present_string(question):
         return None, _validation_error(index, "missing_question", "Record requires a question.")

@@ -6,7 +6,8 @@ from hashlib import sha256
 import json
 from dataclasses import dataclass
 
-from app.contracts import GoldAnnotation, ReviewedSemanticAssessment
+from app.contracts import EvaluationRun, GoldAnnotation, ReviewedSemanticAssessment, RunBoundSupportEvidence
+from app.evaluation.support import approved_support_chunk_ids
 
 
 SEMANTIC_METRICS = frozenset({
@@ -44,6 +45,8 @@ def score_assessment(
     cited_chunk_ids: set[str],
     scorer_version: str,
     operational_error: bool = False,
+    run: EvaluationRun | None = None,
+    support_evidence: RunBoundSupportEvidence | None = None,
 ) -> SemanticScore:
     """Return independent retrieval and human-reviewed semantic evidence.
 
@@ -53,7 +56,13 @@ def score_assessment(
     turning a correct retrieval into a retrieval miss.
     """
 
-    retrieval_success = _retrieval_success(annotation, retrieved_chunk_ids)
+    if run is not None:
+        expected_support = approved_support_chunk_ids(support_evidence, run=run)
+        if not expected_support:
+            return SemanticScore(False, False, False, False, False, frozenset())
+        retrieval_success = bool(retrieved_chunk_ids & expected_support)
+    else:
+        retrieval_success = _retrieval_success(annotation, retrieved_chunk_ids)
     assessment = annotation.semantic_assessment if annotation is not None else None
     if not _is_valid(assessment, annotation, outcome, answer_text, cited_chunk_ids, scorer_version):
         return SemanticScore(retrieval_success, False, False, False, False, SEMANTIC_METRICS)

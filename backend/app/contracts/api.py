@@ -19,6 +19,10 @@ ImportStatus = Literal["accepted", "rejected"]
 ReviewStatus = Literal["candidate", "approved", "rejected"]
 RunEligibility = Literal["exploratory", "release_evidence"]
 RunStatus = Literal["queued", "running", "completed", "failed"]
+SupportMatchStatus = Literal[
+    "auto_approved", "missing", "ambiguous", "invalid", "review_approved", "review_rejected",
+]
+SupportReviewState = Literal["review_approved", "review_rejected"]
 
 # The upload contract is intentionally shared with the web client. Keep these
 # values in sync with documents/contracts/api-contract-fixture.json.
@@ -99,6 +103,92 @@ class RunItemResult(ContractModel):
     refusal_correct: bool
     response_time_ms: float = Field(ge=0)
     stage_status: StageStatus
+
+
+class VerifiedChunkChoice(ContractModel):
+    """A server-verified chunk eligible for a run-bound support decision."""
+
+    chunk_id: str = Field(min_length=1, max_length=256)
+    corpus_version_id: str = Field(min_length=1, max_length=128)
+    content_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    page: int = Field(ge=1)
+    section: str = Field(min_length=1, max_length=500)
+    source_provenance_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+
+class RunBoundSupportEvidence(ContractModel):
+    """Versioned, candidate- and corpus-bound support evidence for one item."""
+
+    schema_version: Literal["run-bound-support-v1"] = "run-bound-support-v1"
+    run_id: str = Field(min_length=1, max_length=128)
+    item_id: str = Field(min_length=1, max_length=128)
+    candidate_snapshot_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    corpus_version_id: str = Field(min_length=1, max_length=128)
+    source_provenance_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    match_status: SupportMatchStatus
+    candidate_chunk_ids: list[str] = Field(default_factory=list, max_length=5)
+    verified_chunks: list[VerifiedChunkChoice] = Field(default_factory=list, max_length=5)
+    selected_chunk: VerifiedChunkChoice | None = None
+    reason: str | None = Field(default=None, min_length=1, max_length=500)
+    expected_refusal: bool = False
+    reviewer_actor: str | None = Field(default=None, min_length=1, max_length=128)
+    reviewed_at: datetime | None = None
+    binding_version: str = Field(default="run-bound-support-v1", min_length=1, max_length=64)
+
+    @model_validator(mode="after")
+    def validate_binding(self) -> "RunBoundSupportEvidence":
+        verified_ids = [chunk.chunk_id for chunk in self.verified_chunks]
+        if len(verified_ids) != len(set(verified_ids)):
+            raise ValueError("verified chunks must have unique IDs")
+        if any(chunk.corpus_version_id != self.corpus_version_id for chunk in self.verified_chunks):
+            raise ValueError("verified chunks must belong to the bound corpus")
+        if self.selected_chunk is not None:
+            if self.selected_chunk.corpus_version_id != self.corpus_version_id:
+                raise ValueError("selected chunk must belong to the bound corpus")
+            if self.selected_chunk.chunk_id not in verified_ids:
+                raise ValueError("selected chunk must be verified")
+        if self.match_status == "auto_approved":
+            if self.expected_refusal:
+                raise ValueError("explicit refusal items cannot be auto-approved")
+            if len(self.verified_chunks) != 1 or self.selected_chunk is None:
+                raise ValueError("automatic approval requires exactly one verified selected chunk")
+            if self.reviewer_actor is not None or self.reviewed_at is not None:
+                raise ValueError("automatic approval cannot contain reviewer fields")
+        if self.match_status == "review_approved":
+            if self.selected_chunk is None or not self.reviewer_actor or self.reviewed_at is None:
+                raise ValueError("review approval requires a selected chunk and reviewer audit fields")
+        if self.match_status == "review_rejected":
+            if not self.reviewer_actor or self.reviewed_at is None:
+                raise ValueError("review rejection requires reviewer audit fields")
+            if self.selected_chunk is not None:
+                raise ValueError("review rejection cannot select a chunk")
+        if self.match_status in {"missing", "ambiguous", "invalid"} and self.selected_chunk is not None:
+            raise ValueError("unresolved support cannot select a chunk")
+        if self.selected_chunk is not None and self.selected_chunk.chunk_id not in self.candidate_chunk_ids:
+            raise ValueError("selected chunk must be listed among candidate chunks")
+        return self
+
+
+class EvaluationPreparationComplete(ContractModel):
+    """Durable marker written only after every selected item has evidence."""
+
+    schema_version: Literal["evaluation-preparation-v1"] = "evaluation-preparation-v1"
+    run_id: str = Field(min_length=1, max_length=128)
+    candidate_snapshot_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    corpus_version_id: str = Field(min_length=1, max_length=128)
+    item_count: int = Field(ge=1, le=MAX_EVALUATION_IMPORT_ITEMS)
+    prepared_item_count: int = Field(ge=0, le=MAX_EVALUATION_IMPORT_ITEMS)
+    approved_item_count: int = Field(ge=0, le=MAX_EVALUATION_IMPORT_ITEMS)
+    unresolved_item_count: int = Field(ge=0, le=MAX_EVALUATION_IMPORT_ITEMS)
+    completed_at: datetime
+
+    @model_validator(mode="after")
+    def validate_counts(self) -> "EvaluationPreparationComplete":
+        if self.prepared_item_count != self.item_count:
+            raise ValueError("preparation cannot complete before every item has durable evidence")
+        if self.approved_item_count + self.unresolved_item_count != self.item_count:
+            raise ValueError("approved and unresolved counts must cover every item")
+        return self
 
 
 class CitationEvidence(ContractModel):

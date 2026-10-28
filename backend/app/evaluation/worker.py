@@ -16,13 +16,14 @@ from app.answering import (
     GroundedAnswerPolicy,
     RetrievedAnswerService,
 )
-from app.contracts import EvaluationDataset, QuotaStatus
+from app.contracts import EvaluationDataset, EvaluationRun, QuotaStatus, RunBoundSupportEvidence
 from app.corpus.firestore import FirestoreCorpusVersionStore
 from app.corpus.versions import legacy_serving_binding
 from app.evaluation.generations import FirestoreEvaluationGenerationStore
 from app.evaluation.assessments import score_assessment
 from app.evaluation.job import (
     EvaluationCandidateSnapshotResolver,
+    ResolvedEvaluationCandidate,
     EvaluationOutcome,
     EvaluationRunError,
     EvaluationRunStore,
@@ -32,6 +33,11 @@ from app.evaluation.job import (
     EvaluationWorker,
 )
 from app.evaluation.job import FirestoreEvaluationRunStore
+from app.evaluation.support import (
+    FirestoreRunPinnedChunkSource,
+    FirestoreSupportEvidenceStore,
+    prepare_support,
+)
 from app.rag import LangChainRagFactory, LangChainRagSettings
 from app.settings import RuntimeConfiguration
 
@@ -69,7 +75,7 @@ class FirestoreEvaluationCandidateSnapshotResolver(EvaluationCandidateSnapshotRe
         ).get(corpus_version_id)
         if corpus is None:
             raise EvaluationRunError("uploaded corpus is unavailable")
-        binding = _effective_binding(
+        binding = corpus.serving_binding or legacy_serving_binding(
             corpus, vector_collection=factory.settings.vector_collection
         )
         request_timeout_ms = configuration.request_timeout_ms
@@ -83,6 +89,34 @@ class FirestoreEvaluationCandidateSnapshotResolver(EvaluationCandidateSnapshotRe
         except ValueError as exc:
             raise EvaluationRunError(str(exc)) from exc
 
+    def resolve_candidate(self) -> ResolvedEvaluationCandidate:
+        try:
+            configuration = RuntimeConfiguration.from_environment()
+        except ValueError as exc:
+            raise EvaluationRunError(str(exc)) from exc
+        runtime = configuration.runtime
+        corpus_store = FirestoreCorpusVersionStore(
+            self.client, vector_collection=configuration.vector_collection
+        )
+        corpus = corpus_store.active()
+        if corpus is None:
+            raise EvaluationRunError("active corpus is unavailable")
+        configuration_version_id = os.environ.get("CONFIGURATION_VERSION_ID", "").strip()
+        if not configuration_version_id:
+            raise EvaluationRunError("runtime configuration version is unavailable")
+        model_version_id = os.environ.get("MODEL_VERSION_ID", "").strip() or runtime.primary_model
+        snapshot = self.resolve(
+            corpus_version_id=corpus.version_id,
+            configuration_version_id=configuration_version_id,
+            model_version_id=model_version_id,
+        )
+        return ResolvedEvaluationCandidate(
+            corpus_version_id=corpus.version_id,
+            configuration_version_id=configuration_version_id,
+            model_version_id=model_version_id,
+            snapshot=snapshot,
+        )
+
 
 def execute_run(
     run_id: str,
@@ -92,18 +126,29 @@ def execute_run(
     evaluate: Callable[[str], EvaluationOutcome],
     termination_requested: Callable[[], bool] | None = None,
     stages: EvaluationStageStore | None = None,
+    support_preparer: Callable[[object, EvaluationDataset], object] | None = None,
+    support_evidence: Callable[..., RunBoundSupportEvidence | None] | None = None,
+    current_corpus_available: Callable[[], bool] | None = None,
 ) -> None:
-    """Reload the run-pinned generation and persist its terminal outcome."""
+    """Reload the accepted dataset and persist one aggregate terminal outcome."""
 
     run = runs.get(run_id)
     if run is None:
         raise EvaluationRunError("unknown evaluation run")
+    if current_corpus_available is not None and not current_corpus_available():
+        runs.update(run.model_copy(update={"status": "failed", "error": "evaluation corpus unavailable"}))
+        return
     dataset = datasets.get(run.dataset_version_id)
     if dataset is None:
         runs.update(run.model_copy(update={"status": "failed", "error": "evaluation dataset is unavailable"}))
         return
     EvaluationWorker(runs, stages=stages).execute(
-        run_id, dataset, evaluate, termination_requested=termination_requested
+        run_id,
+        dataset,
+        evaluate,
+        termination_requested=termination_requested,
+        support_preparer=support_preparer,
+        support_evidence=support_evidence,
     )
 
 
@@ -111,11 +156,19 @@ class EvaluationAnswerEvaluator:
     """Produce content-free evaluation outcomes from the pinned corpus answer path."""
 
     def __init__(
-        self, dataset: EvaluationDataset, answerer: RetrievedAnswerService, *, scorer_version: str = "evaluation-gates-v1"
+        self,
+        dataset: EvaluationDataset,
+        answerer: RetrievedAnswerService,
+        *,
+        run: EvaluationRun | None = None,
+        support_evidence: Callable[..., RunBoundSupportEvidence | None] | None = None,
+        scorer_version: str = "evaluation-gates-v1",
     ) -> None:
         self._items = {item.item_id: item for item in dataset.items}
         self._annotations = {annotation.item_id: annotation for annotation in dataset.gold_annotations}
         self._answerer = answerer
+        self._run = run
+        self._support_evidence = support_evidence
         self._scorer_version = scorer_version
 
     def __call__(self, item_id: str) -> EvaluationOutcome:
@@ -132,6 +185,12 @@ class EvaluationAnswerEvaluator:
             cited_chunk_ids=cited,
             scorer_version=self._scorer_version,
             operational_error=response.error is not None,
+            run=self._run,
+            support_evidence=(
+                self._support_evidence(run_id=self._run.run_id, item_id=item_id)
+                if self._run is not None and self._support_evidence is not None
+                else None
+            ),
         )
         return EvaluationOutcome(
             retrieval_success=score.retrieval_success,
@@ -147,7 +206,8 @@ class EvaluationAnswerEvaluator:
 def main() -> None:
     termination_requested = Event()
     previous_handler = signal.signal(signal.SIGTERM, lambda *_: termination_requested.set())
-    project = RuntimeConfiguration.from_environment().runtime.project
+    configuration = RuntimeConfiguration.from_environment()
+    project = configuration.runtime.project
     run_id = _required("EVALUATION_RUN_ID")
     client = firestore.Client(project=project)
     datasets = FirestoreEvaluationGenerationStore(client)
@@ -166,17 +226,26 @@ def main() -> None:
                 evaluate=lambda _: _unavailable(),
                 termination_requested=termination_requested.is_set,
                 stages=stages,
+                current_corpus_available=lambda: _current_corpus_available(client, configuration.vector_collection),
             )
             return
+        support_store = FirestoreSupportEvidenceStore(client)
         execute_run(
             run_id,
             datasets=datasets,
             runs=runs,
             evaluate=EvaluationAnswerEvaluator(
-                dataset, _pinned_answerer(project, run), scorer_version=run.candidate_snapshot.scorer_version
+                dataset,
+                _pinned_answerer(project, run),
+                run=run,
+                support_evidence=support_store.get_evidence,
+                scorer_version=run.candidate_snapshot.scorer_version,
             ),
             termination_requested=termination_requested.is_set,
             stages=stages,
+            support_preparer=lambda pinned_run, pinned_dataset: _prepare_run_support(client, pinned_run, pinned_dataset),
+            support_evidence=support_store.get_evidence,
+            current_corpus_available=lambda: _current_corpus_available(client, configuration.vector_collection),
         )
     except EvaluationInterrupted:
         print(json.dumps({"event": "dmbok_evaluation_interrupted", "exit_code": 1}))
@@ -239,6 +308,32 @@ def _pinned_answerer(project: str, run) -> RetrievedAnswerService:
     )
 
 
+def _prepare_run_support(client: firestore.Client, run, dataset: EvaluationDataset) -> object:
+    """Prepare evidence against the same immutable corpus binding as scoring."""
+
+    snapshot = run.candidate_snapshot
+    if snapshot is None:
+        raise EvaluationRunError("evaluation run has no immutable candidate snapshot")
+    corpus = FirestoreCorpusVersionStore(
+        client, vector_collection=snapshot.corpus_binding.vector_collection
+    ).get(run.corpus_version_id)
+    if corpus is None or corpus.validation_evidence is None:
+        raise EvaluationRunError("run corpus provenance evidence is unavailable")
+    binding = _effective_binding(
+        corpus, vector_collection=snapshot.corpus_binding.vector_collection
+    )
+    if binding != snapshot.corpus_binding:
+        raise EvaluationRunError("candidate corpus binding no longer matches the run snapshot")
+    source = FirestoreRunPinnedChunkSource(
+        client,
+        vector_collection=snapshot.corpus_binding.vector_collection,
+        provenance_by_corpus={run.corpus_version_id: corpus.validation_evidence.provenance_sha256},
+        ingestion_fingerprint=snapshot.corpus_binding.ingestion_fingerprint,
+        configuration_fingerprint=snapshot.corpus_binding.configuration_fingerprint,
+    )
+    return prepare_support(run, dataset, source, FirestoreSupportEvidenceStore(client))
+
+
 def _evaluation_quota() -> QuotaStatus:
     return QuotaStatus(
         user_used=0,
@@ -253,6 +348,16 @@ def _effective_binding(corpus, *, vector_collection: str):
     return corpus.serving_binding or legacy_serving_binding(
         corpus, vector_collection=vector_collection
     )
+
+
+def _current_corpus_available(client: firestore.Client, vector_collection: str) -> bool:
+    """Return only availability; never persist or log the corpus identity."""
+
+    try:
+        corpus = FirestoreCorpusVersionStore(client, vector_collection=vector_collection).active()
+    except Exception:
+        return False
+    return corpus is not None
 
 
 def _unavailable() -> EvaluationOutcome:

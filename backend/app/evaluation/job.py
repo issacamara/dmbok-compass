@@ -9,6 +9,7 @@ from typing import Any, Literal, Protocol
 import dataclasses
 from dataclasses import dataclass
 from collections.abc import Callable
+from datetime import datetime, timezone
 
 from google.api_core.exceptions import AlreadyExists
 
@@ -20,9 +21,11 @@ from app.contracts import (
     EvaluationReportEligibility,
     EvaluationRun,
     RetrievalResult,
+    RunBoundSupportEvidence,
 )
 from app.contracts.api import AnswerOutcomeKind
 from app.evaluation.dataset import EvaluationDatasetStore
+from app.evaluation.support import approved_support_chunk_ids
 
 
 class EvaluationRunError(ValueError):
@@ -49,6 +52,25 @@ class EvaluationRunStore(Protocol):
     def create_or_get(self, run: EvaluationRun) -> EvaluationRun: ...
     def get(self, run_id: str) -> EvaluationRun | None: ...
     def update(self, run: EvaluationRun) -> EvaluationRun: ...
+
+
+@dataclass(frozen=True)
+class AggregateRunStatus:
+    """Content-free status projection for the simple evaluation workflow."""
+
+    run_id: str
+    dataset_version_id: str
+    status: Literal["queued", "running", "completed", "failed"]
+    metrics: tuple[EvaluationMetric, ...] = ()
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    error: str | None = None
+
+
+class AggregateRunStatusStore(Protocol):
+    def status(self, run_id: str) -> AggregateRunStatus | None: ...
+
+    def update_status(self, status: AggregateRunStatus) -> AggregateRunStatus: ...
 
 
 AssessmentStatus = Literal["awaiting_review", "reviewed", "inapplicable"]
@@ -134,6 +156,12 @@ class ActiveEvaluationDatasetStore(EvaluationDatasetStore, Protocol):
     def report_eligibility(self, generation_id: str) -> EvaluationReportEligibility: ...
 
 
+class RunSupportEvidenceStore(Protocol):
+    def get_evidence(self, *, run_id: str, item_id: str) -> RunBoundSupportEvidence | None: ...
+
+    def get_marker(self, *, run_id: str) -> object | None: ...
+
+
 class EvaluationJobDispatcher(Protocol):
     def dispatch(self, run: EvaluationRun, dataset: EvaluationDataset) -> None: ...
 
@@ -149,10 +177,23 @@ class EvaluationCandidateSnapshotResolver(Protocol):
         model_version_id: str,
     ) -> EvaluationCandidateSnapshot: ...
 
+    def resolve_candidate(self) -> "ResolvedEvaluationCandidate": ...
+
+
+@dataclass(frozen=True)
+class ResolvedEvaluationCandidate:
+    """The server-owned identity used to bind a newly launched run."""
+
+    corpus_version_id: str
+    configuration_version_id: str
+    model_version_id: str
+    snapshot: EvaluationCandidateSnapshot
+
 
 class InMemoryEvaluationRunStore:
     def __init__(self) -> None:
         self._runs: dict[str, EvaluationRun] = {}
+        self._statuses: dict[str, AggregateRunStatus] = {}
         self._lock = RLock()
 
     def create_or_get(self, run: EvaluationRun) -> EvaluationRun:
@@ -163,6 +204,10 @@ class InMemoryEvaluationRunStore:
                     raise EvaluationRunError("run_id is already bound to another configuration")
                 return deepcopy(existing)
             self._runs[run.run_id] = run.model_copy(deep=True)
+            self._statuses.setdefault(
+                run.run_id,
+                AggregateRunStatus(run_id=run.run_id, dataset_version_id=run.dataset_version_id, status=run.status),
+            )
             return deepcopy(run)
 
     def get(self, run_id: str) -> EvaluationRun | None:
@@ -173,17 +218,45 @@ class InMemoryEvaluationRunStore:
         with self._lock:
             if run.run_id not in self._runs:
                 raise EvaluationRunError("unknown evaluation run")
+            existing = self._statuses.get(run.run_id)
+            if existing is not None and (
+                existing.status == "failed" or (existing.status == "completed" and existing.metrics)
+            ):
+                return deepcopy(self._runs[run.run_id])
             self._runs[run.run_id] = run.model_copy(deep=True)
+            self._statuses[run.run_id] = AggregateRunStatus(
+                run_id=run.run_id,
+                dataset_version_id=run.dataset_version_id,
+                status=run.status,
+                metrics=tuple(run.metrics),
+                started_at=(existing.started_at if existing and existing.started_at else datetime.now(timezone.utc) if run.status == "running" else None),
+                completed_at=(datetime.now(timezone.utc) if run.status in {"completed", "failed"} else None),
+                error=run.error,
+            )
             return deepcopy(run)
+
+    def status(self, run_id: str) -> AggregateRunStatus | None:
+        with self._lock:
+            return deepcopy(self._statuses.get(run_id))
+
+    def update_status(self, status: AggregateRunStatus) -> AggregateRunStatus:
+        with self._lock:
+            current = self._statuses.get(status.run_id)
+            if current is not None and current.status in {"completed", "failed"}:
+                return deepcopy(current)
+            self._statuses[status.run_id] = status
+            return deepcopy(status)
 
 
 class FirestoreEvaluationRunStore:
     """Durable immutable run records, separated from evaluator-authored data."""
 
     collection_id = "evaluation_runs"
+    status_collection_id = "evaluation_run_status"
 
     def __init__(self, client: Any) -> None:
         self.runs = client.collection(self.collection_id)
+        self.statuses = client.collection(self.status_collection_id)
 
     def create_or_get(self, run: EvaluationRun) -> EvaluationRun:
         reference = self.runs.document(run.run_id)
@@ -192,6 +265,7 @@ class FirestoreEvaluationRunStore:
             return self._same_or_conflict(snapshot, run)
         try:
             reference.create(run.model_dump(mode="json"))
+            self.update_status(AggregateRunStatus(run_id=run.run_id, dataset_version_id=run.dataset_version_id, status=run.status))
             return run.model_copy(deep=True)
         except AlreadyExists:
             # A concurrent create may have won. Re-read to preserve idempotency
@@ -209,8 +283,56 @@ class FirestoreEvaluationRunStore:
         reference = self.runs.document(run.run_id)
         if not reference.get().exists:
             raise EvaluationRunError("unknown evaluation run")
+        existing = self.status(run.run_id)
+        if existing is not None and (
+            existing.status == "failed" or (existing.status == "completed" and existing.metrics)
+        ):
+            stored = reference.get()
+            return EvaluationRun.model_validate(stored.to_dict())
         reference.set(run.model_dump(mode="json"))
+        self.update_status(AggregateRunStatus(
+            run_id=run.run_id,
+            dataset_version_id=run.dataset_version_id,
+            status=run.status,
+            metrics=tuple(run.metrics),
+            started_at=(existing.started_at if existing and existing.started_at else datetime.now(timezone.utc) if run.status == "running" else None),
+            completed_at=(datetime.now(timezone.utc) if run.status in {"completed", "failed"} else None),
+            error=run.error,
+        ))
         return run.model_copy(deep=True)
+
+    def status(self, run_id: str) -> AggregateRunStatus | None:
+        snapshot = self.statuses.document(run_id).get()
+        if not snapshot.exists:
+            return None
+        payload = snapshot.to_dict()
+        return AggregateRunStatus(
+            run_id=run_id,
+            dataset_version_id=str(payload["dataset_version_id"]),
+            status=payload["status"],
+            metrics=tuple(EvaluationMetric.model_validate(item) for item in payload.get("metrics", [])),
+            started_at=_datetime(payload.get("started_at")),
+            completed_at=_datetime(payload.get("completed_at")),
+            error=payload.get("error"),
+        )
+
+    def update_status(self, status: AggregateRunStatus) -> AggregateRunStatus:
+        current = self.status(status.run_id)
+        if current is not None and (
+            current.status == "failed" or (current.status == "completed" and current.metrics)
+        ):
+            return current
+        payload = {
+            "run_id": status.run_id,
+            "dataset_version_id": status.dataset_version_id,
+            "status": status.status,
+            "metrics": [metric.model_dump(mode="json") for metric in status.metrics],
+            "started_at": status.started_at.isoformat() if status.started_at else None,
+            "completed_at": status.completed_at.isoformat() if status.completed_at else None,
+            "error": status.error,
+        }
+        self.statuses.document(status.run_id).set(payload)
+        return status
 
     @staticmethod
     def _same_or_conflict(snapshot: Any, run: EvaluationRun) -> EvaluationRun:
@@ -274,31 +396,39 @@ class EvaluationWorker:
         evaluate: Callable[[str], EvaluationOutcome],
         *,
         termination_requested: Callable[[], bool] | None = None,
+        support_preparer: Callable[[EvaluationRun, EvaluationDataset], object] | None = None,
+        support_evidence: Callable[..., RunBoundSupportEvidence | None] | None = None,
     ) -> EvaluationRun:
         run = self.runs.get(run_id)
         if run is None:
             raise EvaluationRunError("unknown evaluation run")
-        if run.status == "completed":
+        # Terminal states are immutable.  Cloud Run may replay a successful
+        # invocation after the acknowledgement was lost; replaying must not
+        # re-score items or overwrite the terminal summary.
+        if run.status in {"completed", "failed"}:
             return run
-        if run.candidate_snapshot is None:
-            return self.runs.update(
-                run.model_copy(
-                    update={
-                        "status": "failed",
-                        "error": "EvaluationRunError: immutable candidate snapshot is unavailable",
-                    }
-                )
-            )
         running = run.model_copy(update={"status": "running"})
         self.runs.update(running)
         try:
             if dataset.dataset_version_id != run.dataset_version_id:
                 raise EvaluationRunError("worker dataset does not match the run-pinned generation")
-            item_ids = set(run.selected_item_ids)
-            if item_ids - {item.item_id for item in dataset.items}:
+            # A simple evaluation always evaluates the accepted dataset in
+            # source order.  Candidate-pinned runs retain their historical
+            # subset semantics for the deferred release-evidence workflow.
+            item_ids_in_dataset = [item.item_id for item in dataset.items]
+            selected_item_ids = (
+                item_ids_in_dataset
+                if run.candidate_snapshot is None
+                else run.selected_item_ids
+            )
+            if set(selected_item_ids) - set(item_ids_in_dataset):
                 raise EvaluationRunError("run contains items outside its dataset version")
+            if support_preparer is not None:
+                support_preparer(run, dataset)
             results = []
-            for item_id in run.selected_item_ids:
+            for item_id in selected_item_ids:
+                if support_evidence is not None and support_evidence(run_id=run.run_id, item_id=item_id) is None:
+                    raise EvaluationRunError("run-bound support evidence is incomplete")
                 if termination_requested is not None and termination_requested():
                     raise EvaluationInterrupted("evaluation interrupted before next item")
                 try:
@@ -335,7 +465,7 @@ class EvaluationWorker:
                     refusal_correct=result.refusal_correct,
                     response_time_ms=result.response_time_ms,
                 )
-                for item_id, result in zip(run.selected_item_ids, results, strict=True)
+                for item_id, result in zip(selected_item_ids, results, strict=True)
             ]
             return self.runs.update(
                 running.model_copy(update={"status": "completed", "metrics": metrics, "item_results": item_results})
@@ -472,18 +602,20 @@ class EvaluationJobService:
         runs: EvaluationRunStore,
         dispatcher: EvaluationJobDispatcher,
         snapshots: EvaluationCandidateSnapshotResolver,
+        support_evidence: RunSupportEvidenceStore | None = None,
     ) -> None:
         self.datasets = datasets
         self.runs = runs
         self.dispatcher = dispatcher
         self.snapshots = snapshots
+        self.support_evidence = support_evidence
 
     def launch(
         self,
         *,
-        corpus_version_id: str,
-        configuration_version_id: str,
-        model_version_id: str,
+        corpus_version_id: str | None = None,
+        configuration_version_id: str | None = None,
+        model_version_id: str | None = None,
         item_ids: list[str] | None,
     ) -> EvaluationRun:
         dataset = self.datasets.active_dataset()
@@ -491,11 +623,20 @@ class EvaluationJobService:
             raise EvaluationRunError("no active evaluation dataset")
         dataset_version_id = dataset.dataset_version_id
         selected = select_items(dataset, item_ids)
-        snapshot = self.snapshots.resolve(
-            corpus_version_id=corpus_version_id,
-            configuration_version_id=configuration_version_id,
-            model_version_id=model_version_id,
-        )
+        if all(value is None for value in (corpus_version_id, configuration_version_id, model_version_id)):
+            candidate = self.snapshots.resolve_candidate()
+            corpus_version_id = candidate.corpus_version_id
+            configuration_version_id = candidate.configuration_version_id
+            model_version_id = candidate.model_version_id
+            snapshot = candidate.snapshot
+        elif all(value is not None for value in (corpus_version_id, configuration_version_id, model_version_id)):
+            snapshot = self.snapshots.resolve(
+                corpus_version_id=corpus_version_id,
+                configuration_version_id=configuration_version_id,
+                model_version_id=model_version_id,
+            )
+        else:
+            raise EvaluationRunError("candidate identity must be fully specified or server-resolved")
         if snapshot.corpus_binding.corpus_version_id != corpus_version_id:
             raise EvaluationRunError("candidate snapshot does not match the requested corpus version")
         run = EvaluationRun(
@@ -507,10 +648,9 @@ class EvaluationJobService:
             configuration_version_id=configuration_version_id,
             model_version_id=model_version_id,
             candidate_snapshot=snapshot,
-            report_eligibility=self._eligibility_for_selection(
-                dataset_version_id, selected, len(dataset.items)
-            ),
+            report_eligibility=None,
         )
+        run = run.model_copy(update={"report_eligibility": self._eligibility_for_run(run)})
         stored = self.runs.create_or_get(run)
         if stored.status == "queued":
             self.dispatcher.dispatch(stored, dataset)
@@ -521,11 +661,31 @@ class EvaluationJobService:
         if run is None:
             raise EvaluationRunError("unknown evaluation run")
         return run.model_copy(update={
-            "report_eligibility": self._eligibility_for_selection(
-                run.dataset_version_id,
-                tuple(run.selected_item_ids),
-                len(self.datasets.get(run.dataset_version_id).items),  # type: ignore[union-attr]
-            )
+            "report_eligibility": self._eligibility_for_run(run),
+        })
+
+    def _eligibility_for_run(self, run: EvaluationRun) -> EvaluationReportEligibility:
+        dataset = self.datasets.get(run.dataset_version_id)
+        if dataset is None:
+            raise EvaluationRunError("evaluation dataset is unavailable")
+        eligibility = self._eligibility_for_selection(
+            run.dataset_version_id, tuple(run.selected_item_ids), len(dataset.items)
+        )
+        if self.support_evidence is None:
+            return eligibility
+        if not eligibility.is_current_generation or len(run.selected_item_ids) != len(dataset.items):
+            return eligibility.model_copy(update={"eligibility": "exploratory", "approved_gold_count": 0})
+        marker = self.support_evidence.get_marker(run_id=run.run_id)
+        if marker is None:
+            return eligibility.model_copy(update={"eligibility": "exploratory", "approved_gold_count": 0})
+        approved = 0
+        for item_id in run.selected_item_ids:
+            evidence = self.support_evidence.get_evidence(run_id=run.run_id, item_id=item_id)
+            if approved_support_chunk_ids(evidence, run=run):
+                approved += 1
+        return eligibility.model_copy(update={
+            "approved_gold_count": approved,
+            "eligibility": "release_evidence" if 30 <= approved <= 50 else "exploratory",
         })
 
     def _eligibility_for_selection(
@@ -580,6 +740,19 @@ def _metrics(results: list[EvaluationOutcome], response_time_threshold_ms: float
 
 def _stage_id(run_id: str, item_id: str) -> str:
     return f"{run_id}:{item_id}"
+
+
+def _datetime(value: object) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value
+    if isinstance(value, str):
+        try:
+            return datetime.fromisoformat(value)
+        except ValueError:
+            return None
+    return None
 
 
 def _stage_from_outcome(run_id: str, item_id: str, outcome: EvaluationOutcome) -> EvaluationItemStage:

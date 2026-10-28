@@ -16,7 +16,10 @@ from .generations import (
 )
 from .job import (
     EvaluationJobDispatcher,
+    AggregateRunStatus,
+    AggregateRunStatusStore,
     EvaluationJobService,
+    ResolvedEvaluationCandidate,
     ActiveEvaluationDatasetStore,
     EvaluationItemStage,
     EvaluationReviewError,
@@ -56,6 +59,16 @@ from .reviews import (
     RunItemAssessment,
     RunItemAssessmentRecord,
 )
+from .support import (
+    FirestoreRunPinnedChunkSource,
+    FirestoreSupportEvidenceStore,
+    InMemorySupportEvidenceStore,
+    StoredSupportChunk,
+    SupportPreparationError,
+    SupportPreparationResult,
+    prepare_support,
+    review_support,
+)
 
 __all__ = [
     "EvaluationDatasetError",
@@ -69,7 +82,10 @@ __all__ = [
     "GenerationIntegrityError",
     "ReviewStateError",
     "EvaluationJobDispatcher",
+    "AggregateRunStatus",
+    "AggregateRunStatusStore",
     "EvaluationJobService",
+    "ResolvedEvaluationCandidate",
     "ActiveEvaluationDatasetStore",
     "EvaluationItemStage",
     "EvaluationReviewError",
@@ -106,4 +122,12 @@ __all__ = [
     "InMemoryAssessmentRepository",
     "RunItemAssessment",
     "RunItemAssessmentRecord",
+    "FirestoreRunPinnedChunkSource",
+    "FirestoreSupportEvidenceStore",
+    "InMemorySupportEvidenceStore",
+    "StoredSupportChunk",
+    "SupportPreparationError",
+    "SupportPreparationResult",
+    "prepare_support",
+    "review_support",
 ]

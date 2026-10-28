@@ -365,3 +365,11 @@ resource "google_cloud_run_v2_job_iam_member" "runtime_evaluation_invoker" {
   role     = "roles/run.invoker"
   member   = "serviceAccount:${google_service_account.workload["runtime"].email}"
 }
+
+resource "google_cloud_run_v2_job_iam_member" "runtime_evaluation_executor_with_overrides" {
+  project  = var.project_id
+  location = var.region
+  name     = google_cloud_run_v2_job.evaluation.name
+  role     = "roles/run.jobsExecutorWithOverrides"
+  member   = "serviceAccount:${google_service_account.workload["runtime"].email}"
+}

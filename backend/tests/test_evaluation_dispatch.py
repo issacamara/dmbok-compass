@@ -5,7 +5,12 @@ from dataclasses import dataclass, field
 from google.api_core.exceptions import AlreadyExists
 
 from app.contracts import EvaluationDataset, EvaluationItem, EvaluationRun
-from app.evaluation.dispatch import CloudRunEvaluationJobDispatcher, EvaluationDispatchClaimStore
+from app.evaluation.dispatch import (
+    CloudRunEvaluationJobDispatcher,
+    CloudRunJobExecutor,
+    EvaluationDispatchClaimStore,
+    EvaluationDispatchError,
+)
 
 
 @dataclass
@@ -84,3 +89,40 @@ def test_failed_dispatch_releases_claim_for_safe_retry() -> None:
     dispatcher.dispatch(_run(), _dataset())
 
     assert attempts == 2
+
+
+def test_cloud_run_executor_sends_run_override_and_returns_bounded_provider_diagnostic(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+    captured: dict[str, object] = {}
+
+    class Response:
+        ok = False
+        status_code = 403
+
+        def json(self) -> dict[str, object]:
+            return {"error": {"status": "PERMISSION_DENIED", "message": "secret evaluator content"}}
+
+    class Session:
+        def __init__(self, credentials: object) -> None:
+            del credentials
+
+        def post(self, url: str, *, json: object, timeout: int) -> Response:
+            captured.update(url=url, json=json, timeout=timeout)
+            return Response()
+
+    monkeypatch.setattr("google.auth.default", lambda scopes: (object(), object()))
+    monkeypatch.setattr("google.auth.transport.requests.AuthorizedSession", Session)
+
+    import pytest
+
+    with pytest.raises(EvaluationDispatchError) as raised:
+        CloudRunJobExecutor(project="project", location="region", job_name="evaluation")("run-1")
+
+    assert captured["url"] == "https://run.googleapis.com/v2/projects/project/locations/region/jobs/evaluation:run"
+    assert captured["json"] == {
+        "overrides": {"containerOverrides": [{"env": [{"name": "EVALUATION_RUN_ID", "value": "run-1"}]}]}
+    }
+    assert captured["timeout"] == 15
+    assert raised.value.status_code == 403
+    assert raised.value.provider_code == "PERMISSION_DENIED"
+    assert raised.value.provider_message == "Cloud Run rejected the caller permissions."
+    assert "secret evaluator content" not in str(raised.value)

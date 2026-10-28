@@ -32,6 +32,10 @@ class EvaluationRunError(ValueError):
     """Raised when a run request cannot be bound to immutable inputs."""
 
 
+class EvaluationCorpusReadinessError(EvaluationRunError):
+    """The selected corpus lacks the evidence required for evaluation."""
+
+
 class EvaluationInterrupted(RuntimeError):
     """Raised when a worker receives termination before a run completes."""
 

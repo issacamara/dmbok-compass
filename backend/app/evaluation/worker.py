@@ -26,6 +26,7 @@ from app.evaluation.job import (
     ResolvedEvaluationCandidate,
     EvaluationOutcome,
     EvaluationRunError,
+    EvaluationCorpusReadinessError,
     EvaluationRunStore,
     EvaluationStageStore,
     FirestoreEvaluationStageStore,
@@ -75,6 +76,10 @@ class FirestoreEvaluationCandidateSnapshotResolver(EvaluationCandidateSnapshotRe
         ).get(corpus_version_id)
         if corpus is None:
             raise EvaluationRunError("uploaded corpus is unavailable")
+        if corpus.validation_evidence is None or corpus.serving_binding is None:
+            raise EvaluationCorpusReadinessError(
+                "evaluation corpus provenance evidence is unavailable"
+            )
         binding = corpus.serving_binding or legacy_serving_binding(
             corpus, vector_collection=factory.settings.vector_collection
         )
@@ -317,8 +322,10 @@ def _prepare_run_support(client: firestore.Client, run, dataset: EvaluationDatas
     corpus = FirestoreCorpusVersionStore(
         client, vector_collection=snapshot.corpus_binding.vector_collection
     ).get(run.corpus_version_id)
-    if corpus is None or corpus.validation_evidence is None:
-        raise EvaluationRunError("run corpus provenance evidence is unavailable")
+    if corpus is None or corpus.validation_evidence is None or corpus.serving_binding is None:
+        raise EvaluationCorpusReadinessError(
+            "evaluation corpus provenance evidence is unavailable"
+        )
     binding = _effective_binding(
         corpus, vector_collection=snapshot.corpus_binding.vector_collection
     )

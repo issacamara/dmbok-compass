@@ -15,6 +15,16 @@ class EvaluationRunDispatcher(Protocol):
     def dispatch(self, run: EvaluationRun, dataset: EvaluationDataset) -> None: ...
 
 
+class EvaluationDispatchError(EvaluationRunError):
+    """A bounded Cloud Run provider diagnostic safe for an API response."""
+
+    def __init__(self, status_code: int, provider_code: str, provider_message: str) -> None:
+        super().__init__(provider_message)
+        self.status_code = status_code
+        self.provider_code = provider_code
+        self.provider_message = provider_message
+
+
 class EvaluationDispatchClaimStore:
     """Firestore claim records prevent duplicate job submissions after API restarts."""
 
@@ -64,7 +74,8 @@ class CloudRunJobExecutor:
             timeout=15,
         )
         if not response.ok:
-            raise EvaluationRunError("Cloud Run did not accept the evaluation job dispatch")
+            status_code, provider_code, provider_message = _safe_provider_diagnostic(response)
+            raise EvaluationDispatchError(status_code, provider_code, provider_message)
 
 
 class CloudRunEvaluationJobDispatcher:
@@ -94,3 +105,32 @@ def _non_empty(value: str, name: str) -> str:
     if not value:
         raise ValueError(f"{name} must be non-empty")
     return value
+
+
+_SAFE_PROVIDER_CODES = frozenset({
+    "INVALID_ARGUMENT", "NOT_FOUND", "PERMISSION_DENIED", "RESOURCE_EXHAUSTED",
+    "UNAUTHENTICATED", "UNAVAILABLE", "INTERNAL", "CLOUD_RUN_DISPATCH_FAILED",
+})
+_STATUS_DIAGNOSTICS = {
+    400: ("INVALID_ARGUMENT", "Cloud Run rejected the job override request."),
+    401: ("UNAUTHENTICATED", "Cloud Run rejected the caller authentication."),
+    403: ("PERMISSION_DENIED", "Cloud Run rejected the caller permissions."),
+    404: ("NOT_FOUND", "The evaluation Cloud Run Job was not found."),
+    429: ("RESOURCE_EXHAUSTED", "Cloud Run rejected the request due to quota or rate limiting."),
+}
+
+
+def _safe_provider_diagnostic(response: Any) -> tuple[int, str, str]:
+    status_code = int(getattr(response, "status_code", 0) or 0)
+    fallback_code, fallback_message = _STATUS_DIAGNOSTICS.get(
+        status_code,
+        ("UNAVAILABLE" if status_code >= 500 else "CLOUD_RUN_DISPATCH_FAILED", "Cloud Run did not accept the evaluation job dispatch."),
+    )
+    try:
+        payload = response.json()
+    except (AttributeError, TypeError, ValueError):
+        payload = {}
+    error = payload.get("error", {}) if isinstance(payload, dict) else {}
+    raw_code = (error.get("status") or error.get("code")) if isinstance(error, dict) else None
+    provider_code = raw_code if isinstance(raw_code, str) and raw_code in _SAFE_PROVIDER_CODES else fallback_code
+    return status_code, provider_code, fallback_message

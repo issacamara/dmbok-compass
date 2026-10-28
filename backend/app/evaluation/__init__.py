@@ -31,6 +31,7 @@ from .job import (
     FirestoreEvaluationStageStore,
     FirestoreEvaluationRunStore,
     EvaluationRunError,
+    EvaluationCorpusReadinessError,
     EvaluationRunStore,
     EvaluationWorker,
     InMemoryEvaluationJobDispatcher,
@@ -38,7 +39,12 @@ from .job import (
     select_items,
     stable_run_id,
 )
-from .dispatch import CloudRunEvaluationJobDispatcher, CloudRunJobExecutor, EvaluationDispatchClaimStore
+from .dispatch import (
+    CloudRunEvaluationJobDispatcher,
+    CloudRunJobExecutor,
+    EvaluationDispatchClaimStore,
+    EvaluationDispatchError,
+)
 from .candidate_outputs import (
     POLICY_ID,
     CandidateOutputAlreadyExists,
@@ -97,6 +103,7 @@ __all__ = [
     "FirestoreEvaluationStageStore",
     "FirestoreEvaluationRunStore",
     "EvaluationRunError",
+    "EvaluationCorpusReadinessError",
     "EvaluationRunStore",
     "EvaluationWorker",
     "InMemoryEvaluationJobDispatcher",
@@ -106,6 +113,7 @@ __all__ = [
     "CloudRunEvaluationJobDispatcher",
     "CloudRunJobExecutor",
     "EvaluationDispatchClaimStore",
+    "EvaluationDispatchError",
     "POLICY_ID",
     "CandidateOutputAlreadyExists",
     "CandidateOutputAuthorizationError",

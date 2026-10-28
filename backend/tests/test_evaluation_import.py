@@ -11,7 +11,11 @@ from app.api.evaluation_datasets import evaluation_generation_store
 from app.api.evaluations import evaluation_service
 from app.corpus.selection import uploaded_corpus_version_id
 from app.contracts import EvaluationRun, UserProfile
-from app.evaluation import FirestoreEvaluationGenerationStore
+from app.evaluation import (
+    EvaluationCorpusReadinessError,
+    EvaluationDispatchError,
+    FirestoreEvaluationGenerationStore,
+)
 from app.identity import IdentityError, get_admin_user
 from app.main import app
 from test_evaluation_generations import FakeFirestore, run_fake_transaction
@@ -53,6 +57,16 @@ class _FakeEvaluationService:
             configuration_version_id="runtime-config",
             model_version_id="runtime-model",
         )
+
+
+class _DispatchFailureService(_FakeEvaluationService):
+    def launch(self, *, item_ids: list[str] | None) -> EvaluationRun:
+        raise EvaluationDispatchError(403, "PERMISSION_DENIED", "Cloud Run rejected the caller permissions.")
+
+
+class _CorpusNotReadyService(_FakeEvaluationService):
+    def launch(self, *, item_ids: list[str] | None) -> EvaluationRun:
+        raise EvaluationCorpusReadinessError("evaluation corpus provenance evidence is unavailable")
 
 
 def _service() -> _FakeEvaluationService:
@@ -120,6 +134,46 @@ def test_rejections_and_storage_failures_leave_existing_active_generation_unchan
     assert rejected.json()["status"] == "rejected"
     assert failed.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
     assert firestore.data["evaluation_dataset_state/active"]["generation_id"] == active_id
+
+
+def test_dispatch_failure_exposes_only_bounded_provider_diagnostics() -> None:
+    firestore = FakeFirestore()
+    app.dependency_overrides[get_admin_user] = _admin
+    app.dependency_overrides[evaluation_generation_store] = lambda: _store(firestore)
+    app.dependency_overrides[evaluation_service] = lambda: _DispatchFailureService()
+    app.dependency_overrides[uploaded_corpus_version_id] = lambda: "uploaded-corpus"
+    try:
+        response = _post(TestClient(app), [_record(question="private question")])
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+    assert response.json()["detail"] == {
+        "code": "evaluation_dispatch_failed",
+        "message": "The evaluation run could not be started.",
+        "provider_status": 403,
+        "provider_code": "PERMISSION_DENIED",
+        "provider_message": "Cloud Run rejected the caller permissions.",
+    }
+    assert "private question" not in response.text
+
+
+def test_corpus_readiness_failure_is_distinct_from_dispatch_failure() -> None:
+    firestore = FakeFirestore()
+    app.dependency_overrides[get_admin_user] = _admin
+    app.dependency_overrides[evaluation_generation_store] = lambda: _store(firestore)
+    app.dependency_overrides[evaluation_service] = lambda: _CorpusNotReadyService()
+    app.dependency_overrides[uploaded_corpus_version_id] = lambda: "uploaded-corpus"
+    try:
+        response = _post(TestClient(app), [_record()])
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+    assert response.json()["detail"] == {
+        "code": "evaluation_corpus_not_ready",
+        "message": "The evaluation corpus is not ready for provenance-bound evaluation.",
+    }
 
 
 def test_import_enforces_bounds_and_administrator_access() -> None:

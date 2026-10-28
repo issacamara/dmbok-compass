@@ -121,3 +121,12 @@ def test_terraform_configures_every_runtime_setting_required_by_evaluations() ->
         "RUNTIME_SECRET_VERSION",
     ):
         assert delivery.count(f'name  = "{name}"') >= 2
+
+
+def test_terraform_allows_runtime_to_run_evaluation_job_with_overrides() -> None:
+    delivery = (ROOT / "infra" / "terraform" / "delivery.tf").read_text(encoding="utf-8")
+
+    assert 'resource "google_cloud_run_v2_job_iam_member" "runtime_evaluation_executor_with_overrides"' in delivery
+    assert 'role     = "roles/run.jobsExecutorWithOverrides"' in delivery
+    assert 'role     = "roles/run.invoker"' in delivery
+    assert 'google_service_account.workload["runtime"].email' in delivery

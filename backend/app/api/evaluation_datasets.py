@@ -29,6 +29,8 @@ from app.evaluation import (
     ConcurrentActivationError,
     EvaluationGenerationError,
     EvaluationJobService,
+    EvaluationDispatchError,
+    EvaluationCorpusReadinessError,
     EvaluationRunError,
     ReviewStateError,
 )
@@ -228,6 +230,25 @@ async def upload_and_run_evaluation(
 
     try:
         run = service.launch(item_ids=None)
+    except EvaluationDispatchError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "evaluation_dispatch_failed",
+                "message": "The evaluation run could not be started.",
+                "provider_status": exc.status_code,
+                "provider_code": exc.provider_code,
+                "provider_message": exc.provider_message,
+            },
+        ) from exc
+    except EvaluationCorpusReadinessError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "evaluation_corpus_not_ready",
+                "message": "The evaluation corpus is not ready for provenance-bound evaluation.",
+            },
+        ) from exc
     except (EvaluationRunError, RuntimeError) as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

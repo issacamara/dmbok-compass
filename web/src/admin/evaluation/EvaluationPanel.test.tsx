@@ -3,133 +3,18 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { EvaluationPanel } from "./EvaluationPanel";
 
-const api = vi.hoisted(() => ({
-  launchEvaluation: vi.fn(),
-  getEvaluationRun: vi.fn(),
-  importEvaluationDataset: vi.fn(),
-  getActiveEvaluationGeneration: vi.fn(),
-  reviewEvaluationItem: vi.fn(),
-  bindEvaluationItem: vi.fn(),
-  assessEvaluationItem: vi.fn(),
-  recordReleaseDecision: vi.fn(),
-  getSupportStatus: vi.fn(),
-  reviewSupport: vi.fn(),
-}));
-
+const api = vi.hoisted(() => ({ uploadAndRunEvaluation: vi.fn(), getEvaluationRun: vi.fn() }));
 vi.mock("./api", () => api);
-
-const completedRun = {
-  run_id: "eval-1", dataset_version_id: "dataset-v1", corpus_version_id: "corpus-v1",
-  configuration_version_id: "config-v1", model_version_id: "model-v1", status: "completed",
-  selected_item_ids: ["item-1"], item_results: [], error: null,
-  metrics: [{ metric_name: "retrieval_success", numerator: 1, denominator: 1, percentage: 100, threshold: 90, passed: true }],
-};
-
-const completedRunWithReview = {
-  ...completedRun,
-  item_results: [{
-    item_id: "item-1", retrieval_success: true, grounded: false, citation_correct: false,
-    answer_quality: false, refusal_correct: false, response_time_ms: 120, assessment_status: "pending",
-    output: { response_sha256: "c".repeat(64), outcome: "answer", answer_text: "Candidate answer", claims: [], evidence: [] },
-  }],
-};
+const accepted = { status: "accepted", generation_id: "generation-1", run_id: "run-1", submitted_count: 3, imported_count: 2, skipped_count: 1, validation_errors: [{ index: 2, code: "invalid_category", message: "Record category is not supported." }] };
+const completed = { run_id: "run-1", status: "completed", metrics: [{ metric_name: "retrieval_success", numerator: 2, denominator: 2, percentage: 100, threshold: 90, passed: true }], error: null };
+function renderPanel() { return render(<EvaluationPanel token="admin-token" />); }
+function jsonFile(value: unknown) { return new File([JSON.stringify(value)], "evaluation.json", { type: "application/json" }); }
 
 describe("EvaluationPanel", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    api.launchEvaluation.mockResolvedValue(completedRun);
-    api.getActiveEvaluationGeneration.mockResolvedValue({
-      generation_id: "generation-v1", item_count: 2, approved_gold_count: 0, status: "active",
-      item_reviews: [
-        { generation_id: "generation-v1", item_id: "item-1", review_status: "candidate" },
-        { generation_id: "generation-v1", item_id: "item-2", review_status: "candidate" },
-      ],
-    });
-    api.recordReleaseDecision.mockResolvedValue({ ...completedRun, decision: "approved" });
-    api.bindEvaluationItem.mockResolvedValue({ generation_id: "generation-v1", item_id: "item-1", review_status: "candidate", binding_version: "candidate-binding-v1", expected_refusal: false, reviewed_chunk_ids: ["chunk-1"] });
-    api.assessEvaluationItem.mockResolvedValue({ assessment_status: "reviewed", response_sha256: "c".repeat(64), scorer_version: "scorer-v1", claim_support: true, claim_citation_support: true, rubric_passed: true, expected_refusal: false });
-    api.getSupportStatus.mockResolvedValue({ evidence: { match_status: "ambiguous", reason: "Multiple candidate chunks matched.", candidate_chunk_ids: ["chunk-1", "chunk-2"] }, candidate_chunks: [{ chunk_id: "chunk-1", corpus_version_id: "corpus-v1", content_hash: "d".repeat(64), page: 1, section: "Overview", source_provenance_sha256: "e".repeat(64) }] });
-    api.reviewSupport.mockResolvedValue({ evidence: { match_status: "review_approved", reason: null, candidate_chunk_ids: ["chunk-1"], selected_chunk: { chunk_id: "chunk-1" } }, candidate_chunks: [] });
-  });
-
-  it("launches the full evaluation and displays version-bound gate evidence", async () => {
-    const user = userEvent.setup();
-    render(<EvaluationPanel token="admin-token" />);
-    await user.click(screen.getByRole("button", { name: "Run full evaluation" }));
-    await waitFor(() => expect(api.launchEvaluation).toHaveBeenCalledWith("admin-token", {}));
-    expect(await screen.findByText("Top-5 retrieval success")).toBeInTheDocument();
-    expect(screen.getByText("100% · threshold 90% · Pass")).toBeInTheDocument();
-    expect(screen.getByText("dataset-v1")).toBeInTheDocument();
-  });
-
-  it("sends only selected IDs for a subset run", async () => {
-    const user = userEvent.setup();
-    render(<EvaluationPanel token="admin-token" />);
-    await user.click(screen.getByLabelText("Selected subset"));
-    await user.click(await screen.findByRole("checkbox", { name: /item-1/ }));
-    await user.click(screen.getByRole("checkbox", { name: /item-2/ }));
-    await user.click(screen.getByRole("button", { name: "Run subset evaluation" }));
-
-    await waitFor(() => expect(api.launchEvaluation).toHaveBeenCalledWith("admin-token", expect.objectContaining({ item_ids: ["item-1", "item-2"] })));
-  });
-
-  it("imports mixed records, refreshes the active generation, and reviews a candidate", async () => {
-    const user = userEvent.setup();
-    api.importEvaluationDataset.mockResolvedValue({
-      status: "accepted", generation_id: "generation-v2", submitted_count: 2, imported_count: 1,
-      skipped_count: 1, validation_errors: [{ index: 1, code: "missing_question", message: "Record requires a question." }],
-    });
-    render(<EvaluationPanel token="admin-token" />);
-    const file = new File([JSON.stringify([{ question: "What is governance?" }])], "evaluation.json", { type: "application/json" });
-    await user.upload(screen.getByLabelText("Evaluation JSON"), file);
-    await waitFor(() => expect(api.importEvaluationDataset).toHaveBeenCalledWith("admin-token", [{ question: "What is governance?" }]));
-    expect(await screen.findByRole("status")).toHaveTextContent("Imported 1 of 2 records; 1 skipped.");
-    await user.click(screen.getAllByRole("button", { name: "Approve gold" })[0]);
-    await waitFor(() => expect(api.reviewEvaluationItem).toHaveBeenCalledWith("admin-token", "generation-v1", "item-1", "approved"));
-  });
-
-  it("requires explicit confirmation before recording a sponsor decision", async () => {
-    const user = userEvent.setup();
-    render(<EvaluationPanel token="admin-token" />);
-    await user.click(screen.getByRole("button", { name: "Run full evaluation" }));
-    await screen.findByText("Sponsor decision");
-    await user.type(screen.getByLabelText("Gate report IDs"), "report-1");
-    await user.type(screen.getByLabelText("Rationale"), "All release gates passed.");
-    const submit = screen.getByRole("button", { name: "Record sponsor decision" });
-    expect(submit).toBeDisabled();
-    await user.click(screen.getByLabelText(/I confirm this sponsor decision/));
-    await user.click(submit);
-
-    await waitFor(() => expect(api.recordReleaseDecision).toHaveBeenCalledWith("admin-token", expect.objectContaining({
-      release_id: "release-eval-1", decision: "approved", gate_report_ids: ["report-1"],
-    })));
-    expect(await screen.findByRole("status")).toHaveTextContent("Release decision recorded: approved.");
-  });
-
-  it("reviews an exception using a server-listed chunk without entering a hash", async () => {
-    const user = userEvent.setup();
-    api.launchEvaluation.mockResolvedValue(completedRunWithReview);
-    render(<EvaluationPanel token="admin-token" />);
-    await user.click(screen.getByRole("button", { name: "Run full evaluation" }));
-    await screen.findByText("Candidate answer");
-    await user.click(screen.getByRole("button", { name: "Load support status" }));
-    await user.click(await screen.findByRole("radio", { name: /chunk-1/ }));
-    await waitFor(() => expect(api.reviewSupport).toHaveBeenCalledWith("admin-token", "eval-1", "item-1", { decision: "approve", selected_chunk_id: "chunk-1" }));
-    expect(screen.queryByLabelText("Support content hash")).not.toBeInTheDocument();
-  });
-
-  it("submits an exact candidate output assessment", async () => {
-    const user = userEvent.setup();
-    api.launchEvaluation.mockResolvedValue(completedRunWithReview);
-    render(<EvaluationPanel token="admin-token" />);
-    await user.click(screen.getByRole("button", { name: "Run full evaluation" }));
-    expect(await screen.findByText("Candidate answer")).toBeInTheDocument();
-    await user.click(screen.getByLabelText("claim support"));
-    await user.click(screen.getByRole("button", { name: "Submit exact output review" }));
-
-    await waitFor(() => expect(api.assessEvaluationItem).toHaveBeenCalledWith("admin-token", "eval-1", "item-1", expect.objectContaining({
-      response_sha256: "c".repeat(64), scorer_version: "scorer-v1", claim_support: true,
-    })));
-    expect(await screen.findByRole("status")).toHaveTextContent("Exact output review saved for item-1");
-  });
+  beforeEach(() => { vi.clearAllMocks(); api.uploadAndRunEvaluation.mockResolvedValue(accepted); api.getEvaluationRun.mockResolvedValue(completed); });
+  it("runs a valid JSON file once and shows completed aggregate results", async () => { const user = userEvent.setup(); renderPanel(); await user.upload(screen.getByLabelText("Evaluation JSON"), jsonFile([{ question: "What is governance?" }])); await user.click(screen.getByRole("button", { name: "Run evaluation" })); await waitFor(() => expect(api.uploadAndRunEvaluation).toHaveBeenCalledWith("admin-token", [{ question: "What is governance?" }])); expect(await screen.findByText("Top-5 retrieval success")).toBeInTheDocument(); expect(screen.getByText("Accepted 2 of 3 records; 1 skipped.")).toBeInTheDocument(); expect(api.uploadAndRunEvaluation).toHaveBeenCalledTimes(1); });
+  it("shows indexed mixed-invalid feedback and import counts", async () => { const user = userEvent.setup(); renderPanel(); await user.upload(screen.getByLabelText("Evaluation JSON"), jsonFile([])); await user.click(screen.getByRole("button", { name: "Run evaluation" })); expect(await screen.findByText("Record 3: Record category is not supported.")).toBeInTheDocument(); expect(screen.getByText("Submitted")).toBeInTheDocument(); expect(screen.getByText("Rejected")).toBeInTheDocument(); });
+  it("handles an all-invalid response without starting a run", async () => { const user = userEvent.setup(); api.uploadAndRunEvaluation.mockResolvedValue({ status: "rejected", generation_id: null, run_id: null, submitted_count: 1, imported_count: 0, skipped_count: 1, validation_errors: [{ index: 0, code: "missing_question", message: "Record requires a question." }] }); renderPanel(); await user.upload(screen.getByLabelText("Evaluation JSON"), jsonFile([{ category: "study" }])); await user.click(screen.getByRole("button", { name: "Run evaluation" })); expect(await screen.findByText("No valid records were accepted. 1 records were skipped.")).toBeInTheDocument(); expect(screen.queryByText("Evaluation is processing…")).not.toBeInTheDocument(); });
+  it("shows a safe failed status", async () => { const user = userEvent.setup(); api.getEvaluationRun.mockResolvedValue({ run_id: "run-1", status: "failed", metrics: [], error: "Evaluation is temporarily unavailable." }); renderPanel(); await user.upload(screen.getByLabelText("Evaluation JSON"), jsonFile([])); await user.click(screen.getByRole("button", { name: "Run evaluation" })); expect(await screen.findByRole("alert")).toHaveTextContent("temporarily unavailable"); });
+  it("supports keyboard activation and contains no technical or release controls", async () => { const user = userEvent.setup(); renderPanel(); await user.upload(screen.getByLabelText("Evaluation JSON"), jsonFile([])); await user.tab(); await user.keyboard("{Enter}"); expect(api.uploadAndRunEvaluation).toHaveBeenCalledTimes(1); expect(screen.queryByText(/\b(candidate|subset|support|gold|release|publish|hash|version)\b/i)).not.toBeInTheDocument(); expect(screen.queryByLabelText(/\b(candidate|subset|support|gold|release|publish|hash|version)\b/i)).not.toBeInTheDocument(); });
 });

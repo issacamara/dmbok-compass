@@ -32,8 +32,8 @@ def resolve_active_corpus(client: Any) -> str:
     pointer = pointer_snapshot.to_dict() or {}
     version_id = _require_string(pointer.get("version_id"), "version_id")
     pointer_binding = pointer.get("binding")
-    if not isinstance(pointer_binding, dict):
-        raise CorpusResolutionError("active corpus binding is missing")
+    if pointer_binding is not None and not isinstance(pointer_binding, dict):
+        raise CorpusResolutionError("active corpus binding is malformed")
 
     version_snapshot = client.collection("corpus_versions").document(version_id).get()
     if not version_snapshot.exists:
@@ -49,12 +49,13 @@ def resolve_active_corpus(client: Any) -> str:
         raise CorpusResolutionError(f"active corpus version is not active: {version_id}")
     if version.serving_binding is None:
         raise CorpusResolutionError(f"active corpus serving binding is missing: {version_id}")
-    try:
-        binding = CorpusServingBinding.model_validate(pointer_binding)
-    except (TypeError, ValueError) as exc:
-        raise CorpusResolutionError(f"active corpus binding is malformed: {version_id}") from exc
-    if binding != version.serving_binding or binding.corpus_version_id != version_id:
-        raise CorpusResolutionError(f"active corpus binding does not match: {version_id}")
+    if pointer_binding is not None:
+        try:
+            binding = CorpusServingBinding.model_validate(pointer_binding)
+        except (TypeError, ValueError) as exc:
+            raise CorpusResolutionError(f"active corpus binding is malformed: {version_id}") from exc
+        if binding != version.serving_binding or binding.corpus_version_id != version_id:
+            raise CorpusResolutionError(f"active corpus binding does not match: {version_id}")
 
     try:
         evidence = CorpusValidationEvidence.model_validate(version.validation_evidence)

@@ -87,8 +87,8 @@ def test_resolves_valid_active_ready_corpus():
 
 @pytest.mark.parametrize(
     "pointer",
-    [None, {}, {"version_id": ""}, {"version_id": "v-ready"}, {"version_id": "v-ready", "binding": {}}],
-    ids=["absent", "malformed", "empty-id", "missing-binding", "malformed-binding"],
+    [None, {}, {"version_id": ""}, {"version_id": "v-ready", "binding": "invalid"}, {"version_id": "v-ready", "binding": {"corpus_version_id": "other"}}],
+    ids=["absent", "malformed", "empty-id", "malformed-binding", "mismatched-binding"],
 )
 def test_rejects_absent_or_malformed_pointer(pointer):
     with pytest.raises(CorpusResolutionError):
@@ -97,7 +97,11 @@ def test_rejects_absent_or_malformed_pointer(pointer):
 
 def test_rejects_missing_version():
     with pytest.raises(CorpusResolutionError):
-        resolve_active_corpus(Client({"version_id": "v-ready", "binding": {}}, None))
+        resolve_active_corpus(Client({"version_id": "v-ready"}, None))
+
+
+def test_accepts_legacy_pointer_without_optional_binding():
+    assert resolve_active_corpus(Client({"version_id": "v-ready"}, valid_version())) == "v-ready"
 
 
 def test_rejects_non_active_version():

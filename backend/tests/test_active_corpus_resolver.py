@@ -104,6 +104,12 @@ def test_accepts_legacy_pointer_without_optional_binding():
     assert resolve_active_corpus(Client({"version_id": "v-ready"}, valid_version())) == "v-ready"
 
 
+def test_accepts_legacy_version_without_persisted_serving_binding():
+    version = valid_version()
+    version["serving_binding"] = None
+    assert resolve_active_corpus(Client({"version_id": "v-ready"}, version)) == "v-ready"
+
+
 def test_rejects_non_active_version():
     with pytest.raises(CorpusResolutionError):
         resolve_active_corpus(client_with(status="validated"))

@@ -8,6 +8,8 @@ import sys
 from typing import Any
 
 from app.contracts import CorpusServingBinding, CorpusValidationEvidence, CorpusVersion
+from app.corpus.indexing import VECTOR_COLLECTION
+from app.corpus.versions import legacy_serving_binding
 
 
 class CorpusResolutionError(ValueError):
@@ -47,14 +49,15 @@ def resolve_active_corpus(client: Any) -> str:
         raise CorpusResolutionError("active corpus version ID does not match its pointer")
     if version.status != "active":
         raise CorpusResolutionError(f"active corpus version is not active: {version_id}")
-    if version.serving_binding is None:
-        raise CorpusResolutionError(f"active corpus serving binding is missing: {version_id}")
+    serving_binding = version.serving_binding or legacy_serving_binding(
+        version, vector_collection=VECTOR_COLLECTION
+    )
     if pointer_binding is not None:
         try:
             binding = CorpusServingBinding.model_validate(pointer_binding)
         except (TypeError, ValueError) as exc:
             raise CorpusResolutionError(f"active corpus binding is malformed: {version_id}") from exc
-        if binding != version.serving_binding or binding.corpus_version_id != version_id:
+        if binding != serving_binding or binding.corpus_version_id != version_id:
             raise CorpusResolutionError(f"active corpus binding does not match: {version_id}")
 
     try:

@@ -8,8 +8,9 @@ from fastapi import status
 from fastapi.testclient import TestClient
 
 from app.api.evaluation_datasets import evaluation_generation_store
+from app.api.evaluations import evaluation_service
 from app.corpus.selection import uploaded_corpus_version_id
-from app.contracts import UserProfile
+from app.contracts import EvaluationRun, UserProfile
 from app.evaluation import FirestoreEvaluationGenerationStore
 from app.identity import IdentityError, get_admin_user
 from app.main import app
@@ -37,7 +38,35 @@ def _record(**overrides: object) -> dict[str, object]:
     }
 
 
+class _FakeEvaluationService:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def launch(self, *, item_ids: list[str] | None) -> EvaluationRun:
+        assert item_ids is None
+        self.calls += 1
+        return EvaluationRun(
+            run_id=f"run-{self.calls}",
+            dataset_version_id="server-generated",
+            corpus_version_id="uploaded-corpus",
+            status="queued",
+            configuration_version_id="runtime-config",
+            model_version_id="runtime-model",
+        )
+
+
+def _service() -> _FakeEvaluationService:
+    service = _FakeEvaluationService()
+    app.dependency_overrides[evaluation_service] = lambda: service
+    app.dependency_overrides[uploaded_corpus_version_id] = lambda: "uploaded-corpus"
+    return service
+
+
 def _post(client: TestClient, records: object):
+    if evaluation_service not in app.dependency_overrides:
+        _service()
+    else:
+        app.dependency_overrides.setdefault(uploaded_corpus_version_id, lambda: "uploaded-corpus")
     return client.post(
         "/api/admin/evaluation-datasets/import",
         content=json.dumps(records),
@@ -49,6 +78,7 @@ def test_imports_valid_records_and_reports_invalid_indices_without_content() -> 
     firestore = FakeFirestore()
     app.dependency_overrides[get_admin_user] = _admin
     app.dependency_overrides[evaluation_generation_store] = lambda: _store(firestore)
+    service = _service()
     try:
         response = _post(TestClient(app), [_record(), _record(category="other"), _record(question="  ")])
     finally:
@@ -66,6 +96,8 @@ def test_imports_valid_records_and_reports_invalid_indices_without_content() -> 
     annotations = [data for path, data in firestore.data.items() if "/annotations/" in path]
     assert active_id == body["generation_id"]
     assert annotations[0]["supporting_passage"] == "Metadata describes data."
+    assert body["run_id"] == "run-1"
+    assert service.calls == 1
 
 
 def test_rejections_and_storage_failures_leave_existing_active_generation_unchanged() -> None:
@@ -74,6 +106,7 @@ def test_rejections_and_storage_failures_leave_existing_active_generation_unchan
     first = _record()
     app.dependency_overrides[get_admin_user] = _admin
     app.dependency_overrides[evaluation_generation_store] = lambda: repository
+    _service()
     try:
         created = _post(TestClient(app), [first])
         active_id = created.json()["generation_id"]
@@ -101,6 +134,7 @@ def test_import_enforces_bounds_and_administrator_access() -> None:
 
     app.dependency_overrides[get_admin_user] = _admin
     app.dependency_overrides[evaluation_generation_store] = lambda: _store(FakeFirestore())
+    _service()
     try:
         malformed = TestClient(app).post("/api/admin/evaluation-datasets/import", content=b"{")
         over_limit = _post(TestClient(app), [_record()] * 501)
@@ -110,11 +144,47 @@ def test_import_enforces_bounds_and_administrator_access() -> None:
     assert over_limit.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
 
 
+def test_upload_and_run_rejects_technical_fields_without_mutation() -> None:
+    firestore = FakeFirestore()
+    app.dependency_overrides[get_admin_user] = _admin
+    app.dependency_overrides[evaluation_generation_store] = lambda: _store(firestore)
+    service = _service()
+    try:
+        response = _post(TestClient(app), [_record(corpus_version_id="client-selected")])
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == status.HTTP_200_OK
+    assert response.json()["status"] == "rejected"
+    assert response.json()["validation_errors"][0]["code"] == "invalid_record"
+    assert "evaluation_dataset_state/active" not in firestore.data
+    assert service.calls == 0
+
+
+def test_upload_and_run_has_a_dedicated_route() -> None:
+    firestore = FakeFirestore()
+    app.dependency_overrides[get_admin_user] = _admin
+    app.dependency_overrides[evaluation_generation_store] = lambda: _store(firestore)
+    _service()
+    try:
+        response = TestClient(app).post(
+            "/api/admin/evaluation-datasets/upload-and-run",
+            content=json.dumps([_record()]),
+            headers={"Content-Type": "application/json"},
+        )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == status.HTTP_201_CREATED
+    assert response.json()["run_id"] == "run-1"
+
+
 def test_import_error_messages_and_logs_do_not_expose_evaluator_text(caplog) -> None:
     secret_question = "secret evaluator question"
     secret_passage = "secret evaluator passage"
     app.dependency_overrides[get_admin_user] = _admin
     app.dependency_overrides[evaluation_generation_store] = lambda: _store(FakeFirestore())
+    _service()
     with caplog.at_level(logging.INFO):
         try:
             response = _post(TestClient(app), [_record(question=secret_question, supporting_passage=secret_passage, category="bad")])
@@ -130,6 +200,7 @@ def test_active_dataset_exposes_only_ids_and_review_state() -> None:
     firestore = FakeFirestore()
     app.dependency_overrides[get_admin_user] = _admin
     app.dependency_overrides[evaluation_generation_store] = lambda: _store(firestore)
+    _service()
     try:
         client = TestClient(app)
         imported = _post(client, [_record(question="Sensitive evaluator question", supporting_passage="Sensitive evidence")])
@@ -152,6 +223,7 @@ def test_active_dataset_and_review_require_admin_and_active_candidate() -> None:
     repository = _store(firestore)
     app.dependency_overrides[get_admin_user] = _admin
     app.dependency_overrides[evaluation_generation_store] = lambda: repository
+    _service()
     app.dependency_overrides[uploaded_corpus_version_id] = lambda: "candidate-corpus"
     try:
         client = TestClient(app)
@@ -203,6 +275,7 @@ def test_binding_requires_real_candidate_chunk_and_persists_hash_before_approval
     }
     app.dependency_overrides[get_admin_user] = _admin
     app.dependency_overrides[evaluation_generation_store] = lambda: repository
+    _service()
     app.dependency_overrides[uploaded_corpus_version_id] = lambda: "candidate-corpus"
     try:
         client = TestClient(app)
@@ -237,6 +310,7 @@ def test_expected_refusal_binding_has_no_supporting_chunk_and_can_be_approved() 
     repository = _store(firestore)
     app.dependency_overrides[get_admin_user] = _admin
     app.dependency_overrides[evaluation_generation_store] = lambda: repository
+    _service()
     app.dependency_overrides[uploaded_corpus_version_id] = lambda: "candidate-corpus"
     try:
         client = TestClient(app)

@@ -96,3 +96,28 @@ def test_terraform_couples_admin_images_and_retains_both_indexes() -> None:
     assert delivery.count("var.api_image") == 3  # API, ingestion, and evaluation
     assert delivery.count('name  = "RAG_CORPUS_VERSION_ID"') == 3
     assert indexes.count("prevent_destroy = true") == 2
+
+
+def test_terraform_configures_every_runtime_setting_required_by_evaluations() -> None:
+    delivery = (ROOT / "infra" / "terraform" / "delivery.tf").read_text(encoding="utf-8")
+
+    for name in (
+        "GOOGLE_CLOUD_PROJECT",
+        "GOOGLE_CLOUD_LOCATION",
+        "RAG_VECTOR_COLLECTION",
+        "RAG_VECTOR_SCHEMA_VERSION",
+        "RAG_EMBEDDING_MODEL",
+        "RAG_EMBEDDING_DIMENSIONS",
+        "RAG_RETRIEVAL_STRATEGY",
+        "RAG_CORPUS_VERSION_ID",
+        "ANSWER_PROVIDER",
+        "ANSWER_REQUEST_TIMEOUT_MS",
+        "ANSWER_GENERATION_TIMEOUT_MS",
+        "ANSWER_OUTPUT_TOKEN_CAP",
+        "ANSWER_MAX_MODEL_ATTEMPTS",
+        "OPENROUTER_JSON_SCHEMA_SUPPORTED",
+        "OPENROUTER_PRIMARY_MODEL",
+        "OPENROUTER_FALLBACK_MODEL",
+        "RUNTIME_SECRET_VERSION",
+    ):
+        assert delivery.count(f'name  = "{name}"') >= 2

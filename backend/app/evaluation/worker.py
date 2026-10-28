@@ -55,7 +55,10 @@ class FirestoreEvaluationCandidateSnapshotResolver(EvaluationCandidateSnapshotRe
         configuration_version_id: str,
         model_version_id: str,
     ):
-        configuration = RuntimeConfiguration.from_environment()
+        try:
+            configuration = RuntimeConfiguration.from_environment()
+        except ValueError as exc:
+            raise EvaluationRunError(str(exc)) from exc
         runtime = configuration.runtime
         factory = LangChainRagFactory(self.client, LangChainRagSettings(
             project=runtime.project,
@@ -87,14 +90,17 @@ class FirestoreEvaluationCandidateSnapshotResolver(EvaluationCandidateSnapshotRe
             raise EvaluationRunError(str(exc)) from exc
 
     def resolve_candidate(self) -> ResolvedEvaluationCandidate:
-        configuration = RuntimeConfiguration.from_environment()
+        try:
+            configuration = RuntimeConfiguration.from_environment()
+        except ValueError as exc:
+            raise EvaluationRunError(str(exc)) from exc
         runtime = configuration.runtime
         corpus_store = FirestoreCorpusVersionStore(
             self.client, vector_collection=configuration.vector_collection
         )
         corpus = corpus_store.active()
-        if corpus is None or corpus.serving_binding is None:
-            raise EvaluationRunError("active corpus serving binding is unavailable")
+        if corpus is None:
+            raise EvaluationRunError("active corpus is unavailable")
         configuration_version_id = os.environ.get("CONFIGURATION_VERSION_ID", "").strip()
         if not configuration_version_id:
             raise EvaluationRunError("runtime configuration version is unavailable")
@@ -276,7 +282,10 @@ def _pinned_answerer(project: str, run) -> RetrievedAnswerService:
     ).get(run.corpus_version_id)
     if corpus is None:
         raise EvaluationRunError("run references an unavailable corpus version")
-    if corpus.serving_binding != snapshot.corpus_binding:
+    binding = _effective_binding(
+        corpus, vector_collection=snapshot.corpus_binding.vector_collection
+    )
+    if binding != snapshot.corpus_binding:
         raise EvaluationRunError("candidate corpus binding no longer matches the run snapshot")
     adapter = factory.generation_adapter_for_snapshot(snapshot)
 
@@ -310,7 +319,10 @@ def _prepare_run_support(client: firestore.Client, run, dataset: EvaluationDatas
     ).get(run.corpus_version_id)
     if corpus is None or corpus.validation_evidence is None:
         raise EvaluationRunError("run corpus provenance evidence is unavailable")
-    if corpus.serving_binding != snapshot.corpus_binding:
+    binding = _effective_binding(
+        corpus, vector_collection=snapshot.corpus_binding.vector_collection
+    )
+    if binding != snapshot.corpus_binding:
         raise EvaluationRunError("candidate corpus binding no longer matches the run snapshot")
     source = FirestoreRunPinnedChunkSource(
         client,
@@ -329,6 +341,12 @@ def _evaluation_quota() -> QuotaStatus:
         global_used=0,
         global_limit=0,
         resets_at=datetime.now(timezone.utc) + timedelta(days=1),
+    )
+
+
+def _effective_binding(corpus, *, vector_collection: str):
+    return corpus.serving_binding or legacy_serving_binding(
+        corpus, vector_collection=vector_collection
     )
 
 

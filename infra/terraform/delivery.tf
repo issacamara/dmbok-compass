@@ -55,6 +55,22 @@ resource "google_cloud_run_v2_service" "api" {
         value = "document_chunks_v2"
       }
       env {
+        name  = "RAG_VECTOR_SCHEMA_VERSION"
+        value = "2"
+      }
+      env {
+        name  = "RAG_EMBEDDING_MODEL"
+        value = "gemini-embedding-001"
+      }
+      env {
+        name  = "RAG_EMBEDDING_DIMENSIONS"
+        value = "768"
+      }
+      env {
+        name  = "RAG_RETRIEVAL_STRATEGY"
+        value = "dense"
+      }
+      env {
         name  = "RAG_CORPUS_VERSION_ID"
         value = var.corpus_version_id
       }
@@ -81,6 +97,22 @@ resource "google_cloud_run_v2_service" "api" {
       env {
         name  = "ANSWER_REQUEST_TIMEOUT_MS"
         value = "28000"
+      }
+      env {
+        name  = "ANSWER_OUTPUT_TOKEN_CAP"
+        value = "1024"
+      }
+      env {
+        name  = "ANSWER_MAX_MODEL_ATTEMPTS"
+        value = "2"
+      }
+      env {
+        name  = "OPENROUTER_JSON_SCHEMA_SUPPORTED"
+        value = "true"
+      }
+      env {
+        name  = "RUNTIME_SECRET_VERSION"
+        value = var.runtime_secret_version
       }
       env {
         name  = "OPENROUTER_PRIMARY_MODEL"
@@ -186,6 +218,22 @@ resource "google_cloud_run_v2_job" "ingestion" {
           value = "document_chunks_v2"
         }
         env {
+          name  = "RAG_VECTOR_SCHEMA_VERSION"
+          value = "2"
+        }
+        env {
+          name  = "RAG_EMBEDDING_MODEL"
+          value = "gemini-embedding-001"
+        }
+        env {
+          name  = "RAG_EMBEDDING_DIMENSIONS"
+          value = "768"
+        }
+        env {
+          name  = "RAG_RETRIEVAL_STRATEGY"
+          value = "dense"
+        }
+        env {
           name  = "RAG_CORPUS_VERSION_ID"
           value = var.corpus_version_id
         }
@@ -265,6 +313,22 @@ resource "google_cloud_run_v2_job" "evaluation" {
         env {
           name  = "ANSWER_REQUEST_TIMEOUT_MS"
           value = "28000"
+        }
+        env {
+          name  = "ANSWER_OUTPUT_TOKEN_CAP"
+          value = "1024"
+        }
+        env {
+          name  = "ANSWER_MAX_MODEL_ATTEMPTS"
+          value = "2"
+        }
+        env {
+          name  = "OPENROUTER_JSON_SCHEMA_SUPPORTED"
+          value = "true"
+        }
+        env {
+          name  = "RUNTIME_SECRET_VERSION"
+          value = var.runtime_secret_version
         }
         env {
           name  = "OPENROUTER_PRIMARY_MODEL"

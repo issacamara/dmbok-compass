@@ -184,6 +184,15 @@ resource "google_service_account_iam_member" "build_runtime_user" {
   member             = "serviceAccount:${google_service_account.workload["build"].email}"
 }
 
+# The API dispatches the evaluation job with a per-run environment override.
+# Cloud Run requires the caller to act as the job's worker identity for this
+# form of invocation, in addition to the job-level run.invoker grant.
+resource "google_service_account_iam_member" "runtime_worker_user" {
+  service_account_id = google_service_account.workload["worker"].name
+  role               = "roles/iam.serviceAccountUser"
+  member             = "serviceAccount:${google_service_account.workload["runtime"].email}"
+}
+
 resource "google_service_account_iam_member" "github_actions_workload_identity_user" {
   service_account_id = google_service_account.workload["build"].name
   role               = "roles/iam.workloadIdentityUser"

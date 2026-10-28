@@ -18,6 +18,7 @@ from app.answering import (
 )
 from app.contracts import EvaluationDataset, EvaluationRun, QuotaStatus, RunBoundSupportEvidence
 from app.corpus.firestore import FirestoreCorpusVersionStore
+from app.corpus.versions import legacy_serving_binding
 from app.evaluation.generations import FirestoreEvaluationGenerationStore
 from app.evaluation.assessments import score_assessment
 from app.evaluation.job import (
@@ -69,13 +70,16 @@ class FirestoreEvaluationCandidateSnapshotResolver(EvaluationCandidateSnapshotRe
         corpus = FirestoreCorpusVersionStore(
             self.client, vector_collection=factory.settings.vector_collection
         ).get(corpus_version_id)
-        if corpus is None or corpus.serving_binding is None:
-            raise EvaluationRunError("candidate corpus serving binding is unavailable")
+        if corpus is None:
+            raise EvaluationRunError("uploaded corpus is unavailable")
+        binding = corpus.serving_binding or legacy_serving_binding(
+            corpus, vector_collection=factory.settings.vector_collection
+        )
         request_timeout_ms = configuration.request_timeout_ms
         generation_timeout_ms = configuration.generation_timeout_ms
         try:
             return factory.candidate_snapshot(
-                corpus.serving_binding,
+                binding,
                 request_timeout_ms=request_timeout_ms,
                 generation_timeout_ms=generation_timeout_ms,
             )

@@ -363,7 +363,84 @@ def test_worker_marks_legacy_run_without_a_snapshot_as_failed() -> None:
         selected_item_ids=["item-0"], configuration_version_id="config-v1", model_version_id="model-v1",
     ))
 
-    failed = EvaluationWorker(runs).execute("legacy", dataset(), lambda _: EvaluationOutcome(True, True, True, True, True, 1))
+    completed = EvaluationWorker(runs).execute(
+        "legacy", dataset(), lambda _: EvaluationOutcome(True, True, True, True, True, 1)
+    )
 
-    assert failed.status == "failed"
-    assert failed.error == "EvaluationRunError: immutable candidate snapshot is unavailable"
+    assert completed.status == "completed"
+    assert [item.item_id for item in completed.item_results] == ["item-0", "item-1", "item-2"]
+
+
+def test_simple_worker_evaluates_every_accepted_item_and_persists_aggregate_status() -> None:
+    runs = InMemoryEvaluationRunStore()
+    runs.create_or_get(EvaluationRun(
+        run_id="simple", dataset_version_id="dataset-v1", corpus_version_id="server-selected",
+        status="queued", selected_item_ids=[], configuration_version_id="server-selected",
+        model_version_id="server-selected",
+    ))
+    seen: list[str] = []
+
+    result = EvaluationWorker(runs).execute(
+        "simple",
+        dataset(),
+        lambda item_id: (seen.append(item_id) or EvaluationOutcome(True, True, True, True, True, 1)),
+    )
+
+    assert result.status == "completed"
+    assert seen == ["item-0", "item-1", "item-2"]
+    status_record = runs.status("simple")
+    assert status_record is not None
+    assert status_record.status == "completed"
+    assert status_record.dataset_version_id == "dataset-v1"
+    assert status_record.completed_at is not None
+    assert status_record.error is None
+
+
+def test_simple_worker_does_not_reexecute_a_terminal_failure_or_persist_provider_text() -> None:
+    runs = InMemoryEvaluationRunStore()
+    runs.create_or_get(EvaluationRun(
+        run_id="failed-simple", dataset_version_id="dataset-v1", corpus_version_id="server-selected",
+        status="queued", selected_item_ids=[], configuration_version_id="server-selected",
+        model_version_id="server-selected",
+    ))
+    calls = 0
+
+    def fail(_: str) -> EvaluationOutcome:
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("private question and answer")
+
+    first = EvaluationWorker(runs).execute("failed-simple", dataset(), fail)
+    second = EvaluationWorker(runs).execute(
+        "failed-simple", dataset(), lambda _: (_ for _ in ()).throw(AssertionError("replayed"))
+    )
+
+    assert first.status == second.status == "failed"
+    assert first.error == second.error == "RuntimeError: evaluation failed"
+    assert calls == 1
+    assert "private" not in str(runs.status("failed-simple"))
+
+
+def test_execute_run_fails_safely_when_current_corpus_is_unavailable() -> None:
+    class DatasetStore:
+        def get(self, _: str) -> EvaluationDataset:
+            raise AssertionError("dataset must not be loaded without a corpus")
+
+    runs = InMemoryEvaluationRunStore()
+    runs.create_or_get(EvaluationRun(
+        run_id="no-corpus", dataset_version_id="dataset-v1", corpus_version_id="server-selected",
+        status="queued", selected_item_ids=[], configuration_version_id="server-selected",
+        model_version_id="server-selected",
+    ))
+
+    from app.evaluation.worker import execute_run
+
+    execute_run(
+        "no-corpus", datasets=DatasetStore(), runs=runs, evaluate=lambda _: EvaluationOutcome(True, True, True, True, True, 1),
+        current_corpus_available=lambda: False,
+    )
+
+    result = runs.get("no-corpus")
+    assert result is not None
+    assert result.status == "failed"
+    assert result.error == "evaluation corpus unavailable"

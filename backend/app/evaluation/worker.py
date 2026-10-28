@@ -122,12 +122,16 @@ def execute_run(
     stages: EvaluationStageStore | None = None,
     support_preparer: Callable[[object, EvaluationDataset], object] | None = None,
     support_evidence: Callable[..., RunBoundSupportEvidence | None] | None = None,
+    current_corpus_available: Callable[[], bool] | None = None,
 ) -> None:
-    """Reload the run-pinned generation and persist its terminal outcome."""
+    """Reload the accepted dataset and persist one aggregate terminal outcome."""
 
     run = runs.get(run_id)
     if run is None:
         raise EvaluationRunError("unknown evaluation run")
+    if current_corpus_available is not None and not current_corpus_available():
+        runs.update(run.model_copy(update={"status": "failed", "error": "evaluation corpus unavailable"}))
+        return
     dataset = datasets.get(run.dataset_version_id)
     if dataset is None:
         runs.update(run.model_copy(update={"status": "failed", "error": "evaluation dataset is unavailable"}))
@@ -196,7 +200,8 @@ class EvaluationAnswerEvaluator:
 def main() -> None:
     termination_requested = Event()
     previous_handler = signal.signal(signal.SIGTERM, lambda *_: termination_requested.set())
-    project = RuntimeConfiguration.from_environment().runtime.project
+    configuration = RuntimeConfiguration.from_environment()
+    project = configuration.runtime.project
     run_id = _required("EVALUATION_RUN_ID")
     client = firestore.Client(project=project)
     datasets = FirestoreEvaluationGenerationStore(client)
@@ -215,6 +220,7 @@ def main() -> None:
                 evaluate=lambda _: _unavailable(),
                 termination_requested=termination_requested.is_set,
                 stages=stages,
+                current_corpus_available=lambda: _current_corpus_available(client, configuration.vector_collection),
             )
             return
         support_store = FirestoreSupportEvidenceStore(client)
@@ -233,6 +239,7 @@ def main() -> None:
             stages=stages,
             support_preparer=lambda pinned_run, pinned_dataset: _prepare_run_support(client, pinned_run, pinned_dataset),
             support_evidence=support_store.get_evidence,
+            current_corpus_available=lambda: _current_corpus_available(client, configuration.vector_collection),
         )
     except EvaluationInterrupted:
         print(json.dumps({"event": "dmbok_evaluation_interrupted", "exit_code": 1}))
@@ -323,6 +330,16 @@ def _evaluation_quota() -> QuotaStatus:
         global_limit=0,
         resets_at=datetime.now(timezone.utc) + timedelta(days=1),
     )
+
+
+def _current_corpus_available(client: firestore.Client, vector_collection: str) -> bool:
+    """Return only availability; never persist or log the corpus identity."""
+
+    try:
+        corpus = FirestoreCorpusVersionStore(client, vector_collection=vector_collection).active()
+    except Exception:
+        return False
+    return corpus is not None
 
 
 def _unavailable() -> EvaluationOutcome:

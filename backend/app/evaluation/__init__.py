@@ -16,6 +16,8 @@ from .generations import (
 )
 from .job import (
     EvaluationJobDispatcher,
+    AggregateRunStatus,
+    AggregateRunStatusStore,
     EvaluationJobService,
     ResolvedEvaluationCandidate,
     ActiveEvaluationDatasetStore,
@@ -80,6 +82,8 @@ __all__ = [
     "GenerationIntegrityError",
     "ReviewStateError",
     "EvaluationJobDispatcher",
+    "AggregateRunStatus",
+    "AggregateRunStatusStore",
     "EvaluationJobService",
     "ResolvedEvaluationCandidate",
     "ActiveEvaluationDatasetStore",

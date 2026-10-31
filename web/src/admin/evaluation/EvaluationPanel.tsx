@@ -21,6 +21,7 @@ export function EvaluationPanel({ token }: EvaluationPanelProps) {
   const [expected, setExpected] = useState("");
   const [passage, setPassage] = useState("");
   const [submittedQuestion, setSubmittedQuestion] = useState("");
+  const [singleQuestionOpen, setSingleQuestionOpen] = useState(false);
 
   useEffect(() => {
     if (!runId || !run || !["queued", "running"].includes(run.status)) return;
@@ -52,13 +53,14 @@ export function EvaluationPanel({ token }: EvaluationPanelProps) {
   return <section className="admin-card evaluation-panel" aria-labelledby="evaluation-title">
     <div className="section-heading"><div><h3 id="evaluation-title">Evaluation</h3><p>Upload a JSON evaluation set and run it against the server-selected current corpus.</p></div>{run && <span className={`state state-${run.status}`}>{run.status}</span>}</div>
     {error && <p className="error" role="alert">{error}</p>}{message && <p className="status" role="status">{message}</p>}
-    <fieldset disabled={busy}><legend>Validate one question</legend>
+    <button type="button" onClick={() => setSingleQuestionOpen((open) => !open)}>{singleQuestionOpen ? "Hide individual validator" : "Run individual check"}</button>
+    {singleQuestionOpen && <fieldset disabled={busy}><legend>Validate one question</legend>
       <label htmlFor="evaluation-question">Question<input id="evaluation-question" value={question} onChange={(event) => setQuestion(event.target.value)} /></label>
       <label htmlFor="evaluation-category">Category<select id="evaluation-category" value={category} onChange={(event) => setCategory(event.target.value)}><option value="definitions">Definitions</option><option value="explanations">Explanations</option><option value="comparisons">Comparisons</option><option value="study">Study</option><option value="scenarios">Scenarios</option></select></label>
       <label htmlFor="evaluation-expected">Expected answer or rubric<textarea id="evaluation-expected" value={expected} onChange={(event) => setExpected(event.target.value)} /></label>
       <label htmlFor="evaluation-passage">Supporting passage<textarea id="evaluation-passage" value={passage} onChange={(event) => setPassage(event.target.value)} /></label>
       <button type="button" onClick={() => void runEvaluation()} disabled={busy || !question.trim() || !expected.trim() || !passage.trim()}>{busy ? "Running…" : "Run question"}</button>
-    </fieldset>
+    </fieldset>}
     <details><summary>Run a JSON evaluation set</summary><label htmlFor="evaluation-json">Evaluation JSON<input id="evaluation-json" type="file" accept="application/json,.json" onChange={selectFile} disabled={busy} /></label><button type="button" onClick={() => void runEvaluation(source)} disabled={busy || source === null}>Run evaluation set</button></details>
     {validationErrors.length > 0 && <section aria-labelledby="validation-title"><h4 id="validation-title">Validation feedback</h4><ul className="error">{validationErrors.map((item) => <li key={`${item.index}-${item.code}`}>Record {item.index + 1}: {item.message}</li>)}</ul></section>}
     {submittedQuestion && <p role="status">Submitted question: {submittedQuestion}</p>}

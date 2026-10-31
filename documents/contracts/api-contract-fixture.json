@@ -58,7 +58,7 @@
       "workflowRun": "38457027955",
       "compatibilityImage": "sha256:1bab38309da206e88812655888fe1e6fa4e501bb0cfe0d01974e35579093e43d",
       "baseImage": "python:3.11-slim@sha256:e88e9763f943ec1834f992a4b51e0f24500486803e8bc534e5767af9ea65f6ce",
-      "lockSha256": "dcf7e39df74d620d29ea53e11c23e0bde91ad3e279ed8dbfa9470a9334823b00",
+      "lockSha256": "1bbdb0a5971d4e9b771a633b40da9c0698d688ab8d9cee339fb6826b3b63ae0f",
       "wheelSha256": "9ced9b491908b453a31a4b2598c1ec5fbbddf106dff868adcfe36bd5e60124c2"
     },
     "codeDefaults": {
@@ -116,6 +116,31 @@
     "runEligibility": ["exploratory", "release_evidence"],
     "importStatuses": ["accepted", "rejected"],
     "minApprovedGoldItems": 30,
-    "maxApprovedGoldItems": 50
+    "maxApprovedGoldItems": 50,
+    "batchReviewStatuses": ["pending", "eligible", "exception", "attested", "rejected", "stale", "inapplicable"],
+    "exceptionDecisionKinds": ["attested", "rejected", "inapplicable"],
+    "batchAttestationDecisions": ["attested", "rejected"],
+    "representativeSampleMaxItems": 10,
+    "supportExcerptMaxChars": 5000,
+    "browserReviewTechnicalFields": [
+      "chunk_id",
+      "candidate_chunk_ids",
+      "content_hash",
+      "content_hashes",
+      "source_provenance_sha256",
+      "provenance_digests",
+      "candidate_snapshot_sha256",
+      "corpus_version_id"
+    ],
+    "durableReviewBindingFields": [
+      "generation_id",
+      "run_id",
+      "candidate_snapshot_sha256",
+      "corpus_version_id",
+      "actor",
+      "decided_at",
+      "sample_identity",
+      "decision_version"
+    ]
   }
 }

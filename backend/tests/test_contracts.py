@@ -12,6 +12,15 @@ from app.contracts.api import (
     MAX_EVALUATION_IMPORT_ITEMS,
     ActiveEvaluationGeneration,
     ApiError,
+    BatchAttestationRequest,
+    BatchAttestationResult,
+    DurableBatchAttestation,
+    DurableExceptionDecision,
+    DurableExceptionRecord,
+    DurableRepresentativeSampleEntry,
+    DurableReviewSummary,
+    ExceptionRecord,
+    ExplicitExceptionDecision,
     Citation,
     EvaluationImportResponse,
     EvaluationReportEligibility,
@@ -20,6 +29,9 @@ from app.contracts.api import (
     QuestionRequest,
     QuotaStatus,
     RetrievalTrace,
+    RepresentativeSampleEntry,
+    ReviewDecisionMetadata,
+    ReviewSummary,
 )
 from app.answering.pipeline import (
     DEFAULT_GENERATION_TIMEOUT_MS,
@@ -237,6 +249,101 @@ def test_evaluation_import_contract_handles_partial_and_zero_valid_results() -> 
         validation_errors=[ImportValidationError(index=1, code="invalid_category", message="Unsupported category.")],
     )
     assert partial.generation_id == "generation-2"
+
+
+def test_batch_review_contracts_freeze_statuses_and_browser_safe_fields() -> None:
+    statuses = FIXTURE["evaluation"]["batchReviewStatuses"]
+    assert set(statuses) == {
+        "pending", "eligible", "exception", "attested", "rejected", "stale", "inapplicable",
+    }
+    summary = ReviewSummary(
+        status="eligible",
+        eligible_count=2,
+        exception_count=1,
+        sampled_count=2,
+        attested_count=0,
+    )
+    sample = RepresentativeSampleEntry(
+        item_id="item-1",
+        question="What is a data domain?",
+        rubric="Defines the concept accurately.",
+        support_excerpt="A bounded source excerpt.",
+        page=7,
+        section="Glossary",
+        status="eligible",
+    )
+    exception = ExceptionRecord(
+        item_id="item-2",
+        question="What is a data domain?",
+        rubric="Defines the concept accurately.",
+        status="exception",
+        reason="The supporting passage occurs more than once.",
+    )
+    assert summary.status in statuses
+    assert sample.model_dump().keys() == {
+        "item_id", "question", "rubric", "support_excerpt", "page", "section", "status", "decision",
+    }
+    assert set(exception.model_dump()).isdisjoint(set(FIXTURE["evaluation"]["browserReviewTechnicalFields"]))
+
+    with pytest.raises(ValidationError):
+        ReviewSummary(status="unknown", eligible_count=0, exception_count=0, sampled_count=0, attested_count=0)
+    with pytest.raises(ValidationError):
+        BatchAttestationRequest(decision="attested", candidate_snapshot_sha256="a" * 64)
+
+
+def test_batch_review_contracts_bind_durable_records_and_audit_decisions() -> None:
+    now = datetime.now(timezone.utc)
+    metadata = ReviewDecisionMetadata(
+        decision="attested", actor="admin-1", decided_at=now, decision_version="batch-review-v1"
+    )
+    decision = ExplicitExceptionDecision(item_id="item-2", decision="rejected", reason="Wrong support.")
+    request = BatchAttestationRequest(decision="attested", exception_decisions=[decision])
+    result = BatchAttestationResult(
+        status="attested", decision=request.decision, exception_decisions=request.exception_decisions,
+        decision_metadata=metadata,
+    )
+    common = {
+        "generation_id": "generation-1",
+        "run_id": "run-1",
+        "candidate_snapshot_sha256": "a" * 64,
+        "corpus_version_id": "corpus-1",
+        "decision_version": "batch-review-v1",
+    }
+    summary = DurableReviewSummary(
+        **common, status="attested", eligible_count=1, exception_count=1, sampled_item_ids=["item-1"],
+        actor="admin-1", decided_at=now,
+    )
+    sample = DurableRepresentativeSampleEntry(
+        **common, sample_identity="sample-1", item_id="item-1", candidate_chunk_ids=["chunk-1"],
+        content_hashes=["b" * 64], provenance_digests=["c" * 64], status="attested",
+    )
+    exception = DurableExceptionRecord(
+        **common, sample_identity="sample-2", item_id="item-2", candidate_chunk_ids=[],
+        content_hashes=[], provenance_digests=[], status="exception", reason="Wrong support.",
+    )
+    durable_decision = DurableExceptionDecision(
+        **common, sample_identity="sample-2", item_id="item-2", decision="rejected", actor="admin-1",
+        decided_at=now, reason="Wrong support.",
+    )
+    attestation = DurableBatchAttestation(
+        **common, sampled_item_ids=["item-1"], decision="attested", actor="admin-1", decided_at=now,
+        exception_decisions=[durable_decision],
+    )
+    assert result.decision_metadata.actor == summary.actor == "admin-1"
+    assert sample.status == "attested"
+    assert exception.item_id == durable_decision.item_id == "item-2"
+    assert attestation.exception_decisions[0].candidate_snapshot_sha256 == common["candidate_snapshot_sha256"]
+
+    with pytest.raises(ValidationError):
+        ExplicitExceptionDecision(item_id="item-2", decision="rejected")
+    with pytest.raises(ValidationError):
+        BatchAttestationRequest(
+            decision="attested",
+            exception_decisions=[
+                ExplicitExceptionDecision(item_id="item-2", decision="attested"),
+                ExplicitExceptionDecision(item_id="item-2", decision="attested"),
+            ],
+        )
 
     rejected = EvaluationImportResponse(
         status="rejected", submitted_count=2, imported_count=0, skipped_count=2

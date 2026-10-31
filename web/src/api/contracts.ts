@@ -26,6 +26,9 @@ export type QuestionCategory = "definitions" | "explanations" | "comparisons" | 
 export type ReviewStatus = "candidate" | "approved" | "rejected";
 export type RunEligibility = "exploratory" | "release_evidence";
 export type SupportMatchStatus = "auto_approved" | "missing" | "ambiguous" | "invalid" | "review_approved" | "review_rejected";
+export type BatchReviewStatus = "pending" | "eligible" | "exception" | "attested" | "rejected" | "stale" | "inapplicable";
+export type ExceptionDecisionKind = "attested" | "rejected" | "inapplicable";
+export type BatchAttestationDecision = "attested" | "rejected";
 export type ImportStatus = "accepted" | "rejected";
 export type AnswerOutcomeKind = "answer" | "qualified" | "evidence_refusal" | "operational_error";
 export type StageStatus = "pending" | "running" | "succeeded" | "failed" | "unavailable";
@@ -241,24 +244,132 @@ export interface SupportStatusResponse {
   candidate_chunks: VerifiedChunkChoice[];
 }
 
-export interface CandidateBindingInput {
-  candidate_snapshot_sha256: string;
-  source_provenance_sha256: string;
-  reviewed_chunk_ids: string[];
-  reviewed_chunk_hashes: Record<string, string>;
-  expected_refusal: boolean;
-  binding_version?: string;
+export interface ReviewDecisionMetadata {
+  decision: BatchReviewStatus;
+  actor: string;
+  decided_at: string;
+  decision_version: string;
 }
 
-export interface CandidateBindingResult {
-  generation_id: string;
+export interface ReviewSummary {
+  status: BatchReviewStatus;
+  eligible_count: number;
+  exception_count: number;
+  sampled_count: number;
+  attested_count: number;
+  decision?: ReviewDecisionMetadata | null;
+}
+
+export interface RepresentativeSampleEntry {
   item_id: string;
-  review_status: ReviewStatus;
-  binding_version: string;
-  expected_refusal: boolean;
-  reviewed_chunk_ids: string[];
-  reviewed_by?: string | null;
-  reviewed_at?: string | null;
+  question: string;
+  rubric: string;
+  support_excerpt: string;
+  page: number;
+  section: string;
+  status: BatchReviewStatus;
+  decision?: ReviewDecisionMetadata | null;
+}
+
+export interface ExceptionRecord {
+  item_id: string;
+  question: string;
+  rubric: string;
+  support_excerpt?: string | null;
+  page?: number | null;
+  section?: string | null;
+  status: "exception" | "stale" | "inapplicable";
+  reason: string;
+  decision?: ReviewDecisionMetadata | null;
+}
+
+export interface ExplicitExceptionDecision {
+  item_id: string;
+  decision: ExceptionDecisionKind;
+  reason?: string | null;
+}
+
+export interface BatchAttestationRequest {
+  decision: BatchAttestationDecision;
+  exception_decisions: ExplicitExceptionDecision[];
+  reason?: string | null;
+}
+
+export interface BatchAttestationResult {
+  status: BatchReviewStatus;
+  decision: BatchAttestationDecision;
+  exception_decisions: ExplicitExceptionDecision[];
+  decision_metadata: ReviewDecisionMetadata;
+}
+
+export interface DurableReviewSummary {
+  generation_id: string;
+  run_id: string;
+  candidate_snapshot_sha256: string;
+  corpus_version_id: string;
+  status: BatchReviewStatus;
+  eligible_count: number;
+  exception_count: number;
+  sampled_item_ids: string[];
+  actor?: string | null;
+  decided_at?: string | null;
+  decision_version: string;
+}
+
+export interface DurableRepresentativeSampleEntry {
+  generation_id: string;
+  run_id: string;
+  candidate_snapshot_sha256: string;
+  corpus_version_id: string;
+  sample_identity: string;
+  item_id: string;
+  candidate_chunk_ids: string[];
+  content_hashes: string[];
+  provenance_digests: string[];
+  status: BatchReviewStatus;
+  decision_version: string;
+}
+
+export interface DurableExceptionRecord {
+  generation_id: string;
+  run_id: string;
+  candidate_snapshot_sha256: string;
+  corpus_version_id: string;
+  sample_identity: string;
+  item_id: string;
+  candidate_chunk_ids: string[];
+  content_hashes: string[];
+  provenance_digests: string[];
+  status: "exception" | "stale" | "inapplicable";
+  reason: string;
+  decision_version: string;
+}
+
+export interface DurableExceptionDecision {
+  generation_id: string;
+  run_id: string;
+  candidate_snapshot_sha256: string;
+  corpus_version_id: string;
+  sample_identity: string;
+  item_id: string;
+  decision: ExceptionDecisionKind;
+  actor: string;
+  decided_at: string;
+  decision_version: string;
+  reason?: string | null;
+}
+
+export interface DurableBatchAttestation {
+  generation_id: string;
+  run_id: string;
+  candidate_snapshot_sha256: string;
+  corpus_version_id: string;
+  sampled_item_ids: string[];
+  decision: BatchAttestationDecision;
+  actor: string;
+  decided_at: string;
+  decision_version: string;
+  exception_decisions: DurableExceptionDecision[];
 }
 
 export type AssessmentStatus = "pending" | "reviewed" | "inapplicable";

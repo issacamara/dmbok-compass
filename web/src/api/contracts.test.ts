@@ -18,6 +18,11 @@ import {
   type RuntimeSettings,
   OPERATIONAL_ERROR_STATUS,
   type RetrievalResult,
+  type BatchAttestationRequest,
+  type BatchAttestationResult,
+  type ExceptionRecord,
+  type RepresentativeSampleEntry,
+  type ReviewSummary,
 } from "./contracts";
 
 describe("frozen API contracts", () => {
@@ -159,5 +164,65 @@ describe("frozen API contracts", () => {
     };
     expect(outcome.error).toBeNull();
     expect(architectureFixture.operationalErrorStatus.evidence_refusal).toBe(200);
+  });
+
+  it("freezes browser-safe batch review payloads", () => {
+    const statuses = fixture.evaluation.batchReviewStatuses;
+    expect(statuses).toEqual([
+      "pending", "eligible", "exception", "attested", "rejected", "stale", "inapplicable",
+    ]);
+    const summary: ReviewSummary = {
+      status: "eligible",
+      eligible_count: 1,
+      exception_count: 1,
+      sampled_count: 1,
+      attested_count: 0,
+      decision: null,
+    };
+    const sample: RepresentativeSampleEntry = {
+      item_id: "item-1",
+      question: "What is a data domain?",
+      rubric: "Defines the concept accurately.",
+      support_excerpt: "A bounded source excerpt.",
+      page: 7,
+      section: "Glossary",
+      status: "eligible",
+      decision: null,
+    };
+    const exception: ExceptionRecord = {
+      item_id: "item-2",
+      question: "What is a data domain?",
+      rubric: "Defines the concept accurately.",
+      support_excerpt: null,
+      page: null,
+      section: null,
+      status: "exception",
+      reason: "Ambiguous support.",
+      decision: null,
+    };
+    expect(summary.status).toBe(statuses[1]);
+    expect(sample.support_excerpt.length).toBeLessThanOrEqual(fixture.evaluation.supportExcerptMaxChars);
+    expect(Object.keys(exception)).not.toEqual(expect.arrayContaining(fixture.evaluation.browserReviewTechnicalFields));
+  });
+
+  it("freezes attestation commands without technical identity controls", () => {
+    const request: BatchAttestationRequest = {
+      decision: "attested",
+      exception_decisions: [{ item_id: "item-2", decision: "rejected", reason: "Wrong support." }],
+      reason: null,
+    };
+    const result: BatchAttestationResult = {
+      status: "attested",
+      decision: request.decision,
+      exception_decisions: request.exception_decisions,
+      decision_metadata: {
+        decision: "attested",
+        actor: "admin-1",
+        decided_at: new Date().toISOString(),
+        decision_version: "batch-review-v1",
+      },
+    };
+    expect(result.exception_decisions[0]?.item_id).toBe("item-2");
+    expect(Object.keys(request)).not.toEqual(expect.arrayContaining(fixture.evaluation.browserReviewTechnicalFields));
   });
 });

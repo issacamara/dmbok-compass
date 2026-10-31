@@ -75,6 +75,17 @@ from .support import (
     prepare_support,
     review_support,
 )
+from .batch_reviews import (
+    BatchReview,
+    BatchReviewConflictError,
+    BatchReviewError,
+    BatchReviewRepository,
+    BatchReviewStaleError,
+    FirestoreBatchReviewRepository,
+    InMemoryBatchReviewRepository,
+    NoEligibleCandidatesError,
+    create_batch_review,
+)
 
 __all__ = [
     "EvaluationDatasetError",
@@ -138,4 +149,13 @@ __all__ = [
     "SupportPreparationResult",
     "prepare_support",
     "review_support",
+    "BatchReview",
+    "BatchReviewConflictError",
+    "BatchReviewError",
+    "BatchReviewRepository",
+    "BatchReviewStaleError",
+    "FirestoreBatchReviewRepository",
+    "InMemoryBatchReviewRepository",
+    "NoEligibleCandidatesError",
+    "create_batch_review",
 ]

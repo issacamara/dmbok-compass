@@ -116,6 +116,31 @@
     "runEligibility": ["exploratory", "release_evidence"],
     "importStatuses": ["accepted", "rejected"],
     "minApprovedGoldItems": 30,
-    "maxApprovedGoldItems": 50
+    "maxApprovedGoldItems": 50,
+    "batchReviewStatuses": ["pending", "eligible", "exception", "attested", "rejected", "stale", "inapplicable"],
+    "exceptionDecisionKinds": ["attested", "rejected", "inapplicable"],
+    "batchAttestationDecisions": ["attested", "rejected"],
+    "representativeSampleMaxItems": 10,
+    "supportExcerptMaxChars": 5000,
+    "browserReviewTechnicalFields": [
+      "chunk_id",
+      "candidate_chunk_ids",
+      "content_hash",
+      "content_hashes",
+      "source_provenance_sha256",
+      "provenance_digests",
+      "candidate_snapshot_sha256",
+      "corpus_version_id"
+    ],
+    "durableReviewBindingFields": [
+      "generation_id",
+      "run_id",
+      "candidate_snapshot_sha256",
+      "corpus_version_id",
+      "actor",
+      "decided_at",
+      "sample_identity",
+      "decision_version"
+    ]
   }
 }

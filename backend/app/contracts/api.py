@@ -23,6 +23,11 @@ SupportMatchStatus = Literal[
     "auto_approved", "missing", "ambiguous", "invalid", "review_approved", "review_rejected",
 ]
 SupportReviewState = Literal["review_approved", "review_rejected"]
+BatchReviewStatus = Literal[
+    "pending", "eligible", "exception", "attested", "rejected", "stale", "inapplicable",
+]
+ExceptionDecisionKind = Literal["attested", "rejected", "inapplicable"]
+BatchAttestationDecision = Literal["attested", "rejected"]
 
 # The upload contract is intentionally shared with the web client. Keep these
 # values in sync with documents/contracts/api-contract-fixture.json.
@@ -189,6 +194,185 @@ class EvaluationPreparationComplete(ContractModel):
         if self.approved_item_count + self.unresolved_item_count != self.item_count:
             raise ValueError("approved and unresolved counts must cover every item")
         return self
+
+
+class ReviewDecisionMetadata(ContractModel):
+    """Browser-safe audit metadata for a completed review decision."""
+
+    decision: BatchReviewStatus
+    actor: str = Field(min_length=1, max_length=128)
+    decided_at: datetime
+    decision_version: str = Field(min_length=1, max_length=64)
+
+
+class ReviewSummary(ContractModel):
+    """Browser-safe aggregate for one server-selected evidence review."""
+
+    status: BatchReviewStatus
+    eligible_count: int = Field(ge=0, le=MAX_EVALUATION_IMPORT_ITEMS)
+    exception_count: int = Field(ge=0, le=MAX_EVALUATION_IMPORT_ITEMS)
+    sampled_count: int = Field(ge=0, le=10)
+    attested_count: int = Field(ge=0, le=MAX_EVALUATION_IMPORT_ITEMS)
+    decision: ReviewDecisionMetadata | None = None
+
+
+class RepresentativeSampleEntry(ContractModel):
+    """Browser-safe representative sample; technical identities stay durable-only."""
+
+    item_id: str = Field(min_length=1, max_length=128)
+    question: str = Field(min_length=1, max_length=2000)
+    rubric: str = Field(min_length=1, max_length=10000)
+    support_excerpt: str = Field(min_length=1, max_length=5000)
+    page: int = Field(ge=1)
+    section: str = Field(min_length=1, max_length=500)
+    status: BatchReviewStatus
+    decision: ReviewDecisionMetadata | None = None
+
+
+class ExceptionRecord(ContractModel):
+    """Browser-safe exception detail with bounded evaluator-authored context."""
+
+    item_id: str = Field(min_length=1, max_length=128)
+    question: str = Field(min_length=1, max_length=2000)
+    rubric: str = Field(min_length=1, max_length=10000)
+    support_excerpt: str | None = Field(default=None, max_length=5000)
+    page: int | None = Field(default=None, ge=1)
+    section: str | None = Field(default=None, min_length=1, max_length=500)
+    status: Literal["exception", "stale", "inapplicable"]
+    reason: str = Field(min_length=1, max_length=500)
+    decision: ReviewDecisionMetadata | None = None
+
+
+class ExplicitExceptionDecision(ContractModel):
+    """A browser-submitted decision for one visible exception item."""
+
+    item_id: str = Field(min_length=1, max_length=128)
+    decision: ExceptionDecisionKind
+    reason: str | None = Field(default=None, min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_reason(self) -> "ExplicitExceptionDecision":
+        if self.decision in {"rejected", "inapplicable"} and not self.reason:
+            raise ValueError("rejected and inapplicable exception decisions require a reason")
+        if self.decision == "attested" and self.reason is not None:
+            raise ValueError("attested exception decisions cannot contain a rejection reason")
+        return self
+
+
+class BatchAttestationRequest(ContractModel):
+    """Browser-safe compare-and-set command; server-owned identities are omitted."""
+
+    decision: BatchAttestationDecision
+    exception_decisions: list[ExplicitExceptionDecision] = Field(default_factory=list, max_length=MAX_EVALUATION_IMPORT_ITEMS)
+    reason: str | None = Field(default=None, min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_decision(self) -> "BatchAttestationRequest":
+        item_ids = [decision.item_id for decision in self.exception_decisions]
+        if len(item_ids) != len(set(item_ids)):
+            raise ValueError("exception decisions must contain unique item IDs")
+        if self.decision == "rejected" and not self.reason:
+            raise ValueError("rejected batch attestations require a reason")
+        if self.decision == "attested" and self.reason is not None:
+            raise ValueError("attested batch decisions cannot contain a rejection reason")
+        return self
+
+
+class BatchAttestationResult(ContractModel):
+    """Browser-safe result of a server-validated batch-attestation command."""
+
+    status: BatchReviewStatus
+    decision: BatchAttestationDecision
+    exception_decisions: list[ExplicitExceptionDecision] = Field(default_factory=list, max_length=MAX_EVALUATION_IMPORT_ITEMS)
+    decision_metadata: ReviewDecisionMetadata
+
+
+class DurableReviewSummary(ContractModel):
+    """Durable review aggregate bound to one immutable evaluation snapshot."""
+
+    generation_id: str = Field(min_length=1, max_length=128)
+    run_id: str = Field(min_length=1, max_length=128)
+    candidate_snapshot_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    corpus_version_id: str = Field(min_length=1, max_length=128)
+    status: BatchReviewStatus
+    eligible_count: int = Field(ge=0, le=MAX_EVALUATION_IMPORT_ITEMS)
+    exception_count: int = Field(ge=0, le=MAX_EVALUATION_IMPORT_ITEMS)
+    sampled_item_ids: list[str] = Field(min_length=1, max_length=10)
+    actor: str | None = Field(default=None, min_length=1, max_length=128)
+    decided_at: datetime | None = None
+    decision_version: str = Field(min_length=1, max_length=64)
+
+
+class DurableRepresentativeSampleEntry(ContractModel):
+    """Durable sample record retaining server-only candidate identity."""
+
+    generation_id: str = Field(min_length=1, max_length=128)
+    run_id: str = Field(min_length=1, max_length=128)
+    candidate_snapshot_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    corpus_version_id: str = Field(min_length=1, max_length=128)
+    sample_identity: str = Field(min_length=1, max_length=128)
+    item_id: str = Field(min_length=1, max_length=128)
+    candidate_chunk_ids: list[str] = Field(default_factory=list, max_length=5)
+    content_hashes: list[str] = Field(default_factory=list, max_length=5)
+    provenance_digests: list[str] = Field(default_factory=list, max_length=5)
+    status: BatchReviewStatus
+    decision_version: str = Field(min_length=1, max_length=64)
+
+
+class DurableExceptionRecord(ContractModel):
+    """Durable exception retaining the server verification evidence."""
+
+    generation_id: str = Field(min_length=1, max_length=128)
+    run_id: str = Field(min_length=1, max_length=128)
+    candidate_snapshot_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    corpus_version_id: str = Field(min_length=1, max_length=128)
+    sample_identity: str = Field(min_length=1, max_length=128)
+    item_id: str = Field(min_length=1, max_length=128)
+    candidate_chunk_ids: list[str] = Field(default_factory=list, max_length=5)
+    content_hashes: list[str] = Field(default_factory=list, max_length=5)
+    provenance_digests: list[str] = Field(default_factory=list, max_length=5)
+    status: Literal["exception", "stale", "inapplicable"]
+    reason: str = Field(min_length=1, max_length=500)
+    decision_version: str = Field(min_length=1, max_length=64)
+
+
+class DurableExceptionDecision(ContractModel):
+    """Auditable durable decision for one exception in one immutable run."""
+
+    generation_id: str = Field(min_length=1, max_length=128)
+    run_id: str = Field(min_length=1, max_length=128)
+    candidate_snapshot_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    corpus_version_id: str = Field(min_length=1, max_length=128)
+    sample_identity: str = Field(min_length=1, max_length=128)
+    item_id: str = Field(min_length=1, max_length=128)
+    decision: ExceptionDecisionKind
+    actor: str = Field(min_length=1, max_length=128)
+    decided_at: datetime
+    decision_version: str = Field(min_length=1, max_length=64)
+    reason: str | None = Field(default=None, min_length=1, max_length=500)
+
+    @model_validator(mode="after")
+    def validate_reason(self) -> "DurableExceptionDecision":
+        if self.decision in {"rejected", "inapplicable"} and not self.reason:
+            raise ValueError("rejected and inapplicable exception decisions require a reason")
+        if self.decision == "attested" and self.reason is not None:
+            raise ValueError("attested exception decisions cannot contain a rejection reason")
+        return self
+
+
+class DurableBatchAttestation(ContractModel):
+    """Durable compare-and-set attestation bound to one generation/run snapshot."""
+
+    generation_id: str = Field(min_length=1, max_length=128)
+    run_id: str = Field(min_length=1, max_length=128)
+    candidate_snapshot_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    corpus_version_id: str = Field(min_length=1, max_length=128)
+    sampled_item_ids: list[str] = Field(min_length=1, max_length=10)
+    decision: BatchAttestationDecision
+    actor: str = Field(min_length=1, max_length=128)
+    decided_at: datetime
+    decision_version: str = Field(min_length=1, max_length=64)
+    exception_decisions: list[DurableExceptionDecision] = Field(default_factory=list, max_length=MAX_EVALUATION_IMPORT_ITEMS)
 
 
 class CitationEvidence(ContractModel):

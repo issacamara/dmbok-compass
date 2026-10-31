@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from app.contracts import (
     CorpusServingBinding,
     EvaluationCandidateSnapshot,
@@ -87,7 +89,9 @@ def support(run_value: EvaluationRun) -> RunBoundSupportEvidence:
         candidate_snapshot_sha256=candidate_snapshot_sha256(run_value),
         corpus_version_id=run_value.corpus_version_id,
         source_provenance_sha256="e" * 64,
-        match_status="auto_approved",
+        match_status="review_approved",
+        reviewer_actor="admin",
+        reviewed_at=datetime.now(timezone.utc),
         candidate_chunk_ids=[choice.chunk_id],
         verified_chunks=[choice],
         selected_chunk=choice,

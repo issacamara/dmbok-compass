@@ -20,7 +20,7 @@ ReviewStatus = Literal["candidate", "approved", "rejected"]
 RunEligibility = Literal["exploratory", "release_evidence"]
 RunStatus = Literal["queued", "running", "completed", "failed"]
 SupportMatchStatus = Literal[
-    "auto_approved", "missing", "ambiguous", "invalid", "review_approved", "review_rejected",
+    "eligible", "missing", "ambiguous", "invalid", "inapplicable", "review_approved", "review_rejected",
 ]
 SupportReviewState = Literal["review_approved", "review_rejected"]
 BatchReviewStatus = Literal[
@@ -152,13 +152,13 @@ class RunBoundSupportEvidence(ContractModel):
                 raise ValueError("selected chunk must belong to the bound corpus")
             if self.selected_chunk.chunk_id not in verified_ids:
                 raise ValueError("selected chunk must be verified")
-        if self.match_status == "auto_approved":
+        if self.match_status == "eligible":
             if self.expected_refusal:
-                raise ValueError("explicit refusal items cannot be auto-approved")
+                raise ValueError("explicit refusal items cannot be eligible support")
             if len(self.verified_chunks) != 1 or self.selected_chunk is None:
-                raise ValueError("automatic approval requires exactly one verified selected chunk")
+                raise ValueError("eligible support requires exactly one verified selected chunk")
             if self.reviewer_actor is not None or self.reviewed_at is not None:
-                raise ValueError("automatic approval cannot contain reviewer fields")
+                raise ValueError("eligible support cannot contain reviewer fields")
         if self.match_status == "review_approved":
             if self.selected_chunk is None or not self.reviewer_actor or self.reviewed_at is None:
                 raise ValueError("review approval requires a selected chunk and reviewer audit fields")
@@ -167,8 +167,13 @@ class RunBoundSupportEvidence(ContractModel):
                 raise ValueError("review rejection requires reviewer audit fields")
             if self.selected_chunk is not None:
                 raise ValueError("review rejection cannot select a chunk")
-        if self.match_status in {"missing", "ambiguous", "invalid"} and self.selected_chunk is not None:
+        if self.match_status in {"missing", "ambiguous", "invalid", "inapplicable"} and self.selected_chunk is not None:
             raise ValueError("unresolved support cannot select a chunk")
+        if self.match_status == "inapplicable":
+            if not self.expected_refusal:
+                raise ValueError("inapplicable support must be an explicit refusal")
+            if self.candidate_chunk_ids or self.verified_chunks:
+                raise ValueError("explicit refusal cannot carry support candidates")
         if self.selected_chunk is not None and self.selected_chunk.chunk_id not in self.candidate_chunk_ids:
             raise ValueError("selected chunk must be listed among candidate chunks")
         return self
@@ -184,6 +189,7 @@ class EvaluationPreparationComplete(ContractModel):
     item_count: int = Field(ge=1, le=MAX_EVALUATION_IMPORT_ITEMS)
     prepared_item_count: int = Field(ge=0, le=MAX_EVALUATION_IMPORT_ITEMS)
     approved_item_count: int = Field(ge=0, le=MAX_EVALUATION_IMPORT_ITEMS)
+    eligible_item_count: int = Field(default=0, ge=0, le=MAX_EVALUATION_IMPORT_ITEMS)
     unresolved_item_count: int = Field(ge=0, le=MAX_EVALUATION_IMPORT_ITEMS)
     completed_at: datetime
 
@@ -191,8 +197,8 @@ class EvaluationPreparationComplete(ContractModel):
     def validate_counts(self) -> "EvaluationPreparationComplete":
         if self.prepared_item_count != self.item_count:
             raise ValueError("preparation cannot complete before every item has durable evidence")
-        if self.approved_item_count + self.unresolved_item_count != self.item_count:
-            raise ValueError("approved and unresolved counts must cover every item")
+        if self.approved_item_count + self.eligible_item_count + self.unresolved_item_count != self.item_count:
+            raise ValueError("approved, eligible, and unresolved counts must cover every item")
         return self
 
 

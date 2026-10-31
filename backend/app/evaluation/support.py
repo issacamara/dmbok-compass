@@ -313,15 +313,16 @@ def prepare_support(
         evidence = _prepare_item(run, item_id, annotation, candidate_chunks, source_provenance)
         prepared.append(store.create_evidence(evidence))
 
-    approved = sum(item.match_status == "auto_approved" for item in prepared)
+    eligible = sum(item.match_status == "eligible" for item in prepared)
     marker = EvaluationPreparationComplete(
         run_id=run.run_id,
         candidate_snapshot_sha256=_snapshot_digest(run),
         corpus_version_id=run.corpus_version_id,
         item_count=len(prepared),
         prepared_item_count=len(prepared),
-        approved_item_count=approved,
-        unresolved_item_count=len(prepared) - approved,
+        approved_item_count=0,
+        eligible_item_count=eligible,
+        unresolved_item_count=len(prepared) - eligible,
         completed_at=datetime.now(timezone.utc),
     )
     return SupportPreparationResult(tuple(prepared), store.create_marker(marker))
@@ -346,7 +347,7 @@ def approved_support_chunk_ids(
         evidence.run_id != run.run_id
         or evidence.corpus_version_id != run.corpus_version_id
         or evidence.candidate_snapshot_sha256 != candidate_snapshot_sha256(run)
-        or evidence.match_status not in {"auto_approved", "review_approved"}
+        or evidence.match_status != "review_approved"
     ):
         return frozenset()
     if evidence.selected_chunk is None:
@@ -387,8 +388,8 @@ def _review_evidence(
     reviewed_at: datetime,
     save: Any,
 ) -> RunBoundSupportEvidence:
-    if evidence.match_status == "auto_approved":
-        raise SupportPreparationError("automatically approved support cannot be reviewed")
+    if evidence.match_status == "eligible":
+        raise SupportPreparationError("eligible support requires batch attestation before approval")
     if evidence.match_status in {"review_approved", "review_rejected"}:
         same = evidence.selected_chunk == selected_chunk
         if evidence.match_status == "review_rejected":
@@ -434,6 +435,21 @@ def _prepare_item(
     if not passage:
         return _unresolved(run, item_id, snapshot_digest, source_provenance, "missing_supporting_passage")
     invalid = [record for record in records if not record.valid]
+    placeholder_ids = {
+        record.chunk_id for record in records if _is_placeholder_chunk_id(record.chunk_id)
+    }
+    referenced_ids = set(annotation.relevant_chunk_ids)
+    if referenced_ids & placeholder_ids:
+        return _unresolved(
+            run, item_id, snapshot_digest, source_provenance, "placeholder_chunk_id",
+            sorted(referenced_ids & placeholder_ids),
+        )
+    record_ids = {record.chunk_id for record in records}
+    if referenced_ids and not referenced_ids.issubset(record_ids):
+        return _unresolved(
+            run, item_id, snapshot_digest, source_provenance, "missing_chunk",
+            sorted(referenced_ids - record_ids),
+        )
     invalid_matches = [
         record for record in invalid
         if record.chunk is not None and passage in _normalise(record.chunk.text)
@@ -462,7 +478,7 @@ def _prepare_item(
             candidate_snapshot_sha256=snapshot_digest,
             corpus_version_id=run.corpus_version_id,
             source_provenance_sha256=source_provenance,
-            match_status="auto_approved",
+            match_status="eligible",
             candidate_chunk_ids=[record.chunk.chunk_id],
             verified_chunks=[choice],
             selected_chunk=choice,
@@ -492,7 +508,8 @@ def _unresolved(
 ) -> RunBoundSupportEvidence:
     status = (
         "ambiguous" if reason == "ambiguous_support"
-        else "invalid" if reason == "invalid_chunk_metadata"
+        else "inapplicable" if expected_refusal
+        else "invalid" if reason in {"invalid_chunk_metadata", "placeholder_chunk_id", "invalid_provenance"}
         else "missing"
     )
     return RunBoundSupportEvidence(
@@ -528,15 +545,23 @@ def _verify_record(record: StoredSupportChunk, corpus_version_id: str, provenanc
         return record
     chunk = record.chunk
     reason: str | None = None
-    if chunk.corpus_version_id != corpus_version_id:
+    if _is_placeholder_chunk_id(record.chunk_id) or record.chunk_id != chunk.chunk_id:
+        reason = "chunk identity is invalid"
+    elif chunk.corpus_version_id != corpus_version_id:
         reason = "chunk corpus metadata is invalid"
     elif record.source_provenance_sha256 != provenance:
-        reason = "chunk provenance metadata is invalid"
+        reason = "invalid provenance"
     elif sha256(chunk.text.encode("utf-8")).hexdigest() != chunk.content_hash:
         reason = "chunk content hash is invalid"
     if reason is not None:
         return StoredSupportChunk(chunk, record.chunk_id, record.source_provenance_sha256, False, reason)
     return record
+
+
+def _is_placeholder_chunk_id(chunk_id: str) -> bool:
+    """Reject IDs created by imports instead of the immutable corpus."""
+
+    return chunk_id.startswith("imported-passage-") or chunk_id.startswith("placeholder-")
 
 
 def _boundary_candidates(passage: str, records: tuple[StoredSupportChunk, ...]) -> list[str]:

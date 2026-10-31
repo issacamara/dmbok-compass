@@ -23,6 +23,7 @@ def _chunk(chunk_id: str = "chunk-unique") -> dict[str, object]:
 def _evidence(**overrides: object) -> RunBoundSupportEvidence:
     payload = {
         **FIXTURE["supportEvidence"],
+        "match_status": "eligible",
         "verified_chunks": [_chunk()],
         "selected_chunk": _chunk(),
         **overrides,
@@ -39,24 +40,26 @@ def test_fixture_freezes_v22_source_and_a23_decisions() -> None:
     assert FIXTURE["compatibility"]["legacyCandidateBinding"] == "candidate-binding-v1"
 
 
-@pytest.mark.parametrize("status", ["auto_approved", "missing", "ambiguous", "invalid", "review_approved", "review_rejected"])
+@pytest.mark.parametrize("status", ["eligible", "missing", "ambiguous", "invalid", "inapplicable", "review_approved", "review_rejected"])
 def test_support_statuses_are_explicit_and_run_bound(status: str) -> None:
-    if status == "auto_approved":
+    if status == "eligible":
         evidence = _evidence(match_status=status)
     elif status == "review_approved":
         evidence = _evidence(match_status=status, reviewer_actor="admin-1", reviewed_at=datetime.now(timezone.utc))
     elif status == "review_rejected":
         evidence = _evidence(match_status=status, selected_chunk=None, reviewer_actor="admin-1", reviewed_at=datetime.now(timezone.utc))
+    elif status == "inapplicable":
+        evidence = _evidence(match_status=status, selected_chunk=None, verified_chunks=[], candidate_chunk_ids=[], expected_refusal=True)
     else:
         evidence = _evidence(match_status=status, selected_chunk=None)
     assert evidence.run_id == FIXTURE["identities"]["runId"]
     assert evidence.corpus_version_id == FIXTURE["identities"]["corpusVersionId"]
 
 
-def test_auto_approval_requires_one_verified_chunk_and_rejects_refusal() -> None:
+def test_eligible_support_requires_one_verified_chunk_and_rejects_refusal() -> None:
     with pytest.raises(ValidationError, match="exactly one"):
         _evidence(verified_chunks=[], selected_chunk=None)
-    with pytest.raises(ValidationError, match="cannot be auto-approved"):
+    with pytest.raises(ValidationError, match="cannot be eligible"):
         _evidence(expected_refusal=True)
 
 

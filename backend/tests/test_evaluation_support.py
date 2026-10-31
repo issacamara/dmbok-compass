@@ -102,7 +102,7 @@ def run(item_ids: list[str]) -> EvaluationRun:
     )
 
 
-def test_unique_normalized_match_is_auto_approved_and_retry_is_idempotent() -> None:
+def test_unique_normalized_match_is_attestation_eligible_and_retry_is_idempotent() -> None:
     dataset = EvaluationDataset(
         dataset_version_id="dataset-v1",
         items=[EvaluationItem(item_id="item-1", question="Q", dataset_version_id="dataset-v1")],
@@ -118,8 +118,10 @@ def test_unique_normalized_match_is_auto_approved_and_retry_is_idempotent() -> N
     first = prepare_support(run(["item-1"]), dataset, source, store)
     second = prepare_support(run(["item-1"]), dataset, source, store)
 
-    assert first.evidence[0].match_status == "auto_approved"
+    assert first.evidence[0].match_status == "eligible"
     assert first.evidence[0].selected_chunk is not None
+    assert first.marker.approved_item_count == 0
+    assert first.marker.eligible_item_count == 1
     assert first.marker == second.marker
     assert first.evidence == second.evidence
 
@@ -230,6 +232,52 @@ def test_stale_run_snapshot_is_rejected_before_any_evidence_is_written() -> None
     )
     with pytest.raises(SupportPreparationError, match="not bound"):
         prepare_support(stale, dataset, Source(()), InMemorySupportEvidenceStore())
+
+
+@pytest.mark.parametrize(
+    ("record", "annotation_ids", "expected_reason"),
+    [
+        (chunk("imported-passage-1", "support"), ["imported-passage-1"], "placeholder_chunk_id"),
+        (chunk("real", "support"), ["missing"], "missing_chunk"),
+        (StoredSupportChunk(chunk("real", "support").chunk, "other-id", "d" * 64), ["real"], "missing_chunk"),
+        (StoredSupportChunk(chunk("real", "support").chunk, "real", "e" * 64), ["real"], "invalid_chunk_metadata"),
+        (StoredSupportChunk(chunk("real", "support").chunk.model_copy(update={"content_hash": "f" * 64}), "real", "d" * 64), ["real"], "invalid_chunk_metadata"),
+    ],
+)
+def test_candidate_binding_fails_closed_for_untrusted_chunk_identity(
+    record: StoredSupportChunk,
+    annotation_ids: list[str],
+    expected_reason: str,
+) -> None:
+    dataset = EvaluationDataset(
+        dataset_version_id="dataset-v1",
+        items=[EvaluationItem(item_id="item-1", question="Q", dataset_version_id="dataset-v1")],
+        gold_annotations=[GoldAnnotation(
+            item_id="item-1", expected_answer_or_rubric="A", review_status="approved",
+            relevant_chunk_ids=annotation_ids, supporting_passage="support",
+        )],
+    )
+    result = prepare_support(run(["item-1"]), dataset, Source((record,)), InMemorySupportEvidenceStore())
+    evidence = result.evidence[0]
+    assert evidence.match_status in {"missing", "invalid"}
+    assert evidence.reason == expected_reason
+    assert evidence.selected_chunk is None
+
+
+def test_eligible_support_never_counts_as_approved_for_retrieval() -> None:
+    dataset = EvaluationDataset(
+        dataset_version_id="dataset-v1",
+        items=[EvaluationItem(item_id="item-1", question="Q", dataset_version_id="dataset-v1")],
+        gold_annotations=[GoldAnnotation(
+            item_id="item-1", expected_answer_or_rubric="A", review_status="approved",
+            supporting_passage="support",
+        )],
+    )
+    result = prepare_support(run(["item-1"]), dataset, Source((chunk("real", "support"),)), InMemorySupportEvidenceStore())
+    assert result.evidence[0].match_status == "eligible"
+    from app.evaluation.support import approved_support_chunk_ids
+
+    assert approved_support_chunk_ids(result.evidence[0], run=run(["item-1"])) == frozenset()
 
 
 def test_exception_review_accepts_only_listed_chunk_and_is_idempotent() -> None:

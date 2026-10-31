@@ -47,11 +47,11 @@ def test_a23_representative_cases_remain_reviewable_without_auto_approval() -> N
         InMemorySupportEvidenceStore(),
     )
     statuses = {item.item_id: item for item in result.evidence}
-    assert statuses["item-0"].match_status == "auto_approved"
+    assert statuses["item-0"].match_status == "eligible"
     assert statuses["item-1"].match_status == "ambiguous"
     assert statuses["item-2"].reason == "missing_supporting_passage"
     assert statuses["item-3"].match_status == "invalid"
-    assert statuses["item-4"].match_status == "auto_approved"
+    assert statuses["item-4"].match_status == "eligible"
     assert statuses["item-5"].reason == "support_spans_chunk_boundary"
     assert statuses["item-6"].reason == "explicit_unanswerable"
 
@@ -103,8 +103,8 @@ def test_integrated_run_requires_run_bound_support_and_separate_exact_output_rev
         support_evidence=support_store.get_evidence,
     )
     assert pending.metrics == []
-    assert jobs.status(run_record.run_id).report_eligibility.approved_gold_count == 30
-    assert jobs.status(run_record.run_id).report_eligibility.eligibility == "release_evidence"
+    assert jobs.status(run_record.run_id).report_eligibility.approved_gold_count == 0
+    assert jobs.status(run_record.run_id).report_eligibility.eligibility == "exploratory"
 
     for item in dataset.items:
         digest = sha256(item.item_id.encode()).hexdigest()

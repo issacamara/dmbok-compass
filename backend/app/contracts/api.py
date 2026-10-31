@@ -293,6 +293,14 @@ class BatchAttestationResult(ContractModel):
     decision_metadata: ReviewDecisionMetadata
 
 
+class ReviewProjection(ContractModel):
+    """Browser-safe review summary, sample, and complete exception queue."""
+
+    summary: ReviewSummary
+    sample: list[RepresentativeSampleEntry] = Field(default_factory=list, max_length=10)
+    exceptions: list[ExceptionRecord] = Field(default_factory=list, max_length=MAX_EVALUATION_IMPORT_ITEMS)
+
+
 class DurableReviewSummary(ContractModel):
     """Durable review aggregate bound to one immutable evaluation snapshot."""
 
@@ -775,6 +783,8 @@ API_ROUTES = {
     "active_evaluation_generation": "/api/admin/evaluation-datasets/active",
     "release_decisions": "/api/releases",
     "evaluation_datasets": "/api/admin/evaluation-datasets",
+    "evaluation_review_summary": "/api/admin/evaluations/{run_id}/review-summary",
+    "evaluation_batch_attestation": "/api/admin/evaluations/{run_id}/batch-attestation",
 }
 
 ADMIN_ROUTES = {

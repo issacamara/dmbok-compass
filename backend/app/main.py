@@ -20,6 +20,14 @@ from app.api.evaluation_support import (
     support_evidence_store,
     evaluation_run_store as support_evaluation_run_store,
 )
+from app.api.evaluation_reviews import (
+    batch_review_repository,
+    evaluation_generation_store as review_evaluation_generation_store,
+    evaluation_run_store as review_evaluation_run_store,
+    pinned_chunk_source as review_pinned_chunk_source,
+    router as evaluation_reviews_router,
+    support_evidence_store as review_support_evidence_store,
+)
 from app.answering import (
     GroundedAnswerPolicy,
     QuestionAnswerer,
@@ -65,6 +73,7 @@ from app.evaluation import (
     FirestoreCandidateOutputStore,
     FirestoreRunPinnedChunkSource,
     FirestoreSupportEvidenceStore,
+    FirestoreBatchReviewRepository,
 )
 from app.evaluation.worker import FirestoreEvaluationCandidateSnapshotResolver
 from app.release import (
@@ -94,6 +103,7 @@ app.include_router(evaluations_router)
 app.include_router(evaluation_datasets_router)
 app.include_router(evaluation_assessments_router)
 app.include_router(evaluation_support_router)
+app.include_router(evaluation_reviews_router)
 
 
 @lru_cache(maxsize=1)
@@ -232,6 +242,25 @@ def configured_pinned_chunk_source(run_id: str) -> FirestoreRunPinnedChunkSource
 app.dependency_overrides[support_evaluation_run_store] = configured_evaluation_run_store
 app.dependency_overrides[support_evidence_store] = configured_support_evidence_store
 app.dependency_overrides[pinned_chunk_source] = configured_pinned_chunk_source
+app.dependency_overrides[review_evaluation_run_store] = configured_evaluation_run_store
+app.dependency_overrides[review_evaluation_generation_store] = configured_evaluation_generation_store
+app.dependency_overrides[review_support_evidence_store] = configured_support_evidence_store
+app.dependency_overrides[review_pinned_chunk_source] = configured_pinned_chunk_source
+
+
+@lru_cache(maxsize=1)
+def get_batch_review_repository() -> FirestoreBatchReviewRepository:
+    from app.identity import _firebase_app
+    from firebase_admin import firestore
+
+    return FirestoreBatchReviewRepository(firestore.client(app=_firebase_app()))
+
+
+def configured_batch_review_repository() -> FirestoreBatchReviewRepository:
+    return get_batch_review_repository()
+
+
+app.dependency_overrides[batch_review_repository] = configured_batch_review_repository
 
 
 @lru_cache(maxsize=1)

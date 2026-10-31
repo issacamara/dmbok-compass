@@ -14,7 +14,6 @@ from app.contracts.api import (
     ApiError,
     BatchAttestationRequest,
     BatchAttestationResult,
-    BatchReviewStatus,
     DurableBatchAttestation,
     DurableExceptionDecision,
     DurableExceptionRecord,

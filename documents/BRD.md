@@ -2,9 +2,9 @@
 
 | Document field | Value |
 |---|---|
-| Status | Approved |
-| Version | 0.1 |
-| Date | 4 October 2026 |
+| Status | Draft for Review |
+| Version | 0.2 |
+| Date | 1 November 2026 |
 | Initiative owner | Sponsor / product owner / administrator (same individual) |
 | Priority scale | Must, Should, Could, Won't for now |
 
@@ -12,7 +12,7 @@
 
 DMBOK Compass is a small, access-controlled, browser-based retrieval-augmented generation assistant for the searchable PDF of *DAMA-DMBOK, Second Edition*. Its purpose is to reduce the time spent searching the book and make it easier to connect related concepts across chapters.
 
-The assistant will answer English-language questions using only evidence retrieved from the approved corpus. It will provide citations containing only the page and chapter or section; supporting excerpts remain internal evidence and are not included in citation output. It may synthesize multiple passages when the synthesis is clearly identified and supported. When the corpus contains only partial evidence, the answer will state its limited confidence. When the corpus contains no relevant evidence, the assistant will refuse rather than fill the gap with general model knowledge.
+The assistant will answer English-language questions using only evidence retrieved from the approved corpus. It will provide citations containing the page, chapter or section, and a verbatim supporting excerpt of no more than 500 characters. It may synthesize multiple passages when the synthesis is clearly identified and supported. When the corpus contains only partial evidence, the answer will state its limited confidence. When the corpus contains no relevant evidence, the assistant will refuse rather than fill the gap with general model knowledge.
 
 The product is primarily a learning project and personal tool, but up to 10 administrator-approved users may access it. “Production-grade” means sound engineering, security, traceability, testing, and recoverability; it does not imply a contractual uptime commitment. Release readiness will be determined by a repeatable evaluation pipeline measuring retrieval quality, grounding, citation correctness, answer quality, refusal behavior, and response time.
 
@@ -36,12 +36,12 @@ The initial thresholds may be recalibrated after the first baseline run, but any
 
 | ID | Measure | Initial pass threshold | Measurement basis |
 |---|---|---:|---|
-| SM-01 | Top-5 retrieval success | At least 90% | An approved relevant passage appears in the first five retrieved passages for answerable questions in the human-reviewed gold subset. |
-| SM-02 | Grounded factual claims | At least 95% | Factual claims in evaluated answers are supported by cited corpus passages. |
-| SM-03 | Citation correctness | At least 95% | Citations accurately support the claims to which they are attached. |
-| SM-04 | Answer quality | At least 85% | Answers meet the approved correctness and usefulness rubric. |
-| SM-05 | Correct refusal behavior | At least 95% | Questions designated unanswerable from the corpus trigger the required refusal. |
-| SM-06 | End-to-end response time | At least 95% within 15 seconds | Complete answer and citations under normal test conditions with up to three simultaneous users. |
+| SM-01 | Top-5 retrieval success | At least 90% | At least one approved relevant child-chunk ID appears in the first five dense-retrieval results for an answerable question in the human-reviewed gold subset. |
+| SM-02 | Grounded factual claims | At least 95% | Atomic factual claims in evaluated answers are supported by a retrieved parent chunk and its underlying source span. |
+| SM-03 | Citation correctness | At least 95% | A citation has accurate chapter, section, and page provenance and its verbatim source span supports its associated claim. |
+| SM-04 | Answer quality | At least 85% | The arithmetic mean of frozen LLM-judge scores for correctness, completeness, and rubric adherence is at least 85/100, with human-approved assessments for release evidence. |
+| SM-05 | Correct refusal behavior | At least 95% | An approved unanswerable or out-of-domain query completes retrieval and deliberately receives an evidence-based refusal without a substantive answer. |
+| SM-06 | End-to-end response time | At least 95% within 30 seconds | Complete answer, citations, and retrieval status are received from browser submission under normal test conditions with up to three simultaneous users. |
 | SM-07 | Approved-user ceiling | 100% compliance | No more than 10 approved user accounts can access question answering. |
 | SM-08 | Infrastructure cost | No more than €5 per month for GCP infrastructure, plus an approved provider budget | Sponsor review of infrastructure and provider usage; production provider calls use OpenRouter with a free model preferred for both primary and fallback, subject to release gates. |
 
@@ -51,7 +51,7 @@ The initial thresholds may be recalibrated after the first baseline run, but any
 |---|---|
 | Sponsor / product owner | Owns scope, budget, risk acceptance, priorities, and release approval. |
 | Administrator | Approves or rejects registrations, manages approved users, configures usage caps, monitors aggregate usage, and runs evaluations. |
-| Evaluator / corpus owner | Supplies approximately 200 representative questions and reviews generated reference answers and passages for a 30–50-question gold subset. |
+| Evaluator / corpus owner | Supplies approximately 200 representative questions, validates the curated hierarchy map, and reviews generated reference answers and evidence for a 40–50-question gold subset. |
 | Approved user | Asks DMBOK questions and receives grounded answers, supporting excerpts, and citations. |
 | Registration applicant | Submits an email address, username, and password for administrator review; cannot use the assistant until approved. |
 | Hosted model provider | Processes question context and retrieved excerpts subject to its service availability and data-handling terms. |
@@ -82,7 +82,8 @@ An approved user signs in, asks a question in English, and receives a complete a
 - Configurable per-user and global request caps.
 - Minimal administration for users, limits, aggregate usage, and evaluations.
 - Offline ingestion of one searchable DMBOK PDF through an administrator maintenance procedure.
-- Repeatable pre-release evaluation using approximately 200 questions and a human-reviewed gold subset.
+- Hierarchical structural ingestion using a curated, human-validated chapter/section/topic map, parent chunks, child chunks, and retained page provenance.
+- Repeatable pre-release evaluation using approximately 200 questions and a 40–50-item human-reviewed gold subset with at least 20 answerable and 20 unanswerable or out-of-domain items.
 - Administrator import and management of a prepared JSON evaluation dataset, with exploratory evaluation available before gold-subset approval.
 - Daily backup of persistent application data and tested restoration.
 
@@ -105,11 +106,11 @@ An approved user signs in, asks a question in English, and receives a complete a
 |---|---|---|---|---|
 | BPR-001 | Registration and approval | Administrator | Must | An applicant can submit the required account information; the account cannot ask questions until the administrator approves it. |
 | BPR-002 | Grounded question answering | Product owner | Must | An approved user can submit an English question and receive either a cited corpus-grounded answer or the defined evidence-based refusal. |
-| BPR-003 | Corpus maintenance | Administrator | Must | The source PDF can be ingested and its index rebuilt through a documented administrator-only maintenance procedure. |
+| BPR-003 | Corpus maintenance | Administrator | Must | The source PDF can be ingested into a new versioned hierarchical corpus through a documented administrator-only maintenance procedure without overwriting the active corpus. |
 | BPR-004 | Pre-release evaluation | Evaluator | Must | A release candidate can be evaluated against the versioned evaluation set, with each release-gate metric reported as pass or fail. |
 | BPR-005 | Release decision | Sponsor | Must | The sponsor can approve release only after reviewing evaluation results, accepted risks, and unresolved exceptions. |
 | BPR-006 | Backup and recovery | Administrator | Must | Persistent data is backed up daily and a documented restore test demonstrates recovery within 24 hours. |
-| BPR-007 | Evaluation dataset import and replacement | Evaluator / administrator | Must | The administrator can import a prepared JSON dataset, review validation results, run an exploratory evaluation from any non-empty valid import, and use a later-approved 30–50-item gold subset for release evidence. |
+| BPR-007 | Evaluation dataset import and replacement | Evaluator / administrator | Must | The administrator can import a prepared JSON dataset, review validation results, run an exploratory evaluation from any non-empty valid import, and use a later-approved 40–50-item gold subset with the required answerable and unanswerable coverage for release evidence. |
 
 ## 7. Functional requirements
 
@@ -124,8 +125,8 @@ An approved user signs in, asks a question in English, and receives a complete a
 | FR-007 | The system shall answer using only evidence retrieved from *DAMA-DMBOK, Second Edition*. | Sponsor | Must | Evaluation finds no uncited external factual content in answers counted as grounded. |
 | FR-008 | The system shall support definitions, concept explanations, knowledge-area comparisons, study questions, and scenario guidance. | Sponsor | Must | The approved evaluation set contains representative questions from each use case and the system processes each category. |
 | FR-009 | The system may synthesize multiple corpus passages and shall clearly label the result as synthesis or interpretation. | Sponsor | Must | A multi-passage synthesized answer is visibly labeled and every material claim maps to at least one citation. |
-| FR-010 | Each cited answer shall identify the page, chapter or section, and supporting excerpt for every citation. | Sponsor | Must | Every displayed citation contains all three elements and can be associated with the supported answer claim. |
-| FR-011 | The system shall apply three evidence outcomes: normal answer for strong evidence, qualified low-confidence answer for partial evidence, and refusal for no relevant evidence. | Sponsor | Must | Tests for all three evidence conditions produce the specified behavior without unsupported factual completion. |
+| FR-010 | Each cited answer shall identify the page, chapter or section, and a verbatim supporting excerpt for every citation. | Sponsor | Must | Every displayed citation contains the provenance and the smallest source span supporting its associated claim; the displayed excerpt is at most 500 characters, ends at a word boundary if shortened, and is not model-generated or paraphrased. |
+| FR-011 | The system shall apply three evidence outcomes: normal answer for strong evidence, qualified low-confidence answer for partial evidence, and refusal for no relevant evidence. | Sponsor | Must | Tests for all three evidence conditions produce the specified behavior without unsupported factual completion; a retrieval, provider, or timeout failure is an operational error and not a correct refusal. |
 | FR-012 | Each live answer shall expose a request-scoped retrieval trace containing retrieved passages, available relevance scores, model used, and timing. | Sponsor | Must | The trace is inspectable with the answer during the request session and is unavailable after the request/session lifecycle ends. |
 | FR-013 | The system shall not retain questions, retrieved passages, generated answers, or conversation histories after request processing completes. | Sponsor | Must | Storage inspection after completed requests finds no persisted interaction content in application data or logs. |
 | FR-014 | The system shall automatically attempt a configured fallback hosted model when the primary model is unavailable or rate-limited. | Sponsor | Must | A simulated primary-provider failure routes the request to the fallback and preserves grounding, citation, privacy, and quota behavior. |
@@ -134,8 +135,8 @@ An approved user signs in, asks a question in English, and receives a complete a
 | FR-017 | The system shall clearly inform a user when a request is blocked by an account or global quota and when the quota resets. | Sponsor | Must | The refusal identifies the applicable limit and reset timing without exposing another user's usage. |
 | FR-018 | The administrator shall be able to view anonymous aggregate request counts, quota consumption, provider failures, and infrastructure-cost indicators without viewing user question content. | Sponsor | Must | The administration view reports the agreed aggregates and contains no stored question, answer, or retrieved-passage text. |
 | FR-019 | The system shall run the complete evaluation set or a selected evaluation subset against a release candidate. | Sponsor / evaluator | Must | An administrator can initiate an evaluation and receives a uniquely identified result for the tested configuration and dataset version. |
-| FR-020 | Evaluation shall calculate retrieval success, grounding, citation correctness, answer quality, refusal correctness, and response-time metrics. | Sponsor / evaluator | Must | The report shows a numerator, denominator, percentage, threshold, and pass/fail result for each applicable release gate. |
-| FR-021 | The evaluation workflow shall support generated candidate annotations and explicit human approval of a 30–50-question gold subset. | Sponsor / evaluator | Must | Each gold item records its question, expected answer or rubric, relevant passage(s), review status, and dataset version. |
+| FR-020 | Evaluation shall calculate retrieval success, grounding, citation correctness, answer quality, refusal correctness, and response-time metrics. | Sponsor / evaluator | Must | The report shows the metric definition, applicable sample count, measured value, threshold, and pass/fail result for each release gate, plus a numerator and denominator for percentage metrics; operational errors are not counted as successful refusals or fast completions. |
+| FR-021 | The evaluation workflow shall support generated candidate annotations and explicit human approval of a 40–50-question gold subset. | Sponsor / evaluator | Must | The active release gold subset contains at least 20 answerable and 20 unanswerable or out-of-domain items; each item records its question, expected answer or rubric, approved relevant child-chunk IDs where applicable, review status, corpus version, and dataset version. |
 | FR-022 | The system shall persist evaluation datasets, approved annotations, run configuration, aggregate results, and release-gate decisions. | Sponsor / evaluator | Must | A prior evaluation can be identified and reproduced from the stored dataset version, configuration metadata, and result record without storing user chats. |
 | FR-023 | The administrator shall be able to import a prepared JSON evaluation dataset from the administration area. | Evaluator / administrator | Must | An approved administrator can submit a JSON file and receives a validation result without using a developer-only operation. |
 | FR-024 | Each evaluation record shall contain a question, one approved category, an expected answer or rubric, and a supporting passage. | Evaluator / administrator | Must | A record missing a required field is identified as invalid and is not imported. |
@@ -147,13 +148,17 @@ An approved user signs in, asks a question in English, and receives a complete a
 | FR-030 | The system shall make the active imported dataset available for full or selected-subset evaluation without requiring a hard-coded dataset identifier. | Evaluator / administrator | Must | The evaluation form displays the active dataset automatically and a full evaluation requires no item IDs. |
 | FR-031 | The system shall allow an imported non-empty dataset to run immediately for exploratory evaluation. | Evaluator / administrator | Must | A full exploratory run can start before gold-subset approval. |
 | FR-032 | The system shall support review and approval of individual evaluation records as gold annotations. | Evaluator / administrator | Must | An administrator can approve or reject a record and its status is visible in the dataset view. |
-| FR-033 | The system shall block release approval unless 30–50 records in the active dataset have approved gold annotations. | Evaluator / release approver | Must | A release decision with fewer than 30 or more than 50 approved gold records is rejected with an explanatory message. |
+| FR-033 | The system shall block release approval unless 40–50 records in the active dataset have approved gold annotations and meet the required answerable and unanswerable coverage. | Evaluator / release approver | Must | A release decision with fewer than 40 or more than 50 approved gold records, fewer than 20 answerable items, or fewer than 20 unanswerable or out-of-domain items is rejected with an explanatory message. |
+| FR-034 | The system shall ingest the approved PDF into a hierarchical corpus using a curated, human-validated structure map. | Sponsor / evaluator | Must | Each source passage has a deterministic section path, one or more page references, a versioned content identity, and an `Unclassified` fallback when the structure cannot be recovered confidently. |
+| FR-035 | The system shall retrieve dense child chunks and expand them to bounded parent chunks for answer generation. | Sponsor | Must | Child chunks target 200–300 tokens and do not cross a parent boundary; parent chunks target 600–1,000 tokens with a provisional 1,500-token maximum; selected parent context is bounded to a provisional 6,000 tokens, ranked by relevance, and covers each named comparison subject when relevant evidence exists. |
+| FR-036 | The system shall preserve structural integrity for lists and tables during hierarchical ingestion. | Sponsor / evaluator | Must | A list is split only between complete items and a table only between rows with its header repeated; short sections are not merged merely to meet a size target, and oversized sections are split at the lowest available semantic boundary. |
+| FR-037 | The system shall create a new corpus version for a changed chunking strategy and rebind release evidence before promotion. | Sponsor / evaluator | Must | The active corpus is not overwritten; ambiguous child-chunk bindings are reviewed; the new corpus completes release evaluation before activation; and the prior corpus remains available for rollback until post-promotion verification completes. |
 
 ## 8. Nonfunctional requirements
 
 | ID | Requirement | Source / stakeholder | Priority | Acceptance criteria |
 |---|---|---|---|---|
-| NFR-001 | At least 95% of normal tested requests shall return the complete answer and citations within 15 seconds. | Sponsor | Must | A representative performance test records at least 95% completion within 15 seconds, measured end to end. |
+| NFR-001 | At least 95% of normal tested requests shall return the complete answer, citations, and retrieval status within 30 seconds. | Sponsor | Must | A representative three-user performance test measures from browser submission to complete response receipt and records at least 95% completion within 30 seconds; child retrieval, parent expansion, generation, validation, and network time are included. The 15-second result is reported as a diagnostic, not a release gate. |
 | NFR-002 | The service shall support up to three simultaneous users under normal use. | Sponsor | Must | A three-user concurrency test completes without data leakage or functional failure and meets NFR-001's threshold. |
 | NFR-003 | GCP infrastructure shall not exceed €5 per month under the planned usage profile; hosted LLM usage shall remain within the sponsor-approved provider budget. | Sponsor | Must | Monthly review shows GCP charges at or below €5 and provider charges within the configured hard cap, or release/continued operation stops. |
 | NFR-004 | All application traffic carrying credentials or protected content shall use HTTPS. | Confirmed checkpoint assumption | Must | Security verification finds no supported plaintext HTTP path for registration, authentication, administration, or question answering. |
@@ -164,7 +169,7 @@ An approved user signs in, asks a question in English, and receives a complete a
 | NFR-009 | Persistent data shall be backed up daily, with no more than 30 backup copies retained. | Sponsor | Must | Backup records show daily execution and automated or manual retention enforcement at 30 copies. |
 | NFR-010 | Persistent application data shall be restorable within 24 hours; the corpus index may be rebuilt from the source PDF. | Sponsor | Must | A restore exercise recovers accounts, configuration, aggregate usage, and evaluation records within 24 hours, and the index rebuild procedure succeeds. |
 | NFR-011 | Interaction content shall be ephemeral within the application and excluded from persistent logs, analytics, and backups. | Sponsor | Must | Privacy verification confirms that completed request content is absent from persistent application storage, analytics, logs, and backups. |
-| NFR-012 | Evaluation results shall be reproducible and traceable to dataset, corpus, retrieval, prompt, model, and scoring configuration versions where those identifiers are available. | Product objective | Must | An evaluation report lists the available version identifiers needed to distinguish the tested release candidate. |
+| NFR-012 | Evaluation results shall be reproducible and traceable to dataset, corpus, structure-map, retrieval, prompt, model, tokenization, and scoring configuration versions where those identifiers are available. | Product objective | Must | An evaluation report lists the available version identifiers needed to distinguish the tested release candidate, including the frozen LLM-judge model, prompt, rubric, and configuration for answer-quality scoring. |
 | NFR-013 | Availability shall be best-effort within the approved provider budget and €5-per-month GCP constraint; operational failures shall be reported clearly. | Sponsor | Must | Provider or infrastructure failure produces a clear, non-misleading service message and does not produce an ungrounded answer. |
 | NFR-014 | The system shall prevent one authenticated user from accessing another user's account data or administrative functions. | Product objective | Must | Authorization tests demonstrate user isolation and reject non-admin access to administration endpoints. |
 | NFR-015 | A failed dataset import shall not change the active dataset or its evaluation history. | Evaluator / administrator | Must | If validation produces no valid records or storage fails, the prior dataset and history remain unchanged. |
@@ -178,17 +183,18 @@ An approved user signs in, asks a question in English, and receives a complete a
 | Data category | Treatment |
 |---|---|
 | Source corpus | One searchable PDF of *DAMA-DMBOK, Second Edition*, processed through a documented offline ingestion procedure. |
-| Derived corpus data | Parsed structure, chunks, metadata, and retrieval index. Page and chapter/section provenance must be preserved. |
+| Derived corpus data | A curated, human-validated structure map; versioned logical sections; bounded parent chunks; dense child chunks; deterministic parent-child identities; raw source spans; embedding text with structural breadcrumbs; and retrieval index entries. Page start/end and chapter/section/topic provenance must be preserved. |
 | Account data | Email, username, password hash, verification and approval state, role, and quota counters. |
 | Interaction content | Question, retrieved passages, trace, and answer are transient and must not be persisted by the application. |
-| Evaluation data | Administrator-imported JSON records containing questions, one of the approved categories, expected answers or rubrics, supporting passages, generated annotations, 30–50 human-approved gold items for release evidence, and evaluation results. A successful import replaces the active dataset and prior evaluation history. |
+| Evaluation data | Administrator-imported JSON records containing questions, one of the approved categories, expected answers or rubrics, supporting passages, generated annotations, 40–50 human-approved gold items for release evidence, corpus-versioned relevant child-chunk bindings, approved answer assessments, and evaluation results. The release subset includes at least 20 answerable and 20 unanswerable or out-of-domain items. A successful import replaces the active dataset and prior evaluation history. |
 | Operational data | Anonymous aggregate counts, quota consumption, provider failures, infrastructure indicators, configuration, and backup records. |
 
 ### 9.2 Reporting requirements
 
 - The user-facing response must show citations and request-scoped retrieval trace information.
+- Each displayed citation must show its page, chapter or section, and a verbatim supporting excerpt of at most 500 characters; the full internal source span remains available for validation.
 - The administration area must show only aggregate operational usage, not historical interaction content.
-- Evaluation reports must show metric definitions, sample counts, measured values, thresholds, and pass/fail outcomes.
+- Evaluation reports must show metric definitions, sample counts, denominators, measured values, thresholds, pass/fail outcomes, retrieval strategy, corpus version, and applicable evaluator versions.
 - Reports must distinguish human-reviewed gold-subset evidence from weaker automated evaluation evidence.
 
 ### 9.3 Integration requirements
@@ -218,8 +224,10 @@ The sponsor has explicitly decided to proceed without publisher permission and a
 - The €5 infrastructure limit is monthly.
 - Free OpenRouter models are preferred for production primary and fallback answers, but are not mandatory. A paid model may be used within the sponsor-approved provider budget if its privacy, availability, quality, and cost gates pass.
 - The source PDF is searchable and contains sufficient structural information to recover pages and chapter/section labels.
+- The corpus owner can validate a curated hierarchy map derived from the table of contents and printed headings; automatic heading detection is only a proposal source.
 - The sponsor will provide approximately 200 representative evaluation questions.
-- The sponsor can review and approve generated annotations for 30–50 representative questions.
+- The sponsor can review and approve generated annotations and release evidence for 40–50 representative questions.
+- The initial 1,500-token parent maximum and 6,000-token generation-context budget will be calibrated against real-corpus ingestion, retrieval quality, and latency evidence before they are treated as final operating limits.
 - There is no fixed delivery date.
 - Availability is best-effort; quality, security, traceability, testing, and recoverability define “production-grade” for this initiative.
 
@@ -228,6 +236,7 @@ The sponsor has explicitly decided to proceed without publisher permission and a
 - Continued availability and acceptable capacity of at least two hosted model options.
 - A deployment and storage platform that can meet the €5 monthly constraint.
 - Reliable extraction of page and section metadata from the PDF.
+- Sponsor/evaluator validation of the structure map and review of ambiguous child-chunk bindings after re-ingestion.
 - Sponsor availability for user approvals, annotation review, support, risk acceptance, and release decisions.
 - An email-delivery mechanism for verification and password recovery.
 
@@ -238,12 +247,14 @@ The sponsor has explicitly decided to proceed without publisher permission and a
 | RISK-01 | Corpus ingestion, provider transmission, and excerpt display may infringe publisher rights. | High | Sponsor accepts the unresolved risk; recommended actions are written permission and qualified legal review before release. |
 | RISK-02 | Free hosted models may be unavailable, rate-limited, changed, or discontinued. | High | Configure a fallback model, enforce quotas, report failures clearly, and avoid promising uptime. |
 | RISK-03 | Hosted providers may retain or train on questions and excerpts. | High | Prefer no-training/minimal-retention terms, disclose processing, warn against sensitive inputs, and confirm acceptable terms before provider selection. |
-| RISK-04 | Generated evaluation annotations may repeat system errors and overstate quality. | High | Human-review 30–50 gold items, report gold and automated results separately, and use gold results for release gates. |
+| RISK-04 | Generated evaluation annotations may repeat system errors and overstate quality. | High | Human-review 40–50 gold items, report gold and automated results separately, and use gold results for release gates. |
 | RISK-05 | €5 monthly infrastructure and free-model constraints may not support 1,000 requests per day. | High | Apply configurable per-user and global caps, monitor aggregate usage and costs, and lower limits when capacity requires it. |
 | RISK-06 | No MFA increases administrator account-takeover risk. | Medium | Enforce strong password handling, HTTPS, throttling, secure recovery, and least-privilege authorization. |
 | RISK-07 | PDF extraction may associate passages with incorrect pages or sections. | High | Validate citation metadata in the gold subset and make citation correctness a release gate. |
 | RISK-08 | A single individual owns all operational and approval roles. | Medium | Document maintenance, recovery, evaluation, and release procedures; keep reproducible configuration and backups. |
 | RISK-09 | Ephemeral interaction data limits retrospective incident diagnosis. | Medium | Expose request-scoped traces, retain non-content aggregate error metrics, and reproduce issues with explicit test questions when possible. |
+| RISK-10 | Incorrect recovered hierarchy or parent-child boundaries may mislead retrieval, citations, and gold bindings. | High | Validate the curated structure map, retain `Unclassified` for uncertain content, use deterministic versioned identities, and review ambiguous bindings before promotion. |
+| RISK-11 | Provisional token limits or similarity thresholds may degrade recall, false-refusal rate, cost, or latency. | Medium | Calibrate against held-out answerable and unanswerable cases; report 15-second latency and false-refusal rate diagnostically; approve final operating limits only after baseline evidence. |
 
 ## 11. Delivery, rollout, training, and support
 
@@ -251,10 +262,10 @@ The sponsor has explicitly decided to proceed without publisher permission and a
 
 Delivery has no fixed deadline and should advance through readiness stages:
 
-1. Validate PDF parsing, page/section provenance, chunking, and index reproducibility.
+1. Validate PDF parsing, the curated hierarchy map, page/section provenance, hierarchical chunking, and index reproducibility.
 2. Validate corpus-only retrieval, answer synthesis, citations, confidence behavior, and refusal.
 3. Add registration, approval, authentication, quotas, minimal administration, and privacy controls.
-4. Build and human-review the evaluation gold subset; establish baseline results.
+4. Build and human-review the 40–50-item evaluation gold subset; establish baseline results, token limits, and false-refusal diagnostic thresholds.
 5. Validate performance, security, accessibility, backup, and recovery requirements.
 6. Release to all approved users only after the sponsor reviews the release gates and accepted risks.
 
@@ -278,17 +289,20 @@ There is no separate pilot cohort. At launch, all accounts approved by the admin
 | OQ-01 | What is the default global daily request cap? | Sponsor | It determines maximum load and protection against provider and budget exhaustion. |
 | OQ-02 | Does the selected OpenRouter configuration pass live functional, capacity, cost, and data-handling validation? | Sponsor / solution design | Gateway and upstream limits and terms affect availability, privacy, and feasibility. |
 | OQ-03 | Do the selected OpenRouter route and upstream provider terms meet the approved no-training and minimal-retention requirements? | Sponsor | The application cannot promise non-retention if a provider retains request data. |
-| OQ-04 | What distribution of answerable, partially answerable, unanswerable, and use-case categories will the ~200-question set contain? | Sponsor / evaluator | Balanced coverage is necessary for meaningful quality and refusal metrics. |
+| OQ-04 | What detailed distribution of answerable, partially answerable, unanswerable, use-case, knowledge-area, and comparison questions will the ~200-question set contain beyond the minimum 20 answerable and 20 unanswerable/OOD release cases? | Sponsor / evaluator | Balanced coverage is necessary for meaningful quality, retrieval, and refusal metrics. |
 | OQ-05 | Will publisher permission or qualified legal advice be obtained before multi-user release? | Sponsor | Licensing remains a high-severity unresolved release risk even though the sponsor has accepted it. |
+| OQ-06 | Which deterministic tokenizer and version will measure child, parent, and generation-context limits? | Solution design | Token counts must be repeatable across ingestion and evaluation. |
+| OQ-07 | How long must the prior corpus version remain available after promotion before its derived data may be removed? | Sponsor | The period balances rollback safety against storage cost. |
+| OQ-08 | What false-refusal rate should become a release threshold after baseline calibration? | Sponsor / evaluator | It prevents a refusal metric from improving by declining answerable questions too often. |
 
 ### 12.2 Objective traceability
 
 | Objective | Supporting requirements | Success measures / acceptance evidence |
 |---|---|---|
-| OBJ-01 | FR-006, FR-008, FR-010, NFR-001 | SM-04, SM-06; user workflow acceptance test |
-| OBJ-02 | FR-008, FR-009, FR-010 | SM-02, SM-03, SM-04; comparison and scenario gold questions |
-| OBJ-03 | FR-007, FR-009, FR-010, FR-011, FR-012, FR-013 | SM-01, SM-02, SM-03, SM-05; gold-subset evaluation |
-| OBJ-04 | FR-019, FR-020, FR-021, FR-022, NFR-012 | SM-01 through SM-06; versioned evaluation report and sponsor release decision |
+| OBJ-01 | FR-006, FR-008, FR-010, FR-034 through FR-036, NFR-001 | SM-01, SM-04, SM-06; user workflow acceptance test |
+| OBJ-02 | FR-008, FR-009, FR-010, FR-035 | SM-02, SM-03, SM-04; comparison and scenario gold questions |
+| OBJ-03 | FR-007, FR-009 through FR-013, FR-034 through FR-037 | SM-01, SM-02, SM-03, SM-05; gold-subset evaluation |
+| OBJ-04 | FR-019 through FR-022, FR-033, FR-037, NFR-012 | SM-01 through SM-06; versioned evaluation report and sponsor release decision |
 | OBJ-05 | FR-001 through FR-005, FR-014 through FR-018, NFR-002 through NFR-011, NFR-013, NFR-014 | SM-07, SM-08; security tests, cost review, backup/restore test |
 
 ### 12.3 Approval record
@@ -296,12 +310,15 @@ There is no separate pilot cohort. At launch, all accounts approved by the admin
 | Role | Name | Decision | Date |
 |---|---|---|---|
 | Sponsor / product owner / release approver | Sponsor | Approved | 4 October 2026 |
+| Sponsor / product owner / release approver | Sponsor | Version 0.2 draft for review | 1 November 2026 |
 
 ## Next Steps
 
-1. **Sponsor:** review this draft and identify corrections or approve it as the requirements baseline.
-2. **Sponsor:** supply the approximately 200 evaluation questions and decide the default global daily cap.
-3. **Sponsor / evaluator:** review and approve generated annotations for a representative 30–50-question gold subset.
-4. **Sponsor / solution design:** select primary and fallback providers after reviewing quotas, retention, training, and cost terms.
-5. **Sponsor:** reconsider publisher permission or obtain qualified legal advice before multi-user release; record the final release-risk decision.
-6. **Solution design:** translate the approved BRD into a reuse-first architecture and delivery backlog without weakening the release gates.
+1. **Sponsor:** review version 0.2 and approve it as the revised requirements baseline or identify corrections.
+2. **Sponsor / evaluator:** validate the curated hierarchy map, approve a deterministic tokenizer, and set the post-promotion rollback-retention period.
+3. **Sponsor:** supply the approximately 200 evaluation questions and decide the default global daily cap.
+4. **Sponsor / evaluator:** review and approve generated annotations, child-chunk bindings, and release assessments for a 40–50-item gold subset.
+5. **Sponsor / evaluator:** establish baseline evidence for the provisional parent/context limits and false-refusal release threshold.
+6. **Sponsor / solution design:** select primary and fallback providers after reviewing quotas, retention, training, and cost terms.
+7. **Sponsor:** reconsider publisher permission or obtain qualified legal advice before multi-user release; record the final release-risk decision.
+8. **Solution design:** translate the approved BRD into a reuse-first architecture and delivery backlog without weakening the release gates.

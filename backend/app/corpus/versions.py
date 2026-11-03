@@ -409,23 +409,11 @@ def _stable_hash(value: Any) -> str:
     return sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def hierarchical_validation_evidence(
-    version: CorpusVersion,
-    parents: Sequence[ParentChunk],
-    children: Sequence[ChildDocumentChunk],
-    *,
-    index_ready: bool,
-    filter_ready: bool,
-) -> CorpusValidationEvidence:
-    """Hash all persisted hierarchy records into deterministic readiness evidence."""
+def hierarchical_provenance_sha256(
+    parents: Sequence[ParentChunk], children: Sequence[ChildDocumentChunk]
+) -> str:
+    """Return the source-metadata digest shared by readiness and serving checks."""
 
-    content = [
-        {"record_type": "parent", "record_id": parent.parent_id, "content_hash": parent.content_hash}
-        for parent in sorted(parents, key=lambda item: item.parent_id)
-    ] + [
-        {"record_type": "child", "record_id": child.chunk_id, "content_hash": child.content_hash}
-        for child in sorted(children, key=lambda item: item.chunk_id)
-    ]
     provenance = [
         {
             "record_type": "parent",
@@ -449,10 +437,30 @@ def hierarchical_validation_evidence(
         }
         for child in sorted(children, key=lambda item: item.chunk_id)
     ]
+    return _stable_hash(provenance)
+
+
+def hierarchical_validation_evidence(
+    version: CorpusVersion,
+    parents: Sequence[ParentChunk],
+    children: Sequence[ChildDocumentChunk],
+    *,
+    index_ready: bool,
+    filter_ready: bool,
+) -> CorpusValidationEvidence:
+    """Hash all persisted hierarchy records into deterministic readiness evidence."""
+
+    content = [
+        {"record_type": "parent", "record_id": parent.parent_id, "content_hash": parent.content_hash}
+        for parent in sorted(parents, key=lambda item: item.parent_id)
+    ] + [
+        {"record_type": "child", "record_id": child.chunk_id, "content_hash": child.content_hash}
+        for child in sorted(children, key=lambda item: item.chunk_id)
+    ]
     return CorpusValidationEvidence(
         chunk_count=len(children),
         content_hashes_sha256=_stable_hash(content),
-        provenance_sha256=_stable_hash(provenance),
+        provenance_sha256=hierarchical_provenance_sha256(parents, children),
         embedding_dimensions=version.embedding_dimensions,
         index_ready=index_ready,
         filter_ready=filter_ready,

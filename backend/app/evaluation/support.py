@@ -20,13 +20,17 @@ from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
 from app.contracts import (
+    ChildDocumentChunk,
     DocumentChunk,
     EvaluationDataset,
     EvaluationPreparationComplete,
     EvaluationRun,
+    ParentChunk,
     RunBoundSupportEvidence,
     VerifiedChunkChoice,
 )
+from app.corpus.indexing import PARENT_COLLECTION
+from app.evaluation.dataset import CandidateGoldBinding, remap_gold_annotations
 
 
 class SupportPreparationError(ValueError):
@@ -37,11 +41,12 @@ class SupportPreparationError(ValueError):
 class StoredSupportChunk:
     """A chunk plus the server-owned metadata used to verify it."""
 
-    chunk: DocumentChunk | None
+    chunk: DocumentChunk | ChildDocumentChunk | None
     chunk_id: str
     source_provenance_sha256: str
     valid: bool = True
     invalid_reason: str | None = None
+    parent: ParentChunk | None = None
 
 
 class RunPinnedChunkSource(Protocol):
@@ -63,7 +68,7 @@ class SupportEvidenceStore(Protocol):
         self,
         evidence: RunBoundSupportEvidence,
         *,
-        selected_chunk: VerifiedChunkChoice | None,
+        selected_chunks: tuple[VerifiedChunkChoice, ...],
         reviewer_actor: str,
         reviewed_at: datetime,
     ) -> RunBoundSupportEvidence: ...
@@ -116,7 +121,7 @@ class InMemorySupportEvidenceStore:
         self,
         evidence: RunBoundSupportEvidence,
         *,
-        selected_chunk: VerifiedChunkChoice | None,
+        selected_chunks: tuple[VerifiedChunkChoice, ...],
         reviewer_actor: str,
         reviewed_at: datetime,
     ) -> RunBoundSupportEvidence:
@@ -126,7 +131,7 @@ class InMemorySupportEvidenceStore:
                 raise SupportPreparationError("support evidence was not prepared")
             return _review_evidence(
                 current,
-                selected_chunk=selected_chunk,
+                selected_chunks=selected_chunks,
                 reviewer_actor=reviewer_actor,
                 reviewed_at=reviewed_at,
                 save=lambda updated: self._evidence.__setitem__(
@@ -186,7 +191,7 @@ class FirestoreSupportEvidenceStore:
         self,
         evidence: RunBoundSupportEvidence,
         *,
-        selected_chunk: VerifiedChunkChoice | None,
+        selected_chunks: tuple[VerifiedChunkChoice, ...],
         reviewer_actor: str,
         reviewed_at: datetime,
     ) -> RunBoundSupportEvidence:
@@ -200,7 +205,7 @@ class FirestoreSupportEvidenceStore:
             current = RunBoundSupportEvidence.model_validate(snapshot.to_dict())
             return _review_evidence(
                 current,
-                selected_chunk=selected_chunk,
+                selected_chunks=selected_chunks,
                 reviewer_actor=reviewer_actor,
                 reviewed_at=reviewed_at,
                 save=lambda updated: transaction.set(reference, updated.model_dump(mode="json")),
@@ -226,6 +231,7 @@ class FirestoreRunPinnedChunkSource:
         self.provenance_by_corpus = provenance_by_corpus
         self.ingestion_fingerprint = ingestion_fingerprint
         self.configuration_fingerprint = configuration_fingerprint
+        self._hierarchy_errors: dict[str, str | None] = {}
 
     def source_provenance_sha256(self, *, corpus_version_id: str) -> str:
         try:
@@ -242,41 +248,100 @@ class FirestoreRunPinnedChunkSource:
 
     def chunks(self, *, corpus_version_id: str) -> tuple[StoredSupportChunk, ...]:
         provenance = self.source_provenance_sha256(corpus_version_id=corpus_version_id)
+        parents: dict[str, ParentChunk] = {}
+        parent_snapshots = self.client.collection(PARENT_COLLECTION).where(
+            filter=FieldFilter("corpus_version_id", "==", corpus_version_id)
+        ).stream()
+        hierarchy_error: str | None = None
+        for snapshot in parent_snapshots:
+            payload = snapshot.to_dict()
+            metadata = payload.get("metadata")
+            parent_id = str(payload.get("parent_id") or getattr(snapshot, "id", ""))
+            try:
+                if not isinstance(metadata, dict) or (
+                    metadata.get("corpus_manifest_sha256") != self.ingestion_fingerprint
+                    or metadata.get("derivation_sha256") != self.configuration_fingerprint
+                ):
+                    raise ValueError("parent source metadata is incomplete")
+                parent = ParentChunk.model_validate({key: value for key, value in payload.items() if key != "metadata"})
+                if parent.parent_id != parent_id or sha256(parent.text.encode("utf-8")).hexdigest() != parent.content_hash:
+                    raise ValueError("parent identity or content hash is invalid")
+                if parent.parent_id in parents:
+                    raise ValueError("parent IDs are duplicated")
+            except (TypeError, ValueError) as exc:
+                hierarchy_error = str(exc)
+                continue
+            parents[parent.parent_id] = parent
+
         records: list[StoredSupportChunk] = []
         snapshots = self.client.collection(self.vector_collection).where(
             filter=FieldFilter("metadata.corpus_version_id", "==", corpus_version_id)
         ).stream()
         for snapshot in snapshots:
             payload = snapshot.to_dict()
-            metadata = payload.get("metadata", {})
-            chunk_id = str(metadata.get("chunk_id") or getattr(snapshot, "id", ""))
+            metadata = payload.get("metadata")
+            chunk_id = str(metadata.get("chunk_id") or getattr(snapshot, "id", "")) if isinstance(metadata, dict) else str(getattr(snapshot, "id", ""))
             try:
                 if not isinstance(metadata, dict) or metadata.get("corpus_version_id") != corpus_version_id:
-                    raise ValueError("chunk corpus metadata is invalid")
+                    raise ValueError("child corpus metadata is invalid")
                 if (
                     metadata.get("corpus_manifest_sha256") != self.ingestion_fingerprint
                     or metadata.get("derivation_sha256") != self.configuration_fingerprint
                 ):
-                    raise ValueError("chunk source metadata is incomplete")
-                text = str(payload["text"])
-                content_hash = str(metadata["content_hash"])
-                if sha256(text.encode("utf-8")).hexdigest() != content_hash:
-                    raise ValueError("chunk content hash is invalid")
-                chunk = DocumentChunk(
-                    chunk_id=chunk_id,
-                    corpus_version_id=str(metadata["corpus_version_id"]),
-                    page=int(metadata["page"]),
-                    section=str(metadata["section"]),
-                    chunk_ordinal=int(metadata["chunk_ordinal"]),
-                    content_hash=content_hash,
-                    text=text,
-                    embedding=list(payload["embedding"]),
+                    raise ValueError("child source metadata is incomplete")
+                if metadata.get("schema_version") != "child-document-chunk-v1":
+                    raise ValueError("run-bound support requires hierarchical child records")
+                fields = (
+                    "schema_version", "chunk_id", "corpus_version_id", "parent_id", "section_path",
+                    "page_start", "page_end", "source_spans", "child_ordinal", "content_hash", "token_count",
                 )
+                child = ChildDocumentChunk.model_validate(
+                    {**{key: metadata[key] for key in fields}, "text": payload["text"]}
+                )
+                if child.chunk_id != chunk_id or sha256(child.text.encode("utf-8")).hexdigest() != child.content_hash:
+                    raise ValueError("child identity or content hash is invalid")
+                parent = parents.get(child.parent_id)
+                if parent is None:
+                    hierarchy_error = "child references a missing or invalid parent"
+                    records.append(StoredSupportChunk(child, chunk_id, provenance, False, hierarchy_error))
+                    continue
+                records.append(StoredSupportChunk(child, chunk_id, provenance, parent=parent))
             except (KeyError, TypeError, ValueError) as exc:
+                hierarchy_error = str(exc)
                 records.append(StoredSupportChunk(None, chunk_id, provenance, False, str(exc)))
-            else:
-                records.append(StoredSupportChunk(chunk, chunk_id, provenance))
+        children = tuple(
+            record.chunk for record in records
+            if record.valid and isinstance(record.chunk, ChildDocumentChunk)
+        )
+        if hierarchy_error is None:
+            try:
+                from app.corpus.versions import (
+                    hierarchical_provenance_sha256,
+                    validate_hierarchical_records,
+                )
+
+                validate_hierarchical_records(corpus_version_id, tuple(parents.values()), children)
+                if hierarchical_provenance_sha256(tuple(parents.values()), children) != provenance:
+                    hierarchy_error = "hierarchical source provenance differs from the pinned corpus"
+            except (ValueError, TypeError) as exc:
+                hierarchy_error = str(exc)
+        if hierarchy_error:
+            records = [
+                StoredSupportChunk(
+                    record.chunk,
+                    record.chunk_id,
+                    record.source_provenance_sha256,
+                    False,
+                    hierarchy_error,
+                    record.parent,
+                )
+                for record in records
+            ]
+        self._hierarchy_errors[corpus_version_id] = hierarchy_error
         return tuple(sorted(records, key=lambda record: record.chunk_id))
+
+    def hierarchy_error(self, *, corpus_version_id: str) -> str | None:
+        return self._hierarchy_errors.get(corpus_version_id)
 
 
 def prepare_support(
@@ -308,10 +373,92 @@ def prepare_support(
     )
     annotations = {annotation.item_id: annotation for annotation in dataset.gold_annotations}
     prepared: list[RunBoundSupportEvidence] = []
+    hierarchy_error_method = getattr(chunks, "hierarchy_error", None)
+    hierarchy_error = hierarchy_error_method(corpus_version_id=run.corpus_version_id) if callable(hierarchy_error_method) else None
+    hierarchical = any(isinstance(record.chunk, ChildDocumentChunk) for record in candidate_chunks)
+    if hierarchy_error:
+        prepared = [
+            store.create_evidence(
+                _unresolved(
+                    run, item_id, _snapshot_digest(run), source_provenance,
+                    "invalid_parent_child_hierarchy",
+                )
+            )
+            for item_id in run.selected_item_ids
+        ]
+    elif hierarchical:
+        parents = tuple({record.parent.parent_id: record.parent for record in candidate_chunks if record.parent}.values())
+        children = tuple(
+            record.chunk for record in candidate_chunks
+            if isinstance(record.chunk, ChildDocumentChunk) and record.valid
+        )
+        if len(children) != len(candidate_chunks):
+            prepared = [
+                store.create_evidence(
+                    _unresolved(
+                        run, item_id, _snapshot_digest(run), source_provenance,
+                        "invalid_parent_child_hierarchy",
+                    )
+                )
+                for item_id in run.selected_item_ids
+            ]
+        else:
+            try:
+                binding = CandidateGoldBinding(
+                    corpus_version_id=run.corpus_version_id,
+                    candidate_snapshot_sha256=_snapshot_digest(run),
+                    source_provenance_sha256=source_provenance,
+                )
+                remapped = remap_gold_annotations(dataset, (*parents, *children), binding)
+            except (ValueError, TypeError) as exc:
+                raise SupportPreparationError("parent/child support mapping failed validation") from exc
+            records_by_id = {record.chunk_id: record for record in candidate_chunks}
+            for item_id in run.selected_item_ids:
+                annotation = annotations.get(item_id)
+                remap = next((entry for entry in remapped.remaps if entry.item_id == item_id), None)
+                if annotation is None or remap is None:
+                    evidence = _unresolved(
+                        run, item_id, _snapshot_digest(run), source_provenance, "missing_annotation"
+                    )
+                elif (
+                    annotation.semantic_assessment is not None
+                    and annotation.semantic_assessment.expected_refusal is True
+                ):
+                    evidence = _unresolved(
+                        run, item_id, _snapshot_digest(run), source_provenance,
+                        "explicit_unanswerable", expected_refusal=True,
+                    )
+                elif remap.remap_status == "matched":
+                    selected = tuple(_choice(records_by_id[chunk_id], source_provenance) for chunk_id in remap.relevant_chunk_ids)
+                    evidence = RunBoundSupportEvidence(
+                        run_id=run.run_id,
+                        item_id=item_id,
+                        candidate_snapshot_sha256=_snapshot_digest(run),
+                        corpus_version_id=run.corpus_version_id,
+                        source_provenance_sha256=source_provenance,
+                        match_status="eligible",
+                        candidate_chunk_ids=[choice.chunk_id for choice in selected],
+                        verified_chunks=list(selected),
+                        selected_chunk=selected[0] if len(selected) == 1 else None,
+                        selected_chunks=list(selected),
+                        parent_id=remap.parent_id,
+                        parent_content_hash=remap.parent_content_hash,
+                        parent_span_sha256=remap.parent_span_sha256,
+                        binding_version="run-bound-support-v2",
+                    )
+                else:
+                    reason = remap.review_reasons[0] if remap.review_reasons else remap.remap_status
+                    evidence = _unresolved(
+                        run, item_id, _snapshot_digest(run), source_provenance,
+                        "ambiguous_support" if remap.remap_status == "ambiguous" else reason,
+                        list(remap.candidate_chunk_ids),
+                    )
+                prepared.append(store.create_evidence(evidence))
     for item_id in run.selected_item_ids:
-        annotation = annotations.get(item_id)
-        evidence = _prepare_item(run, item_id, annotation, candidate_chunks, source_provenance)
-        prepared.append(store.create_evidence(evidence))
+        if not hierarchical and not hierarchy_error:
+            annotation = annotations.get(item_id)
+            evidence = _prepare_item(run, item_id, annotation, candidate_chunks, source_provenance)
+            prepared.append(store.create_evidence(evidence))
 
     eligible = sum(item.match_status == "eligible" for item in prepared)
     marker = EvaluationPreparationComplete(
@@ -350,31 +497,30 @@ def approved_support_chunk_ids(
         or evidence.match_status != "review_approved"
     ):
         return frozenset()
-    if evidence.selected_chunk is None:
-        return frozenset()
-    if evidence.selected_chunk.corpus_version_id != run.corpus_version_id:
-        return frozenset()
-    return frozenset({evidence.selected_chunk.chunk_id})
+    selected = evidence.selected_chunks or ([evidence.selected_chunk] if evidence.selected_chunk is not None else [])
+    return frozenset(choice.chunk_id for choice in selected if choice.corpus_version_id == run.corpus_version_id)
 
 
 def review_support(
     evidence: RunBoundSupportEvidence,
     *,
-    candidate: StoredSupportChunk | None,
+    candidates: tuple[StoredSupportChunk, ...] = (),
     reviewer_actor: str,
     reviewed_at: datetime,
     store: SupportEvidenceStore,
 ) -> RunBoundSupportEvidence:
     """Apply one administrator decision after the candidate was re-read."""
 
-    selected = None
-    if candidate is not None:
+    selected: list[VerifiedChunkChoice] = []
+    for candidate in candidates:
         if not candidate.valid or candidate.chunk is None:
             raise SupportPreparationError("selected chunk failed server verification")
-        selected = _choice(candidate, evidence.source_provenance_sha256)
+        if candidate.source_provenance_sha256 != evidence.source_provenance_sha256:
+            raise SupportPreparationError("selected chunk provenance differs from the run-pinned corpus")
+        selected.append(_choice(candidate, evidence.source_provenance_sha256))
     return store.review_evidence(
         evidence,
-        selected_chunk=selected,
+        selected_chunks=tuple(selected),
         reviewer_actor=reviewer_actor,
         reviewed_at=reviewed_at,
     )
@@ -383,27 +529,55 @@ def review_support(
 def _review_evidence(
     evidence: RunBoundSupportEvidence,
     *,
-    selected_chunk: VerifiedChunkChoice | None,
+    selected_chunks: tuple[VerifiedChunkChoice, ...],
     reviewer_actor: str,
     reviewed_at: datetime,
     save: Any,
 ) -> RunBoundSupportEvidence:
-    if evidence.match_status == "eligible":
-        raise SupportPreparationError("eligible support requires batch attestation before approval")
     if evidence.match_status in {"review_approved", "review_rejected"}:
-        same = evidence.selected_chunk == selected_chunk
+        same = tuple(evidence.selected_chunks or ((evidence.selected_chunk,) if evidence.selected_chunk else ())) == selected_chunks
         if evidence.match_status == "review_rejected":
-            same = selected_chunk is None
+            same = not selected_chunks
         if not same:
             raise SupportPreparationError("support review is already bound to a different decision")
         return evidence
-    if selected_chunk is not None and selected_chunk.chunk_id not in evidence.candidate_chunk_ids:
+    if evidence.match_status == "eligible":
+        if (
+            evidence.binding_version != "run-bound-support-v2"
+            or evidence.parent_id is None
+            or evidence.parent_content_hash is None
+            or evidence.parent_span_sha256 is None
+        ):
+            raise SupportPreparationError("eligible hierarchical support is missing its run-bound parent span")
+        proposed = tuple(evidence.selected_chunks or ((evidence.selected_chunk,) if evidence.selected_chunk else ()))
+        if selected_chunks and selected_chunks != proposed:
+            raise SupportPreparationError("eligible support can only approve its complete server-proposed child set")
+    if len({choice.chunk_id for choice in selected_chunks}) != len(selected_chunks):
+        raise SupportPreparationError("selected chunks must have unique IDs")
+    if any(choice.corpus_version_id != evidence.corpus_version_id for choice in selected_chunks):
+        raise SupportPreparationError("selected chunk belongs to another corpus")
+    if any(choice.chunk_id not in evidence.candidate_chunk_ids for choice in selected_chunks):
         raise SupportPreparationError("selected chunk is not a server-listed candidate")
-    updated = evidence.model_copy(
-        update={
-            "match_status": "review_approved" if selected_chunk is not None else "review_rejected",
-            "verified_chunks": [selected_chunk] if selected_chunk is not None else [],
-            "selected_chunk": selected_chunk,
+    parent_bindings = {(choice.parent_id, choice.parent_content_hash) for choice in selected_chunks}
+    if len(parent_bindings) > 1:
+        raise SupportPreparationError("selected chunks must belong to one verified parent")
+    if len(selected_chunks) > 1 and (None, None) in parent_bindings:
+        raise SupportPreparationError("multiple selected chunks require hierarchical parent metadata")
+    parent_id, parent_hash = next(iter(parent_bindings), (evidence.parent_id, evidence.parent_content_hash))
+    if evidence.parent_id is not None and parent_bindings and (parent_id, parent_hash) != (
+        evidence.parent_id, evidence.parent_content_hash
+    ):
+        raise SupportPreparationError("selected chunks do not match the bound parent")
+    updated = RunBoundSupportEvidence.model_validate(
+        evidence.model_dump()
+        | {
+            "match_status": "review_approved" if selected_chunks else "review_rejected",
+            "verified_chunks": list(selected_chunks),
+            "selected_chunk": selected_chunks[0] if len(selected_chunks) == 1 else None,
+            "selected_chunks": list(selected_chunks),
+            "parent_id": parent_id,
+            "parent_content_hash": parent_hash,
+            "binding_version": "run-bound-support-v2" if parent_id is not None else evidence.binding_version,
             "reviewer_actor": reviewer_actor,
             "reviewed_at": reviewed_at,
         }
@@ -506,10 +680,17 @@ def _unresolved(
     *,
     expected_refusal: bool = False,
 ) -> RunBoundSupportEvidence:
+    candidate_ids = list(dict.fromkeys(candidates or []))
+    if len(candidate_ids) > 64:
+        reason = "support_spans_too_many_children"
+        candidate_ids = []
     status = (
         "ambiguous" if reason == "ambiguous_support"
         else "inapplicable" if expected_refusal
-        else "invalid" if reason in {"invalid_chunk_metadata", "placeholder_chunk_id", "invalid_provenance"}
+        else "invalid" if reason in {
+            "invalid_chunk_metadata", "placeholder_chunk_id", "invalid_provenance",
+            "invalid_parent_child_hierarchy", "support_spans_too_many_children",
+        }
         else "missing"
     )
     return RunBoundSupportEvidence(
@@ -519,7 +700,7 @@ def _unresolved(
         corpus_version_id=run.corpus_version_id,
         source_provenance_sha256=provenance,
         match_status=status,
-        candidate_chunk_ids=list(dict.fromkeys(candidates or []))[:5],
+        candidate_chunk_ids=candidate_ids,
         reason=reason,
         expected_refusal=expected_refusal,
     )
@@ -528,6 +709,19 @@ def _unresolved(
 def _choice(record: StoredSupportChunk, provenance: str) -> VerifiedChunkChoice:
     if record.chunk is None or not record.valid:
         raise SupportPreparationError("cannot verify an invalid chunk")
+    if isinstance(record.chunk, ChildDocumentChunk):
+        if record.parent is None:
+            raise SupportPreparationError("child parent metadata is unavailable")
+        return VerifiedChunkChoice(
+            chunk_id=record.chunk.chunk_id,
+            corpus_version_id=record.chunk.corpus_version_id,
+            content_hash=record.chunk.content_hash,
+            page=record.chunk.page_start,
+            section=" / ".join(record.chunk.section_path),
+            source_provenance_sha256=provenance,
+            parent_id=record.parent.parent_id,
+            parent_content_hash=record.parent.content_hash,
+        )
     return VerifiedChunkChoice(
         chunk_id=record.chunk.chunk_id,
         corpus_version_id=record.chunk.corpus_version_id,
@@ -549,6 +743,13 @@ def _verify_record(record: StoredSupportChunk, corpus_version_id: str, provenanc
         reason = "chunk identity is invalid"
     elif chunk.corpus_version_id != corpus_version_id:
         reason = "chunk corpus metadata is invalid"
+    elif isinstance(chunk, ChildDocumentChunk) and (
+        record.parent is None
+        or record.parent.parent_id != chunk.parent_id
+        or record.parent.corpus_version_id != corpus_version_id
+        or sha256(record.parent.text.encode("utf-8")).hexdigest() != record.parent.content_hash
+    ):
+        reason = "child parent metadata is invalid"
     elif record.source_provenance_sha256 != provenance:
         reason = "invalid provenance"
     elif sha256(chunk.text.encode("utf-8")).hexdigest() != chunk.content_hash:

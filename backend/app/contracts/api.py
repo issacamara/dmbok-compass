@@ -123,6 +123,8 @@ class VerifiedChunkChoice(ContractModel):
     page: int = Field(ge=1)
     section: str = Field(min_length=1, max_length=500)
     source_provenance_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    parent_id: str | None = Field(default=None, min_length=1, max_length=256)
+    parent_content_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
 
 
 class RunBoundSupportEvidence(ContractModel):
@@ -135,9 +137,13 @@ class RunBoundSupportEvidence(ContractModel):
     corpus_version_id: str = Field(min_length=1, max_length=128)
     source_provenance_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     match_status: SupportMatchStatus
-    candidate_chunk_ids: list[str] = Field(default_factory=list, max_length=5)
-    verified_chunks: list[VerifiedChunkChoice] = Field(default_factory=list, max_length=5)
+    candidate_chunk_ids: list[str] = Field(default_factory=list, max_length=64)
+    verified_chunks: list[VerifiedChunkChoice] = Field(default_factory=list, max_length=64)
     selected_chunk: VerifiedChunkChoice | None = None
+    selected_chunks: list[VerifiedChunkChoice] = Field(default_factory=list, max_length=64)
+    parent_id: str | None = Field(default=None, min_length=1, max_length=256)
+    parent_content_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    parent_span_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     reason: str | None = Field(default=None, min_length=1, max_length=500)
     expected_refusal: bool = False
     reviewer_actor: str | None = Field(default=None, min_length=1, max_length=128)
@@ -147,39 +153,74 @@ class RunBoundSupportEvidence(ContractModel):
     @model_validator(mode="after")
     def validate_binding(self) -> "RunBoundSupportEvidence":
         verified_ids = [chunk.chunk_id for chunk in self.verified_chunks]
+        selected = self.selected_chunks or ([self.selected_chunk] if self.selected_chunk is not None else [])
+        selected_ids = [chunk.chunk_id for chunk in selected]
+        if len(self.candidate_chunk_ids) != len(set(self.candidate_chunk_ids)):
+            raise ValueError("candidate chunks must have unique IDs")
         if len(verified_ids) != len(set(verified_ids)):
             raise ValueError("verified chunks must have unique IDs")
+        if len(selected_ids) != len(set(selected_ids)):
+            raise ValueError("selected chunks must have unique IDs")
         if any(chunk.corpus_version_id != self.corpus_version_id for chunk in self.verified_chunks):
             raise ValueError("verified chunks must belong to the bound corpus")
-        if self.selected_chunk is not None:
-            if self.selected_chunk.corpus_version_id != self.corpus_version_id:
-                raise ValueError("selected chunk must belong to the bound corpus")
-            if self.selected_chunk.chunk_id not in verified_ids:
-                raise ValueError("selected chunk must be verified")
+        if any(chunk.source_provenance_sha256 != self.source_provenance_sha256 for chunk in self.verified_chunks):
+            raise ValueError("verified chunks must use the bound source provenance")
+        if any(chunk.corpus_version_id != self.corpus_version_id for chunk in selected):
+            raise ValueError("selected chunks must belong to the bound corpus")
+        if (self.parent_id is None) != (self.parent_content_hash is None):
+            raise ValueError("parent identity and hash must be supplied together")
+        if self.parent_span_sha256 is not None and self.parent_id is None:
+            raise ValueError("parent span digest requires its verified parent identity")
+        if self.parent_id is not None and any(
+            choice.parent_id != self.parent_id or choice.parent_content_hash != self.parent_content_hash
+            for choice in selected
+        ):
+            raise ValueError("selected child chunks must share the bound parent identity")
+        if len(selected) > 1 and (
+            self.binding_version != "run-bound-support-v2"
+            or self.parent_id is None
+            or self.parent_content_hash is None
+        ):
+            raise ValueError("multiple selected child chunks require a bound hierarchical parent")
+        if self.selected_chunk is not None and self.selected_chunks and self.selected_chunk != self.selected_chunks[0]:
+            raise ValueError("legacy selected_chunk must agree with the first selected chunk")
+        verified_by_id = {chunk.chunk_id: chunk for chunk in self.verified_chunks}
+        if any(verified_by_id.get(choice.chunk_id) != choice for choice in selected):
+            raise ValueError("selected chunks must match the verified child hashes and provenance")
+        if any(chunk_id not in self.candidate_chunk_ids for chunk_id in selected_ids):
+            raise ValueError("selected chunks must be listed among candidate chunks")
         if self.match_status == "eligible":
             if self.expected_refusal:
                 raise ValueError("explicit refusal items cannot be eligible support")
-            if len(self.verified_chunks) != 1 or self.selected_chunk is None:
-                raise ValueError("eligible support requires exactly one verified selected chunk")
+            if not selected or verified_ids != selected_ids or self.candidate_chunk_ids != selected_ids:
+                raise ValueError("eligible support requires all and only its verified selected chunks")
+            if self.binding_version == "run-bound-support-v2" and (self.parent_id is None or self.parent_content_hash is None):
+                raise ValueError("hierarchical support requires the matched parent identity and hash")
+            if self.binding_version == "run-bound-support-v2" and self.parent_span_sha256 is None:
+                raise ValueError("hierarchical support requires the unique parent source span digest")
             if self.reviewer_actor is not None or self.reviewed_at is not None:
                 raise ValueError("eligible support cannot contain reviewer fields")
         if self.match_status == "review_approved":
-            if self.selected_chunk is None or not self.reviewer_actor or self.reviewed_at is None:
-                raise ValueError("review approval requires a selected chunk and reviewer audit fields")
+            if not selected or not self.reviewer_actor or self.reviewed_at is None:
+                raise ValueError("review approval requires selected chunks and reviewer audit fields")
+            if self.binding_version == "run-bound-support-v2" and (
+                self.parent_id is None
+                or self.parent_content_hash is None
+                or verified_ids != selected_ids
+            ):
+                raise ValueError("hierarchical review approval must bind all selected children to one parent")
         if self.match_status == "review_rejected":
             if not self.reviewer_actor or self.reviewed_at is None:
                 raise ValueError("review rejection requires reviewer audit fields")
-            if self.selected_chunk is not None:
-                raise ValueError("review rejection cannot select a chunk")
-        if self.match_status in {"missing", "ambiguous", "invalid", "inapplicable"} and self.selected_chunk is not None:
-            raise ValueError("unresolved support cannot select a chunk")
+            if selected:
+                raise ValueError("review rejection cannot select chunks")
+        if self.match_status in {"missing", "ambiguous", "invalid", "inapplicable"} and selected:
+            raise ValueError("unresolved support cannot select chunks")
         if self.match_status == "inapplicable":
             if not self.expected_refusal:
                 raise ValueError("inapplicable support must be an explicit refusal")
             if self.candidate_chunk_ids or self.verified_chunks:
                 raise ValueError("explicit refusal cannot carry support candidates")
-        if self.selected_chunk is not None and self.selected_chunk.chunk_id not in self.candidate_chunk_ids:
-            raise ValueError("selected chunk must be listed among candidate chunks")
         return self
 
 
@@ -330,9 +371,12 @@ class DurableRepresentativeSampleEntry(ContractModel):
     corpus_version_id: str = Field(min_length=1, max_length=128)
     sample_identity: str = Field(min_length=1, max_length=128)
     item_id: str = Field(min_length=1, max_length=128)
-    candidate_chunk_ids: list[str] = Field(default_factory=list, max_length=5)
-    content_hashes: list[str] = Field(default_factory=list, max_length=5)
-    provenance_digests: list[str] = Field(default_factory=list, max_length=5)
+    candidate_chunk_ids: list[str] = Field(default_factory=list, max_length=64)
+    content_hashes: list[str] = Field(default_factory=list, max_length=64)
+    provenance_digests: list[str] = Field(default_factory=list, max_length=64)
+    parent_id: str | None = Field(default=None, min_length=1, max_length=256)
+    parent_content_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    parent_span_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     status: BatchReviewStatus
     decision_version: str = Field(min_length=1, max_length=64)
 
@@ -346,9 +390,12 @@ class DurableExceptionRecord(ContractModel):
     corpus_version_id: str = Field(min_length=1, max_length=128)
     sample_identity: str = Field(min_length=1, max_length=128)
     item_id: str = Field(min_length=1, max_length=128)
-    candidate_chunk_ids: list[str] = Field(default_factory=list, max_length=5)
-    content_hashes: list[str] = Field(default_factory=list, max_length=5)
-    provenance_digests: list[str] = Field(default_factory=list, max_length=5)
+    candidate_chunk_ids: list[str] = Field(default_factory=list, max_length=64)
+    content_hashes: list[str] = Field(default_factory=list, max_length=64)
+    provenance_digests: list[str] = Field(default_factory=list, max_length=64)
+    parent_id: str | None = Field(default=None, min_length=1, max_length=256)
+    parent_content_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    parent_span_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     status: Literal["exception", "stale", "inapplicable"]
     reason: str = Field(min_length=1, max_length=500)
     decision_version: str = Field(min_length=1, max_length=64)

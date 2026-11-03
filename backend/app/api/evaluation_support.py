@@ -9,7 +9,7 @@ from typing import Protocol
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.contracts import EvaluationRun, RunBoundSupportEvidence, UserProfile, VerifiedChunkChoice
+from app.contracts import ChildDocumentChunk, DocumentChunk, EvaluationRun, RunBoundSupportEvidence, UserProfile, VerifiedChunkChoice
 from app.evaluation.support import (
     FirestoreRunPinnedChunkSource,
     SupportEvidenceStore,
@@ -26,19 +26,27 @@ class SupportReviewRequest(BaseModel):
 
     decision: str = Field(pattern=r"^(approve|reject)$")
     selected_chunk_id: str | None = Field(default=None, min_length=1, max_length=256)
+    selected_chunk_ids: list[str] = Field(default_factory=list, max_length=64)
 
     @model_validator(mode="after")
     def validate_decision(self) -> "SupportReviewRequest":
-        if self.decision == "approve" and not self.selected_chunk_id:
-            raise ValueError("approval requires a selected chunk")
-        if self.decision == "reject" and self.selected_chunk_id is not None:
-            raise ValueError("rejection cannot select a chunk")
+        if self.selected_chunk_id is not None:
+            if self.selected_chunk_ids and self.selected_chunk_ids != [self.selected_chunk_id]:
+                raise ValueError("scalar and list selections disagree")
+            if not self.selected_chunk_ids:
+                self.selected_chunk_ids = [self.selected_chunk_id]
+        if len(set(self.selected_chunk_ids)) != len(self.selected_chunk_ids):
+            raise ValueError("selected chunks must be unique")
+        if self.decision == "approve" and not self.selected_chunk_ids:
+            raise ValueError("approval requires selected chunks")
+        if self.decision == "reject" and self.selected_chunk_ids:
+            raise ValueError("rejection cannot select chunks")
         return self
 
 
 class SupportStatusResponse(BaseModel):
     evidence: RunBoundSupportEvidence
-    candidate_chunks: list[VerifiedChunkChoice] = Field(default_factory=list, max_length=5)
+    candidate_chunks: list[VerifiedChunkChoice] = Field(default_factory=list, max_length=64)
 
 
 class SupportRunStore(Protocol):
@@ -75,14 +83,26 @@ def _status(evidence: RunBoundSupportEvidence, source: FirestoreRunPinnedChunkSo
     for chunk_id in evidence.candidate_chunk_ids:
         record = source.chunk(corpus_version_id=evidence.corpus_version_id, chunk_id=chunk_id)
         if record is not None and record.valid and record.chunk is not None:
-            candidates.append(VerifiedChunkChoice(
-                chunk_id=record.chunk.chunk_id,
-                corpus_version_id=record.chunk.corpus_version_id,
-                content_hash=record.chunk.content_hash,
-                page=record.chunk.page,
-                section=record.chunk.section,
-                source_provenance_sha256=record.source_provenance_sha256,
-            ))
+            if isinstance(record.chunk, ChildDocumentChunk) and record.parent is not None:
+                candidates.append(VerifiedChunkChoice(
+                    chunk_id=record.chunk.chunk_id,
+                    corpus_version_id=record.chunk.corpus_version_id,
+                    content_hash=record.chunk.content_hash,
+                    page=record.chunk.page_start,
+                    section=" / ".join(record.chunk.section_path),
+                    source_provenance_sha256=record.source_provenance_sha256,
+                    parent_id=record.parent.parent_id,
+                    parent_content_hash=record.parent.content_hash,
+                ))
+            elif isinstance(record.chunk, DocumentChunk):
+                candidates.append(VerifiedChunkChoice(
+                    chunk_id=record.chunk.chunk_id,
+                    corpus_version_id=record.chunk.corpus_version_id,
+                    content_hash=record.chunk.content_hash,
+                    page=record.chunk.page,
+                    section=record.chunk.section,
+                    source_provenance_sha256=record.source_provenance_sha256,
+                ))
     return SupportStatusResponse(evidence=evidence, candidate_chunks=candidates)
 
 
@@ -96,7 +116,12 @@ def _get_evidence(
     evidence = store.get_evidence(run_id=run_id, item_id=item_id)
     if evidence is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"code": "support_status_not_found", "message": "Support evidence was not prepared for this run item."})
-    if evidence.candidate_snapshot_sha256 != _snapshot_digest(run):
+    if (
+        evidence.run_id != run.run_id
+        or evidence.item_id != item_id
+        or evidence.corpus_version_id != run.corpus_version_id
+        or evidence.candidate_snapshot_sha256 != _snapshot_digest(run)
+    ):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"code": "stale_evaluation_run", "message": "The evaluation run snapshot is stale."})
     return run, evidence
 
@@ -125,15 +150,16 @@ def review_support_status(
     source: FirestoreRunPinnedChunkSource = Depends(pinned_chunk_source),
 ) -> SupportStatusResponse:
     _, evidence = _get_evidence(run_id, item_id, runs, store)
-    candidate = None
-    if request.selected_chunk_id is not None:
-        candidate = source.chunk(corpus_version_id=evidence.corpus_version_id, chunk_id=request.selected_chunk_id)
-        if candidate is None or not candidate.valid:
-            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"code": "candidate_chunk_invalid", "message": "The selected chunk is not valid in the pinned corpus."})
+    candidates = tuple(
+        source.chunk(corpus_version_id=evidence.corpus_version_id, chunk_id=chunk_id)
+        for chunk_id in request.selected_chunk_ids
+    )
+    if any(candidate is None or not candidate.valid for candidate in candidates):
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"code": "candidate_chunk_invalid", "message": "A selected chunk is not valid in the pinned corpus."})
     try:
         updated = review_support(
             evidence,
-            candidate=candidate,
+            candidates=tuple(candidate for candidate in candidates if candidate is not None),
             reviewer_actor=admin.user_id,
             reviewed_at=datetime.now(timezone.utc),
             store=store,

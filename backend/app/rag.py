@@ -16,7 +16,7 @@ from app.corpus.indexing import (
     CorpusEmbeddingWriter,
     create_vector_store,
 )
-from app.retrieval.search import FirestorePassageRetriever
+from app.retrieval.search import FirestoreParentChunkReader, FirestorePassageRetriever
 from app.retrieval.hybrid import HybridRetriever, HybridStrategy
 from app.retrieval.lexical import LexicalIndex
 from model.fallback import FallbackAdapter
@@ -84,7 +84,10 @@ class LangChainRagFactory:
         )
 
     def retriever(self) -> FirestorePassageRetriever:
-        return FirestorePassageRetriever(self._vector_store)
+        return FirestorePassageRetriever(
+            self._vector_store,
+            parent_reader=FirestoreParentChunkReader(self.client),
+        )
 
     def experimental_hybrid_retriever(
         self,
@@ -116,7 +119,8 @@ class LangChainRagFactory:
                 self.client,
                 self._embeddings,
                 collection_id=binding.vector_collection,
-            )
+            ),
+            parent_reader=FirestoreParentChunkReader(self.client),
         )
 
     def generation_adapter(self) -> ModelAdapter:

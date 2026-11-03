@@ -116,7 +116,12 @@ def _get_evidence(
     evidence = store.get_evidence(run_id=run_id, item_id=item_id)
     if evidence is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail={"code": "support_status_not_found", "message": "Support evidence was not prepared for this run item."})
-    if evidence.candidate_snapshot_sha256 != _snapshot_digest(run):
+    if (
+        evidence.run_id != run.run_id
+        or evidence.item_id != item_id
+        or evidence.corpus_version_id != run.corpus_version_id
+        or evidence.candidate_snapshot_sha256 != _snapshot_digest(run)
+    ):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"code": "stale_evaluation_run", "message": "The evaluation run snapshot is stale."})
     return run, evidence
 

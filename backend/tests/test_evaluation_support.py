@@ -28,6 +28,7 @@ from app.evaluation.support import (
     FirestoreRunPinnedChunkSource,
     StoredSupportChunk,
     SupportPreparationError,
+    approved_support_chunk_ids,
     prepare_support,
     review_support,
 )
@@ -304,6 +305,92 @@ def test_hierarchical_manual_review_can_bind_multiple_sibling_children() -> None
     assert approved_support_chunk_ids(approved, run=run_record) == frozenset(child.chunk_id for child in children)
     assert approved_support_chunk_ids(approved, run=run_record.model_copy(update={"run_id": "stale-run"})) == frozenset()
     assert repeated == approved
+
+
+def test_eligible_hierarchical_support_allows_individual_approve_or_reject() -> None:
+    parent, children = hierarchy(("one two three", "four five six"))
+    dataset = EvaluationDataset(
+        dataset_version_id="dataset-v1",
+        items=[EvaluationItem(item_id="item-1", question="Q", dataset_version_id="dataset-v1")],
+        gold_annotations=[GoldAnnotation(
+            item_id="item-1", expected_answer_or_rubric="A", review_status="candidate",
+            supporting_passage="three four",
+        )],
+    )
+    source = Source(tuple(StoredSupportChunk(child, child.chunk_id, "d" * 64, parent=parent) for child in children))
+    run_record = run(["item-1"])
+
+    approval_store = InMemorySupportEvidenceStore()
+    prepared = prepare_support(run_record, dataset, source, approval_store).evidence[0]
+    selected = tuple(
+        source.chunk(corpus_version_id="corpus-v1", chunk_id=chunk_id)
+        for chunk_id in prepared.candidate_chunk_ids
+    )
+    assert prepared.match_status == "eligible"
+    assert all(record is not None for record in selected)
+    verified_selected = tuple(record for record in selected if record is not None)
+    approved = review_support(
+        prepared,
+        candidates=verified_selected,
+        reviewer_actor="admin",
+        reviewed_at=datetime.now(timezone.utc),
+        store=approval_store,
+    )
+    approved_retry = review_support(
+        approved,
+        candidates=verified_selected,
+        reviewer_actor="another-admin",
+        reviewed_at=datetime.now(timezone.utc),
+        store=approval_store,
+    )
+
+    assert approved.match_status == "review_approved"
+    assert approved.run_id == run_record.run_id
+    assert approved.corpus_version_id == run_record.corpus_version_id
+    assert approved.candidate_snapshot_sha256 == prepared.candidate_snapshot_sha256
+    assert approved.source_provenance_sha256 == prepared.source_provenance_sha256
+    assert approved.parent_id == parent.parent_id
+    assert approved.parent_content_hash == parent.content_hash
+    assert approved.parent_span_sha256 == prepared.parent_span_sha256
+    assert [choice.content_hash for choice in approved.selected_chunks] == [child.content_hash for child in children]
+    assert [choice.source_provenance_sha256 for choice in approved.selected_chunks] == ["d" * 64] * len(children)
+    assert approved_support_chunk_ids(approved, run=run_record) == frozenset(child.chunk_id for child in children)
+    assert approved_retry == approved
+    with pytest.raises(SupportPreparationError, match="already bound to a different decision"):
+        review_support(
+            approved,
+            reviewer_actor="admin",
+            reviewed_at=datetime.now(timezone.utc),
+            store=approval_store,
+        )
+
+    rejection_store = InMemorySupportEvidenceStore()
+    rejected_preparation = prepare_support(run_record, dataset, source, rejection_store).evidence[0]
+    rejected = review_support(
+        rejected_preparation,
+        reviewer_actor="admin",
+        reviewed_at=datetime.now(timezone.utc),
+        store=rejection_store,
+    )
+    rejected_retry = review_support(
+        rejected,
+        reviewer_actor="another-admin",
+        reviewed_at=datetime.now(timezone.utc),
+        store=rejection_store,
+    )
+    assert rejected.match_status == "review_rejected"
+    assert rejected.parent_span_sha256 == rejected_preparation.parent_span_sha256
+    assert rejected.selected_chunks == []
+    assert approved_support_chunk_ids(rejected, run=run_record) == frozenset()
+    assert rejected_retry == rejected
+    with pytest.raises(SupportPreparationError, match="already bound to a different decision"):
+        review_support(
+            rejected,
+            candidates=verified_selected,
+            reviewer_actor="admin",
+            reviewed_at=datetime.now(timezone.utc),
+            store=rejection_store,
+        )
 
 
 def test_hierarchical_support_handles_full_and_subset_runs() -> None:

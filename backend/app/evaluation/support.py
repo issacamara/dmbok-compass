@@ -515,6 +515,8 @@ def review_support(
     for candidate in candidates:
         if not candidate.valid or candidate.chunk is None:
             raise SupportPreparationError("selected chunk failed server verification")
+        if candidate.source_provenance_sha256 != evidence.source_provenance_sha256:
+            raise SupportPreparationError("selected chunk provenance differs from the run-pinned corpus")
         selected.append(_choice(candidate, evidence.source_provenance_sha256))
     return store.review_evidence(
         evidence,
@@ -532,8 +534,6 @@ def _review_evidence(
     reviewed_at: datetime,
     save: Any,
 ) -> RunBoundSupportEvidence:
-    if evidence.match_status == "eligible":
-        raise SupportPreparationError("eligible support requires batch attestation before approval")
     if evidence.match_status in {"review_approved", "review_rejected"}:
         same = tuple(evidence.selected_chunks or ((evidence.selected_chunk,) if evidence.selected_chunk else ())) == selected_chunks
         if evidence.match_status == "review_rejected":
@@ -541,6 +541,17 @@ def _review_evidence(
         if not same:
             raise SupportPreparationError("support review is already bound to a different decision")
         return evidence
+    if evidence.match_status == "eligible":
+        if (
+            evidence.binding_version != "run-bound-support-v2"
+            or evidence.parent_id is None
+            or evidence.parent_content_hash is None
+            or evidence.parent_span_sha256 is None
+        ):
+            raise SupportPreparationError("eligible hierarchical support is missing its run-bound parent span")
+        proposed = tuple(evidence.selected_chunks or ((evidence.selected_chunk,) if evidence.selected_chunk else ()))
+        if selected_chunks and selected_chunks != proposed:
+            raise SupportPreparationError("eligible support can only approve its complete server-proposed child set")
     if len({choice.chunk_id for choice in selected_chunks}) != len(selected_chunks):
         raise SupportPreparationError("selected chunks must have unique IDs")
     if any(choice.corpus_version_id != evidence.corpus_version_id for choice in selected_chunks):

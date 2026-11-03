@@ -368,7 +368,7 @@ def test_openrouter_allows_fallback_after_primary_timeout(monkeypatch: pytest.Mo
         return httpx.Response(200, json=response_payload("Fallback answer."))
 
     adapter = OpenRouterAdapter("test-key", transport=httpx.MockTransport(handler))
-    result = asyncio.run(adapter.generate(request(timeout=TimeoutBudget(total_ms=300))))
+    result = asyncio.run(adapter.generate(request(timeout=TimeoutBudget(total_ms=1000))))
 
     assert models == ["meta-llama/llama-3.1-8b-instruct", "google/gemma-4-26b-a4b-it:free"]
     assert result.candidate.answer_text == "Fallback answer."

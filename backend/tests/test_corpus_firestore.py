@@ -7,9 +7,9 @@ from hashlib import sha256
 
 import pytest
 
-from app.contracts import CorpusServingBinding, CorpusValidationEvidence, CorpusVersion
+from app.contracts import CorpusServingBinding, CorpusValidationEvidence, CorpusVersion, ParentChunk, SourceSpan
 from app.corpus.chunking import TextChunk
-from app.corpus.firestore import FirestoreCorpusVersionStore
+from app.corpus.firestore import FirestoreCorpusVersionStore, FirestoreParentChunkStore
 from app.corpus.versions import ConcurrentCorpusActivationError, CorpusVersionError
 
 
@@ -43,11 +43,17 @@ class FakeDocument:
 class FakeBatch:
     client: "FakeFirestore"
     deletions: list[FakeDocument] = field(default_factory=list)
+    writes: list[tuple[FakeDocument, dict[str, object]]] = field(default_factory=list)
 
     def delete(self, reference: FakeDocument) -> None:
         self.deletions.append(reference)
 
+    def set(self, reference: FakeDocument, data: dict[str, object]) -> None:
+        self.writes.append((reference, deepcopy(data)))
+
     def commit(self) -> None:
+        for reference, data in self.writes:
+            self.client.data[reference.path] = data
         for reference in self.deletions:
             self.client.data.pop(reference.path, None)
 
@@ -204,6 +210,49 @@ def chunk(version_id: str) -> TextChunk:
         content_hash=sha256(text.encode()).hexdigest(),
         text=text,
     )
+
+
+def parent_chunk(version_id: str = "v1") -> ParentChunk:
+    spans = [
+        SourceSpan(page=1, start_offset=2, end_offset=5, text="one"),
+        SourceSpan(page=2, start_offset=0, end_offset=3, text="two"),
+    ]
+    return ParentChunk(
+        parent_id=f"{version_id}:parent:chapter:0",
+        corpus_version_id=version_id,
+        section_path=("Chapter", "Section"),
+        page_start=1,
+        page_end=2,
+        source_spans=spans,
+        content_hash=sha256(b"one\ntwo").hexdigest(),
+        token_count=2,
+        text="one\ntwo",
+    )
+
+
+def test_firestore_parent_store_round_trips_source_spans_and_nested_manifest_metadata() -> None:
+    client = FakeFirestore()
+    parent = parent_chunk()
+    metadata = {
+        "source_uri": "gs://corpus/source.pdf#7",
+        "corpus_manifest": {"derivation": {"version": "hierarchical-corpus-v1"}},
+    }
+
+    FirestoreParentChunkStore(client).write_batch([parent], metadata=metadata)
+
+    record = client.data[f"corpus_parent_chunks/{parent.parent_id}"]
+    restored = ParentChunk.model_validate(
+        {key: value for key, value in record.items() if key != "metadata"}
+    )
+    assert restored == parent
+    assert [span.page for span in restored.source_spans] == [1, 2]
+    assert record["metadata"] == metadata
+    assert "embedding" not in record
+
+
+def test_firestore_parent_store_rejects_batches_over_firestore_limit() -> None:
+    with pytest.raises(ValueError, match="at most 500"):
+        FirestoreParentChunkStore(FakeFirestore()).write_batch([parent_chunk()] * 501)
 
 
 def persist_vector(

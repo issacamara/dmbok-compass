@@ -6,13 +6,14 @@ from datetime import datetime, timezone
 from dataclasses import dataclass
 from hashlib import sha256
 import json
+from collections.abc import Mapping, Sequence
 from typing import Any, Callable, TypeVar
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
-from app.contracts import CorpusValidationEvidence, CorpusVersion
-from app.corpus.indexing import VECTOR_COLLECTION, VECTOR_SCHEMA_VERSION
+from app.contracts import CorpusValidationEvidence, CorpusVersion, ParentChunk
+from app.corpus.indexing import PARENT_COLLECTION, VECTOR_COLLECTION, VECTOR_SCHEMA_VERSION
 from app.corpus.search_probe import SearchReadinessEvidence
 from app.corpus.versions import (
     ConcurrentCorpusActivationError,
@@ -31,6 +32,36 @@ class CorpusCleanupResult:
     version_id: str
     dry_run: bool
     targets: tuple[str, ...]
+
+
+class FirestoreParentChunkStore:
+    """Idempotently persist non-embedded parent records by deterministic ID."""
+
+    collection_id = PARENT_COLLECTION
+    max_batch_size = 500
+
+    def __init__(self, client: Any) -> None:
+        self.client = client
+        self.collection = client.collection(self.collection_id)
+
+    def write_batch(
+        self,
+        parents: Sequence[ParentChunk],
+        *,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> tuple[ParentChunk, ...]:
+        if len(parents) > self.max_batch_size:
+            raise ValueError(
+                f"parent write batches may contain at most {self.max_batch_size} records"
+            )
+        batch = self.client.batch()
+        for parent in parents:
+            record = parent.model_dump(mode="json")
+            record["metadata"] = dict(metadata or {})
+            batch.set(self.collection.document(parent.parent_id), record)
+        if parents:
+            batch.commit()
+        return tuple(parents)
 
 
 def _run_firestore_transaction(transaction: Any, callback: Callable[[Any], T]) -> T:

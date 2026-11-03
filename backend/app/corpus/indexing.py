@@ -8,10 +8,12 @@ from typing import Any
 from langchain_core.documents import Document
 from langchain_google_firestore import FirestoreVectorStore
 
+from app.contracts import ChildDocumentChunk, ParentChunk
 from app.corpus.chunking import TextChunk
 
 VECTOR_COLLECTION = "document_chunks_v2"
 VECTOR_SCHEMA_VERSION = "2"
+PARENT_COLLECTION = "corpus_parent_chunks"
 
 
 def create_vector_store(
@@ -82,3 +84,54 @@ class CorpusEmbeddingWriter:
         if list(stored_ids) != ids:
             raise RuntimeError("LangChain vector store did not preserve deterministic chunk IDs")
         return tuple(chunks)
+
+
+class HierarchicalCorpusWriter(CorpusEmbeddingWriter):
+    """Persist unembedded parents and explicitly identified embedded children."""
+
+    def __init__(
+        self,
+        vector_store: FirestoreVectorStore,
+        parent_store: Any,
+        *,
+        source_metadata: Mapping[str, Any] | None = None,
+    ) -> None:
+        super().__init__(vector_store, source_metadata=source_metadata)
+        self.parent_store = parent_store
+
+    def write_parent_batch(self, parents: Sequence[ParentChunk]) -> tuple[ParentChunk, ...]:
+        if len(parents) > self.max_batch_size:
+            raise ValueError(f"corpus write batches may contain at most {self.max_batch_size} parents")
+        self.parent_store.write_batch(parents, metadata=self.source_metadata)
+        return tuple(parents)
+
+    def write_child_batch(
+        self, children: Sequence[ChildDocumentChunk]
+    ) -> tuple[ChildDocumentChunk, ...]:
+        if len(children) > self.max_batch_size:
+            raise ValueError(f"corpus write batches may contain at most {self.max_batch_size} children")
+        documents = [
+            Document(
+                page_content=child.text,
+                metadata={
+                    **self.source_metadata,
+                    "schema_version": child.schema_version,
+                    "corpus_version_id": child.corpus_version_id,
+                    "chunk_id": child.chunk_id,
+                    "parent_id": child.parent_id,
+                    "section_path": list(child.section_path),
+                    "page_start": child.page_start,
+                    "page_end": child.page_end,
+                    "source_spans": [span.model_dump(mode="json") for span in child.source_spans],
+                    "child_ordinal": child.child_ordinal,
+                    "content_hash": child.content_hash,
+                    "token_count": child.token_count,
+                },
+            )
+            for child in children
+        ]
+        ids = [child.chunk_id for child in children]
+        stored_ids = self.vector_store.add_documents(documents, ids=ids)
+        if list(stored_ids) != ids:
+            raise RuntimeError("LangChain vector store did not preserve deterministic child IDs")
+        return tuple(children)

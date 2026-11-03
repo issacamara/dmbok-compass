@@ -19,11 +19,12 @@ from google.cloud import firestore, storage
 
 from app.contracts import ChildDocumentChunk, CorpusServingBinding, CorpusVersion, ParentChunk, StructureMap
 from app.corpus.chunking import ParentReviewException, segment_children, segment_parents
-from app.corpus.firestore import FirestoreCorpusVersionStore
-from app.corpus.indexing import VECTOR_SCHEMA_VERSION
+from app.corpus.firestore import FirestoreCorpusVersionStore, FirestoreParentChunkStore
+from app.corpus.indexing import HierarchicalCorpusWriter, VECTOR_SCHEMA_VERSION
 from app.corpus.manifest import SourceManifest, create_source_manifest, hierarchical_derivation
 from app.ingestion.extract import ExtractionReport, extract_pdf, recover_logical_sections
-from app.ingestion.job import IngestionInterrupted
+from app.ingestion.job import CorpusIngestionJob, IngestionInterrupted
+from app.rag import LangChainRagFactory, LangChainRagSettings
 from app.settings import RuntimeConfiguration
 
 
@@ -98,10 +99,30 @@ def _run(termination_requested: Callable[[], bool]) -> None:
             termination_requested=termination_requested,
         )
         staged = candidate.version
+        settings = LangChainRagSettings(
+            project=project,
+            location=configuration.runtime.location,
+            vector_collection=configuration.vector_collection,
+        )
+        factory = LangChainRagFactory(client, settings)
+        base_writer = factory.ingestion_writer(
+            source_metadata=candidate.manifest.corpus_metadata()
+        )
+        writer = HierarchicalCorpusWriter(
+            base_writer.vector_store,
+            FirestoreParentChunkStore(client),
+            source_metadata=candidate.manifest.corpus_metadata(),
+        )
+        CorpusIngestionJob(versions, writer).run_hierarchical(
+            staged,
+            candidate.parents,
+            candidate.children,
+            termination_requested=termination_requested,
+        )
         readiness = (
             "blocked_by_oversized_structures"
             if candidate.exceptions
-            else "awaiting_parent_child_persistence"
+            else "awaiting_readiness_validation"
         )
         print(
             json.dumps(

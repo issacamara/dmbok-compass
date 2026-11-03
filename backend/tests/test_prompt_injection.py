@@ -49,7 +49,7 @@ def test_absent_evidence_does_not_call_the_model() -> None:
 
 
 def test_prompt_version_is_explicit_and_parser_failures_are_safe() -> None:
-    assert PROMPT_VERSION == "grounded-answer-policy-v2"
+    assert PROMPT_VERSION == "grounded-answer-policy-v3"
     adapter = SpyAdapter(GenerationError(GenerationErrorCode.INVALID_OUTPUT, "invalid"))
     response = asyncio.run(GroundedAnswerPolicy(adapter).answer("What is true?", [passage()], quota()))
     assert response.outcome == "operational_error"

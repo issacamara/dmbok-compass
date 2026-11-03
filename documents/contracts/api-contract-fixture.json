@@ -35,7 +35,7 @@
       "required": ["user_used", "user_limit", "global_used", "global_limit", "resets_at"]
     },
     "Citation": {
-      "fields": ["citation_id", "page", "section"],
+      "fields": ["citation_id", "page", "section", "excerpt"],
       "required": ["citation_id", "page", "section"]
     },
     "ModelAttempt": {

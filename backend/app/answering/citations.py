@@ -11,7 +11,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Mapping, Sequence
 
-from app.contracts import Citation, CitationEvidence, RetrievedPassage
+from app.contracts import (
+    ChildDocumentChunk,
+    Citation,
+    CitationEvidence,
+    ParentChunk,
+    RetrievedPassage,
+    SourceSpan,
+)
 from model.protocol import GenerationCandidate, GenerationError, GenerationErrorCode
 
 
@@ -63,6 +70,10 @@ def _validate_span(
 def validated_citations(
     candidate: GenerationCandidate,
     passages: tuple[RetrievedPassage, ...],
+    *,
+    child_sources: Sequence[ChildDocumentChunk] | None = None,
+    source_parents: Sequence[ParentChunk] = (),
+    corpus_version_id: str | None = None,
 ) -> list[Citation]:
     """Validate every provider citation and return server-owned metadata.
 
@@ -71,6 +82,14 @@ def validated_citations(
     """
 
     by_id = _passages_by_id(passages)
+    if child_sources is not None:
+        return _validated_child_citations(
+            candidate,
+            by_id,
+            child_sources,
+            source_parents,
+            corpus_version_id=corpus_version_id,
+        )
     citations: list[Citation] = []
     seen: set[str] = set()
     for citation in candidate.citations:
@@ -96,9 +115,115 @@ def validated_citations(
                 citation_id=passage.chunk_id,
                 page=passage.page,
                 section=passage.section,
+                excerpt=citation.excerpt[:500],
             )
         )
     return citations
+
+
+def _validated_child_citations(
+    candidate: GenerationCandidate,
+    passages: Mapping[str, RetrievedPassage],
+    children: Sequence[ChildDocumentChunk],
+    parents: Sequence[ParentChunk],
+    *,
+    corpus_version_id: str | None,
+) -> list[Citation]:
+    if not corpus_version_id:
+        raise CitationValidationError("citation validation requires an active corpus version")
+    child_by_id = {child.chunk_id: child for child in children}
+    parent_by_id = {parent.parent_id: parent for parent in parents}
+    if len(child_by_id) != len(children) or len(parent_by_id) != len(parents):
+        raise CitationValidationError("retrieved source provenance contains duplicate IDs")
+
+    citations: list[Citation] = []
+    seen: set[str] = set()
+    for citation in candidate.citations:
+        if citation.citation_id in seen:
+            raise CitationValidationError(
+                f"candidate contains duplicate citation ID: {citation.citation_id}"
+            )
+        child = child_by_id.get(citation.citation_id)
+        if child is None or child.chunk_id not in passages:
+            raise CitationValidationError(
+                f"candidate cites evidence outside the retrieved child set: {citation.citation_id}"
+            )
+        passage = passages[child.chunk_id]
+        if (
+            passage.excerpt != child.text
+            or passage.page != child.page_start
+            or passage.section != " / ".join(child.section_path)[:500]
+        ):
+            raise CitationValidationError(
+                f"retrieved child passage does not match its stored source: {child.chunk_id}"
+            )
+        parent = parent_by_id.get(child.parent_id)
+        if parent is None:
+            raise CitationValidationError(
+                f"retrieved child has no request-local parent: {child.chunk_id}"
+            )
+        if child.corpus_version_id != corpus_version_id or parent.corpus_version_id != corpus_version_id:
+            raise CitationValidationError(
+                f"citation evidence crosses corpus versions at chunk {child.chunk_id}"
+            )
+        _validate_child_parent_link(child, parent)
+        source = _unique_matching_source_span(citation.excerpt, child)
+        seen.add(citation.citation_id)
+        citations.append(
+            Citation(
+                citation_id=child.chunk_id,
+                page=source.page,
+                section=" / ".join(parent.section_path)[:500],
+                excerpt=citation.excerpt[:500],
+            )
+        )
+    return citations
+
+
+def _validate_child_parent_link(child: ChildDocumentChunk, parent: ParentChunk) -> None:
+    if child.parent_id != parent.parent_id or child.section_path != parent.section_path:
+        raise CitationValidationError(
+            f"retrieved child has an invalid parent link: {child.chunk_id}"
+        )
+    if (
+        parent.text != "\n".join(span.text for span in parent.source_spans)
+        or child.text != "\n".join(span.text for span in child.source_spans)
+        or any(
+            span.end_offset - span.start_offset != len(span.text)
+            for span in (*parent.source_spans, *child.source_spans)
+        )
+    ):
+        raise CitationValidationError(f"retrieved source text or offsets changed: {child.chunk_id}")
+    for child_span in child.source_spans:
+        linked = any(
+            source.page == child_span.page
+            and source.start_offset <= child_span.start_offset
+            and child_span.end_offset <= source.end_offset
+            and source.text[
+                child_span.start_offset - source.start_offset:
+                child_span.end_offset - source.start_offset
+            ] == child_span.text
+            for source in parent.source_spans
+        )
+        if not linked:
+            raise CitationValidationError(
+                f"retrieved child source span is not linked to its parent: {child.chunk_id}"
+            )
+
+
+def _unique_matching_source_span(excerpt: str, child: ChildDocumentChunk) -> SourceSpan:
+    if not excerpt:
+        raise CitationValidationError(
+            f"citation {child.chunk_id} has an empty source excerpt"
+        )
+    matches = [span for span in child.source_spans if excerpt in span.text]
+    if sum(span.text.count(excerpt) for span in matches) != 1:
+        matches = []
+    if len(matches) != 1:
+        raise CitationValidationError(
+            f"citation {child.chunk_id} does not identify one exact source span"
+        )
+    return matches[0]
 
 
 def validate_citation_evidence(

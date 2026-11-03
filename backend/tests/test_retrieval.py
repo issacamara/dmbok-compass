@@ -5,7 +5,7 @@ import asyncio
 import pytest
 from langchain_core.documents import Document
 
-from app.contracts import ParentChunk, RetrievedPassage, SourceSpan
+from app.contracts import ChildDocumentChunk, ParentChunk, RetrievedPassage, SourceSpan
 from app.retrieval.search import (
     FirestorePassageRetriever,
     FirestoreParentChunkReader,
@@ -47,6 +47,26 @@ def parent(parent_id: str, corpus: str, text: str) -> ParentChunk:
         token_count=max(1, len(text.split())),
         text=text,
     )
+
+
+def child(chunk_id: str, parent_id: str, corpus: str, text: str, page: int = 1):
+    return ChildDocumentChunk(
+        chunk_id=chunk_id,
+        corpus_version_id=corpus,
+        parent_id=parent_id,
+        section_path=("Governance",),
+        page_start=page,
+        page_end=page,
+        source_spans=[SourceSpan(page=page, start_offset=0, end_offset=len(text), text=text)],
+        child_ordinal=0,
+        content_hash="b" * 64,
+        token_count=max(1, len(text.split())),
+        text=text,
+    )
+
+
+def child_metadata(item: ChildDocumentChunk) -> dict[str, object]:
+    return item.model_dump(mode="json", exclude={"text"})
 
 
 def test_retriever_filters_active_version_and_returns_ranked_top_five() -> None:
@@ -102,11 +122,9 @@ def test_parent_context_deduplicates_parents_of_top_five_children() -> None:
                 page_content=f"Child {index}",
                 metadata={
                     "metadata": {
-                        "chunk_id": f"v1:child:{index}",
-                        "parent_id": "v1:parent:0",
-                        "corpus_version_id": "v1",
-                        "page": index + 1,
-                        "section": "Governance",
+                        **child_metadata(child(
+                            f"v1:child:{index}", "v1:parent:0", "v1", f"Child {index}", index + 1
+                        )),
                     }
                 },
             ),
@@ -126,6 +144,8 @@ def test_parent_context_deduplicates_parents_of_top_five_children() -> None:
         f"v1:child:{index}" for index in range(5)
     ]
     assert [context.parent_id for context in evidence.parent_context] == ["v1:parent:0"]
+    assert [item.chunk_id for item in evidence.child_sources] == [f"v1:child:{index}" for index in range(5)]
+    assert [item.parent_id for item in evidence.source_parents] == ["v1:parent:0"]
     assert reader.calls == [(("v1:parent:0",), "v1")]
     assert [item.parent_id for item in evidence.selected_parents] == ["v1:parent:0"]
 
@@ -137,11 +157,9 @@ def test_parent_context_ignores_missing_and_wrong_corpus_parents() -> None:
                 page_content="Child excerpt",
                 metadata={
                     "metadata": {
-                        "chunk_id": f"v1:child:{index}",
-                        "parent_id": parent_id,
-                        "corpus_version_id": "v1",
-                        "page": index + 1,
-                        "section": "Governance",
+                        **child_metadata(child(
+                            f"v1:child:{index}", parent_id, "v1", "Child excerpt", index + 1
+                        )),
                     }
                 },
             ),
@@ -284,11 +302,10 @@ def test_concurrent_parent_context_reads_use_request_local_corpus_ids() -> None:
                         page_content=f"{version} child",
                         metadata={
                             "metadata": {
-                                "chunk_id": f"{version}:child:0",
-                                "parent_id": f"{version}:parent:0",
-                                "corpus_version_id": version,
-                                "page": 1,
-                                "section": "Governance",
+                                **child_metadata(child(
+                                    f"{version}:child:0", f"{version}:parent:0", version,
+                                    f"{version} child",
+                                )),
                             }
                         },
                     ),

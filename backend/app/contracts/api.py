@@ -452,6 +452,7 @@ class Citation(ContractModel):
     citation_id: str = Field(min_length=1, max_length=128)
     page: int = Field(ge=1)
     section: str = Field(min_length=1, max_length=500)
+    excerpt: str | None = Field(default=None, max_length=500)
 
 
 class RetrievedPassage(ContractModel):

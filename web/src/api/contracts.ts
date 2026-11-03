@@ -146,6 +146,7 @@ export interface Citation {
   citation_id: string;
   page: number;
   section: string;
+  excerpt?: string | null;
 }
 
 export interface RetrievedPassage {

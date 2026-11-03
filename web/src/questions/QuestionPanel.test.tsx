@@ -59,6 +59,19 @@ describe("QuestionPanel", () => {
     if (outcome === "refusal") expect(screen.queryByLabelText("Citations")).not.toBeInTheDocument();
   });
 
+  it("renders a bounded excerpt from a validated citation", async () => {
+    const answer = response("answer");
+    answer.citations[0].excerpt = "Server-validated verbatim source excerpt.";
+    mockApi(answer);
+    const user = userEvent.setup();
+    render(<QuestionPanel token="firebase-token" onSignOut={vi.fn()} />);
+
+    await user.type(await screen.findByLabelText("Ask a DMBOK question"), "What is data governance?");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+
+    expect(await screen.findByText("Server-validated verbatim source excerpt.")).toBeInTheDocument();
+  });
+
   it("clears the answer and question from the active session", async () => {
     mockApi(response("answer"));
     const user = userEvent.setup();

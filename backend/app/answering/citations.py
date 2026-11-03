@@ -9,6 +9,7 @@ entailment; that remains an evaluator/human-review concern.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from hashlib import sha256
 from typing import Iterable, Mapping, Sequence
 
 from app.contracts import (
@@ -194,6 +195,11 @@ def _validate_child_parent_link(child: ChildDocumentChunk, parent: ParentChunk) 
         )
     ):
         raise CitationValidationError(f"retrieved source text or offsets changed: {child.chunk_id}")
+    if (
+        sha256(parent.text.encode("utf-8")).hexdigest() != parent.content_hash
+        or sha256(child.text.encode("utf-8")).hexdigest() != child.content_hash
+    ):
+        raise CitationValidationError(f"retrieved source content hash changed: {child.chunk_id}")
     for child_span in child.source_spans:
         linked = any(
             source.page == child_span.page

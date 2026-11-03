@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from hashlib import sha256
 
 import pytest
 
@@ -175,7 +176,7 @@ def test_pipeline_generates_with_parent_context_but_traces_child_evidence() -> N
         page_start=4,
         page_end=4,
         source_spans=[SourceSpan(page=4, start_offset=0, end_offset=len(parent_text), text=parent_text)],
-        content_hash="a" * 64,
+        content_hash=sha256(parent_text.encode()).hexdigest(),
         token_count=8,
         text=parent_text,
     )
@@ -193,7 +194,7 @@ def test_pipeline_generates_with_parent_context_but_traces_child_evidence() -> N
             text=child_source_text,
         )],
         child_ordinal=0,
-        content_hash="c" * 64,
+        content_hash=sha256(child_source_text.encode()).hexdigest(),
         token_count=4,
         text=child_source_text,
     )

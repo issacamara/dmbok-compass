@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from hashlib import sha256
+
 import pytest
 
 from app.answering.citations import CitationValidationError, validated_citations
@@ -17,7 +19,7 @@ def source_parent(
         page_start=source_spans[0].page,
         page_end=source_spans[-1].page,
         source_spans=source_spans,
-        content_hash="a" * 64,
+        content_hash=sha256("\n".join(span.text for span in source_spans).encode()).hexdigest(),
         token_count=10,
         text="\n".join(span.text for span in source_spans),
     )
@@ -35,7 +37,7 @@ def source_child(
         page_end=spans[-1].page,
         source_spans=spans,
         child_ordinal=0,
-        content_hash="b" * 64,
+        content_hash=sha256("\n".join(span.text for span in spans).encode()).hexdigest(),
         token_count=10,
         text="\n".join(span.text for span in spans),
     )
@@ -155,6 +157,31 @@ def test_citations_reject_a_child_span_not_contained_by_its_parent() -> None:
         validated_citations(
             candidate(child.chunk_id, "Source"), retrieved(child),
             child_sources=(child,), source_parents=(parent,), corpus_version_id="v1",
+        )
+
+
+@pytest.mark.parametrize("stale_record", ["parent", "child"])
+def test_citations_reject_coherently_changed_text_with_stale_hash(
+    stale_record: str,
+) -> None:
+    original = SourceSpan(page=1, start_offset=0, end_offset=13, text="Original data")
+    tampered = SourceSpan(page=1, start_offset=0, end_offset=13, text="Tampered data")
+    original_parent = source_parent([original])
+    original_child = source_child([original])
+    parent = source_parent([tampered])
+    child = source_child([tampered])
+    if stale_record == "parent":
+        parent = parent.model_copy(update={"content_hash": original_parent.content_hash})
+    else:
+        child = child.model_copy(update={"content_hash": original_child.content_hash})
+
+    with pytest.raises(CitationValidationError, match="content hash changed"):
+        validated_citations(
+            candidate(child.chunk_id, tampered.text),
+            retrieved(child),
+            child_sources=(child,),
+            source_parents=(parent,),
+            corpus_version_id="v1",
         )
 
 

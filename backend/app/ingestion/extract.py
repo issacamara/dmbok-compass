@@ -11,6 +11,8 @@ from typing import Any
 
 from langchain_community.document_loaders import PyPDFLoader
 
+from app.contracts import StructureMap
+from app.corpus.structure_map import LogicalSection, sections_from_pages
 
 _CHAPTER = re.compile(r"\b(?:CHAPTER|Chapter)\s+\d+(?:\s*[-:.]\s*|\s+)(.+)")
 _NUMBERED_SECTION = re.compile(r"^\s*(\d+(?:\.\d+)+)\s+(.+?)\s*$")
@@ -121,4 +123,14 @@ def extract_pdf(pdf_path: str | Path, *, source_uri: str | None = None) -> Extra
         page_count=len(documents),
         pages=tuple(pages),
         failures=tuple(failures),
+    )
+
+
+def recover_logical_sections(report: ExtractionReport, structure_map: StructureMap) -> tuple[LogicalSection, ...]:
+    """Recover map-authorized logical sections from a completed extraction."""
+
+    return sections_from_pages(
+        structure_map,
+        source_sha256=report.source_sha256,
+        pages=((page.page, page.text) for page in report.pages),
     )

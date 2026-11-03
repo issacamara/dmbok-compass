@@ -8,7 +8,7 @@ import re
 from dataclasses import dataclass
 from typing import Any, Iterable
 
-from app.contracts import StructureMap, StructureMapEntry
+from app.contracts import SourceSpan, StructureMap, StructureMapEntry
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
@@ -89,6 +89,60 @@ class StructureMapProposal:
         return json.dumps(self.to_dict(), indent=2, sort_keys=True) + "\n"
 
 
+@dataclass(frozen=True, slots=True)
+class LogicalSection:
+    """One ordered, source-linked section recovered from mapped PDF pages."""
+
+    section_path: tuple[str, ...]
+    source_spans: tuple[SourceSpan, ...]
+
+    @property
+    def page_start(self) -> int:
+        return self.source_spans[0].page
+
+    @property
+    def page_end(self) -> int:
+        return self.source_spans[-1].page
+
+    @property
+    def text(self) -> str:
+        return "\n".join(span.text for span in self.source_spans)
+
+
+def sections_from_pages(
+    structure_map: StructureMap,
+    *,
+    source_sha256: str,
+    pages: Iterable[tuple[int, str]],
+) -> tuple[LogicalSection, ...]:
+    """Map ordered one-based pages to contiguous logical sections.
+
+    The map is deliberately authoritative: malformed coverage or a source
+    mismatch is rejected instead of silently assigning text to a neighbour.
+    """
+
+    if structure_map.source_sha256 != source_sha256:
+        raise ValueError("structure map source SHA-256 does not match extracted source")
+    page_text = tuple(pages)
+    expected_pages = tuple(range(1, len(page_text) + 1))
+    if tuple(page for page, _ in page_text) != expected_pages:
+        raise ValueError("source pages must be ordered, contiguous, and one-based")
+    paths = _paths_by_page(structure_map.entries, len(page_text))
+    sections: list[LogicalSection] = []
+    current_path: tuple[str, ...] | None = None
+    spans: list[SourceSpan] = []
+    for (page, text), path in zip(page_text, paths, strict=True):
+        if path != current_path:
+            if spans:
+                sections.append(LogicalSection(current_path or _UNCLASSIFIED, tuple(spans)))
+            current_path, spans = path, []
+        if text:
+            spans.append(SourceSpan(page=page, start_offset=0, end_offset=len(text), text=text))
+    if spans:
+        sections.append(LogicalSection(current_path or _UNCLASSIFIED, tuple(spans)))
+    return tuple(sections)
+
+
 def propose_structure_map(
     source: SourceIdentity,
     *,
@@ -146,6 +200,19 @@ def _entries(paths: list[tuple[str, ...]]) -> list[StructureMapEntry]:
             start, current = page, path
     entries.append(StructureMapEntry(section_path=current, page_start=start, page_end=len(paths)))
     return entries
+
+
+def _paths_by_page(entries: Iterable[StructureMapEntry], page_count: int) -> tuple[tuple[str, ...], ...]:
+    paths: list[tuple[str, ...]] = []
+    next_page = 1
+    for entry in entries:
+        if entry.page_start != next_page or entry.page_end > page_count:
+            raise ValueError("structure map entries must cover source pages contiguously")
+        paths.extend([entry.section_path] * (entry.page_end - entry.page_start + 1))
+        next_page = entry.page_end + 1
+    if next_page != page_count + 1:
+        raise ValueError("structure map entries must cover every source page")
+    return tuple(paths)
 
 
 def _mismatch_reason(toc_paths: set[tuple[str, ...]], printed_paths: set[tuple[str, ...]]) -> str:

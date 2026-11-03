@@ -7,9 +7,11 @@ from hashlib import sha256
 
 import pytest
 
-from app.contracts import CorpusServingBinding, CorpusValidationEvidence, CorpusVersion, ParentChunk, SourceSpan
+from app.contracts import ChildDocumentChunk, CorpusServingBinding, CorpusValidationEvidence, CorpusVersion, ParentChunk, SourceSpan
 from app.corpus.chunking import TextChunk
 from app.corpus.firestore import FirestoreCorpusVersionStore, FirestoreParentChunkStore
+from app.corpus.search_probe import ReadinessSignal, SearchReadinessEvidence
+from app.corpus.chunking import _token_count
 from app.corpus.versions import ConcurrentCorpusActivationError, CorpusVersionError
 
 
@@ -225,14 +227,14 @@ def parent_chunk(version_id: str = "v1") -> ParentChunk:
         page_end=2,
         source_spans=spans,
         content_hash=sha256(b"one\ntwo").hexdigest(),
-        token_count=2,
+        token_count=_token_count("one\ntwo"),
         text="one\ntwo",
     )
 
 
 def test_firestore_parent_store_round_trips_source_spans_and_nested_manifest_metadata() -> None:
     client = FakeFirestore()
-    parent = parent_chunk()
+    parent = parent_chunk("v2")
     metadata = {
         "source_uri": "gs://corpus/source.pdf#7",
         "corpus_manifest": {"derivation": {"version": "hierarchical-corpus-v1"}},
@@ -253,6 +255,150 @@ def test_firestore_parent_store_round_trips_source_spans_and_nested_manifest_met
 def test_firestore_parent_store_rejects_batches_over_firestore_limit() -> None:
     with pytest.raises(ValueError, match="at most 500"):
         FirestoreParentChunkStore(FakeFirestore()).write_batch([parent_chunk()] * 501)
+
+
+def test_hierarchical_validation_reads_back_parents_children_and_gates_activation() -> None:
+    client = FakeFirestore()
+    candidate_binding = binding("v2")
+    candidate = version("v2", "staged", serving_binding=candidate_binding)
+    persist(client, candidate)
+    text = "child passage"
+    span = SourceSpan(page=1, start_offset=0, end_offset=len(text), text=text)
+    parent = ParentChunk(
+        parent_id="v2:parent:1",
+        corpus_version_id="v2",
+        section_path=("Chapter 1",),
+        page_start=1,
+        page_end=1,
+        source_spans=[span],
+        content_hash=sha256(text.encode()).hexdigest(),
+        token_count=_token_count(text),
+        text=text,
+    )
+    child = ChildDocumentChunk(
+        chunk_id="v2:child:1",
+        corpus_version_id="v2",
+        parent_id=parent.parent_id,
+        section_path=parent.section_path,
+        page_start=1,
+        page_end=1,
+        source_spans=[span],
+        child_ordinal=0,
+        content_hash=parent.content_hash,
+        token_count=parent.token_count,
+        text=text,
+    )
+    FirestoreParentChunkStore(client).write_batch([parent])
+    metadata = {
+        key: value
+        for key, value in child.model_dump(mode="json").items()
+        if key != "text"
+    }
+    metadata.update(
+        corpus_manifest_sha256=candidate_binding.ingestion_fingerprint,
+        derivation_sha256=candidate_binding.configuration_fingerprint,
+    )
+    client.data[f"{candidate_binding.vector_collection}/{child.chunk_id}"] = {
+        "text": child.text,
+        "embedding": [0.0] * candidate.embedding_dimensions,
+        "metadata": metadata,
+    }
+
+    repository = store(client)
+    checked = repository.validate_hierarchical("v2", [parent], [child])
+
+    assert checked.status == "staged"
+    assert checked.validation_evidence is not None
+    assert checked.validation_evidence.index_ready is False
+    assert checked.validation_evidence.filter_ready is False
+    with pytest.raises(CorpusVersionError, match="only a validated"):
+        repository.activate("v2", expected_active_version_id=None)
+
+    complete = ReadinessSignal(
+        "complete", datetime.now(timezone.utc), candidate_binding.vector_collection,
+        "index-v2", child.chunk_id, "v2",
+    )
+    repository.persist_search_readiness(
+        "v2", SearchReadinessEvidence(complete, None, 0)
+    )
+    assert repository.get("v2").status == "staged"  # type: ignore[union-attr]
+    ready = ReadinessSignal(
+        "search_ready", datetime.now(timezone.utc), candidate_binding.vector_collection,
+        "index-v2", child.chunk_id, "v2",
+    )
+    repository.persist_search_readiness(
+        "v2", SearchReadinessEvidence(complete, ready, 1)
+    )
+    assert repository.get("v2").status == "validated"  # type: ignore[union-attr]
+    assert client.data["corpus_search_readiness/v2"]["complete"]["observed_at"]
+    assert client.data["corpus_search_readiness/v2"]["search_ready"]["index_id"] == "index-v2"
+
+
+def test_hierarchical_validation_rejects_missing_or_tampered_persisted_child() -> None:
+    client = FakeFirestore()
+    candidate = version("v2", "staged", serving_binding=binding("v2"))
+    persist(client, candidate)
+    text = "child"
+    span = SourceSpan(page=1, start_offset=0, end_offset=len(text), text=text)
+    parent = ParentChunk(
+        parent_id="v2:parent:1", corpus_version_id="v2", section_path=("Chapter",),
+        page_start=1, page_end=1, source_spans=[span],
+        content_hash=sha256(text.encode()).hexdigest(), token_count=_token_count(text), text=text,
+    )
+    child = ChildDocumentChunk(
+        chunk_id="v2:child:1", corpus_version_id="v2", parent_id=parent.parent_id,
+        section_path=parent.section_path, page_start=1, page_end=1, source_spans=[span],
+        child_ordinal=0, content_hash=parent.content_hash, token_count=parent.token_count, text=text,
+    )
+    FirestoreParentChunkStore(client).write_batch([parent])
+
+    with pytest.raises(ValueError, match="persisted children do not match"):
+        store(client).validate_hierarchical("v2", [parent], [child])
+
+    assert store(client).get("v2").status == "staged"  # type: ignore[union-attr]
+    assert store(client).active() is None
+
+
+def test_hierarchical_validation_rejects_provider_dimension_mismatch() -> None:
+    client = FakeFirestore()
+    candidate = version("v2", "staged", serving_binding=binding("v2"))
+    persist(client, candidate)
+    parent = parent_chunk("v2")
+    child = ChildDocumentChunk(
+        chunk_id="v2:child:1",
+        corpus_version_id="v2",
+        parent_id=parent.parent_id,
+        section_path=parent.section_path,
+        page_start=parent.page_start,
+        page_end=parent.page_end,
+        source_spans=parent.source_spans,
+        child_ordinal=0,
+        content_hash=parent.content_hash,
+        token_count=_token_count(parent.text),
+        text=parent.text,
+    )
+    FirestoreParentChunkStore(client).write_batch([parent])
+    metadata = {
+        key: value
+        for key, value in child.model_dump(mode="json").items()
+        if key != "text"
+    }
+    item_binding = candidate.serving_binding
+    assert item_binding is not None
+    metadata.update(
+        corpus_manifest_sha256=item_binding.ingestion_fingerprint,
+        derivation_sha256=item_binding.configuration_fingerprint,
+    )
+    client.data[f"{item_binding.vector_collection}/{child.chunk_id}"] = {
+        "text": child.text,
+        "embedding": [0.0] * (candidate.embedding_dimensions - 1),
+        "metadata": metadata,
+    }
+
+    with pytest.raises(ValueError, match="embedding has an invalid provider dimension"):
+        store(client).validate_hierarchical("v2", [parent], [child])
+
+    assert store(client).get("v2").status == "staged"  # type: ignore[union-attr]
 
 
 def persist_vector(

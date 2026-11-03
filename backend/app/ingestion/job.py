@@ -12,6 +12,7 @@ from app.corpus.search_probe import (
     SearchReadinessEvidence,
 )
 from app.corpus.versions import CorpusVersionStore
+from app.corpus.versions import CorpusCompletenessError, validate_hierarchical_records
 from app.corpus.chunking import TextChunk
 
 
@@ -113,6 +114,7 @@ class CorpusIngestionJob:
         parents: Sequence[ParentChunk],
         children: Sequence[ChildDocumentChunk],
         *,
+        unresolved_exceptions: Sequence[Any] = (),
         termination_requested: Callable[[], bool] | None = None,
     ) -> HierarchicalIngestionResult:
         """Persist a complete parent/child candidate without validating or activating it."""
@@ -121,7 +123,7 @@ class CorpusIngestionJob:
             raise ValueError("hierarchical corpus writes require a staged version")
         if not isinstance(self.writer, HierarchicalCorpusWriter):
             raise TypeError("hierarchical ingestion requires a HierarchicalCorpusWriter")
-        _validate_hierarchy(version.version_id, parents, children)
+        validate_hierarchical_records(version.version_id, parents, children)
         existing = self.versions.get(version.version_id)
         if existing is not None and existing.status in {"validated", "active"}:
             return HierarchicalIngestionResult(existing, tuple(parents), tuple(children))
@@ -147,6 +149,49 @@ class CorpusIngestionJob:
                 self.writer.write_child_batch(children[start : start + self.writer.max_batch_size])
                 if requested():
                     raise IngestionInterrupted("ingestion stopped after a persisted child batch")
+
+            binding = staged.serving_binding
+            collection_id = binding.vector_collection if binding is not None else "document_chunks_v2"
+            probe = CandidateFilteredVectorProbe(
+                self.writer.vector_store,
+                collection_id=collection_id,
+                schema_version=children[0].schema_version,
+            )
+            persist_probe = getattr(self.versions, "persist_search_readiness", None)
+            if unresolved_exceptions:
+                complete = probe.complete_signal(version_id=staged.version_id, candidate=children[0])
+                incomplete = complete.__class__(
+                    status="incomplete",
+                    observed_at=complete.observed_at,
+                    collection_id=complete.collection_id,
+                    index_id=complete.index_id,
+                    candidate_chunk_id=complete.candidate_chunk_id,
+                    corpus_version_id=complete.corpus_version_id,
+                )
+                if callable(persist_probe):
+                    persist_probe(
+                        staged.version_id,
+                        SearchReadinessEvidence(incomplete, None, 0),
+                    )
+                if callable(finish):
+                    finish(staged.version_id, status="failed")
+                return HierarchicalIngestionResult(staged, tuple(parents), tuple(children))
+
+            self.versions.validate_hierarchical(staged.version_id, parents, children)
+            if not hasattr(self.writer.vector_store, "similarity_search_with_score"):
+                raise CorpusCompletenessError("candidate-filtered child search is unavailable")
+            if callable(persist_probe):
+                persist_probe(
+                    staged.version_id,
+                    SearchReadinessEvidence(
+                        probe.complete_signal(version_id=staged.version_id, candidate=children[0]),
+                        None,
+                        0,
+                    ),
+                )
+            evidence = probe.run(version_id=staged.version_id, candidate=children[0])
+            if callable(persist_probe):
+                persist_probe(staged.version_id, evidence)
         except IngestionInterrupted:
             if callable(finish):
                 finish(staged.version_id, status="interrupted")
@@ -158,49 +203,5 @@ class CorpusIngestionJob:
         else:
             if callable(finish):
                 finish(staged.version_id, status="completed")
-            return HierarchicalIngestionResult(staged, tuple(parents), tuple(children))
-
-
-def _validate_hierarchy(
-    version_id: str,
-    parents: Sequence[ParentChunk],
-    children: Sequence[ChildDocumentChunk],
-) -> None:
-    if not parents or not children:
-        raise ValueError("hierarchical corpus requires parent and child records")
-    parent_by_id: dict[str, ParentChunk] = {}
-    for parent in parents:
-        if parent.corpus_version_id != version_id:
-            raise ValueError("parent belongs to another corpus version")
-        if parent.parent_id in parent_by_id:
-            raise ValueError("hierarchical corpus contains duplicate parent IDs")
-        parent_by_id[parent.parent_id] = parent
-
-    child_ids: set[str] = set()
-    referenced_parent_ids: set[str] = set()
-    for child in children:
-        if child.corpus_version_id != version_id:
-            raise ValueError("child belongs to another corpus version")
-        if child.chunk_id in child_ids:
-            raise ValueError("hierarchical corpus contains duplicate child IDs")
-        child_ids.add(child.chunk_id)
-        parent = parent_by_id.get(child.parent_id)
-        if parent is None:
-            raise ValueError("child references a missing or cross-corpus parent")
-        if (
-            child.section_path != parent.section_path
-            or child.page_start < parent.page_start
-            or child.page_end > parent.page_end
-        ):
-            raise ValueError("child provenance does not match its parent")
-        for child_span in child.source_spans:
-            if not any(
-                parent_span.page == child_span.page
-                and parent_span.start_offset <= child_span.start_offset
-                and child_span.end_offset <= parent_span.end_offset
-                for parent_span in parent.source_spans
-            ):
-                raise ValueError("child source span is outside its parent")
-        referenced_parent_ids.add(parent.parent_id)
-    if referenced_parent_ids != set(parent_by_id):
-        raise ValueError("each persisted parent must have at least one linked child")
+            validated = self.versions.get(staged.version_id) or staged
+            return HierarchicalIngestionResult(validated, tuple(parents), tuple(children))

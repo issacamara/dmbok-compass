@@ -57,6 +57,7 @@ def test_valid_citation_reconstructs_server_owned_provenance() -> None:
         "citation_id": "chunk-1",
         "page": 4,
         "section": "Governance",
+        "excerpt": "retention policy requires review",
     }
 
 

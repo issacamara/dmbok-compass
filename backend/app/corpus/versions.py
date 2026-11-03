@@ -8,11 +8,21 @@ offline ingestion job use :class:`InMemoryCorpusVersionStore`.
 from __future__ import annotations
 
 from copy import deepcopy
+from hashlib import sha256
+import json
 from threading import RLock
+from collections.abc import Sequence
 from typing import Any, Iterable, Protocol
 
-from app.contracts import CorpusServingBinding, CorpusVersion
+from app.contracts import (
+    ChildDocumentChunk,
+    CorpusServingBinding,
+    CorpusValidationEvidence,
+    CorpusVersion,
+    ParentChunk,
+)
 from app.corpus.indexing import VECTOR_SCHEMA_VERSION
+from app.corpus.search_probe import SearchReadinessEvidence
 
 _UNSET = object()
 
@@ -62,6 +72,13 @@ class CorpusVersionStore(Protocol):
 
     def validate(self, version_id: str, chunks: Iterable[Any]) -> CorpusVersion: ...
 
+    def validate_hierarchical(
+        self,
+        version_id: str,
+        parents: Sequence[ParentChunk],
+        children: Sequence[ChildDocumentChunk],
+    ) -> CorpusVersion: ...
+
     def activate(
         self,
         version_id: str,
@@ -87,7 +104,71 @@ class InMemoryCorpusVersionStore:
         self._versions: dict[str, CorpusVersion] = {}
         self._active_id: str | None = None
         self._previous_active_id: str | None = None
+        self._search_readiness: dict[str, SearchReadinessEvidence] = {}
+        self._hierarchical_child_ids: dict[str, set[str]] = {}
         self._lock = RLock()
+
+    def persist_search_readiness(
+        self, version_id: str, evidence: SearchReadinessEvidence
+    ) -> None:
+        if evidence.complete.corpus_version_id != version_id:
+            raise CorpusVersionError("search readiness evidence is bound to another corpus")
+        version = self.get(version_id)
+        if version is None:
+            raise CorpusVersionError(f"unknown corpus version: {version_id}")
+        expected_collection = (
+            version.serving_binding.vector_collection
+            if version.serving_binding is not None
+            else "document_chunks_v2"
+        )
+        if (
+            evidence.complete.collection_id != expected_collection
+            or evidence.complete.status not in {"complete", "incomplete"}
+            or not evidence.complete.candidate_chunk_id
+            or not evidence.complete.index_id
+            or evidence.complete.observed_at.tzinfo is None
+        ):
+            raise CorpusVersionError("search readiness evidence has invalid identity or timestamp")
+        if evidence.search_ready is not None and (
+            evidence.search_ready.corpus_version_id != version_id
+            or evidence.search_ready.candidate_chunk_id != evidence.complete.candidate_chunk_id
+            or evidence.search_ready.collection_id != evidence.complete.collection_id
+            or evidence.search_ready.index_id != evidence.complete.index_id
+            or evidence.search_ready.status != "search_ready"
+            or evidence.complete.status != "complete"
+            or evidence.search_ready.observed_at.tzinfo is None
+            or evidence.search_ready.observed_at < evidence.complete.observed_at
+            or not 1 <= evidence.attempts <= 3
+        ):
+            raise CorpusVersionError("search readiness evidence is inconsistent")
+        if evidence.search_ready is None and evidence.attempts != 0:
+            raise CorpusVersionError("search attempts require a search readiness signal")
+        with self._lock:
+            version = self._require(version_id)
+            known_child_ids = self._hierarchical_child_ids.get(version_id)
+            if (
+                evidence.search_ready is not None
+                and known_child_ids is not None
+                and evidence.complete.candidate_chunk_id not in known_child_ids
+            ):
+                raise CorpusVersionError("search readiness candidate is not in the validated hierarchy")
+            self._search_readiness[version_id] = deepcopy(evidence)
+            validation = version.validation_evidence
+            if (
+                version.status == "staged"
+                and validation is not None
+                and not validation.index_ready
+                and not validation.filter_ready
+                and evidence.complete.status == "complete"
+                and evidence.search_ready is not None
+            ):
+                ready_evidence = validation.model_copy(
+                    update={"index_ready": True, "filter_ready": True}
+                )
+                self._versions[version_id] = version.model_copy(
+                    update={"status": "validated", "validation_evidence": ready_evidence},
+                    deep=True,
+                )
 
     def get(self, version_id: str) -> CorpusVersion | None:
         with self._lock:
@@ -109,6 +190,29 @@ class InMemoryCorpusVersionStore:
                 return deepcopy(existing)
             self._versions[version.version_id] = version.model_copy(deep=True)
             return deepcopy(version)
+
+    def validate_hierarchical(
+        self,
+        version_id: str,
+        parents: Sequence[ParentChunk],
+        children: Sequence[ChildDocumentChunk],
+    ) -> CorpusVersion:
+        """Validate the complete hierarchy without marking search as ready."""
+
+        validate_hierarchical_records(version_id, parents, children)
+        with self._lock:
+            version = self._require(version_id)
+            if version.status in {"validated", "active"}:
+                return deepcopy(version)
+            if version.status != "staged":
+                raise CorpusVersionError(f"cannot validate a {version.status} corpus version")
+            evidence = hierarchical_validation_evidence(
+                version, parents, children, index_ready=False, filter_ready=False
+            )
+            updated = version.model_copy(update={"validation_evidence": evidence}, deep=True)
+            self._versions[version_id] = updated
+            self._hierarchical_child_ids[version_id] = {child.chunk_id for child in children}
+            return deepcopy(updated)
 
     def validate(self, version_id: str, chunks: Iterable[Any]) -> CorpusVersion:
         chunk_list = tuple(chunks)
@@ -192,3 +296,164 @@ class InMemoryCorpusVersionStore:
         if version is None:
             raise CorpusVersionError(f"unknown corpus version: {version_id}")
         return version
+
+
+def validate_hierarchical_records(
+    version_id: str,
+    parents: Sequence[ParentChunk],
+    children: Sequence[ChildDocumentChunk],
+) -> None:
+    """Reject malformed, incomplete, oversized, or incorrectly linked candidates."""
+
+    from app.corpus.chunking import CHILD_MAX_TOKENS, PARENT_MAX_TOKENS, _token_count
+
+    if not parents or not children:
+        raise CorpusCompletenessError("hierarchical corpus requires parent and child records")
+    parent_by_id: dict[str, ParentChunk] = {}
+    for parent in parents:
+        if parent.corpus_version_id != version_id:
+            raise CorpusCompletenessError("parent belongs to another corpus version")
+        if parent.parent_id in parent_by_id:
+            raise CorpusCompletenessError("hierarchical corpus contains duplicate parent IDs")
+        _validate_record_text(
+            parent.text, parent.source_spans, parent.content_hash, parent.token_count,
+            PARENT_MAX_TOKENS, _token_count, "parent",
+        )
+        parent_by_id[parent.parent_id] = parent
+
+    child_ids: set[str] = set()
+    children_by_parent: dict[str, list[ChildDocumentChunk]] = {}
+    for child in children:
+        if child.corpus_version_id != version_id:
+            raise CorpusCompletenessError("child belongs to another corpus version")
+        if child.chunk_id in child_ids:
+            raise CorpusCompletenessError("hierarchical corpus contains duplicate child IDs")
+        child_ids.add(child.chunk_id)
+        parent = parent_by_id.get(child.parent_id)
+        if parent is None:
+            raise CorpusCompletenessError("child references a missing or cross-corpus parent")
+        if (
+            child.section_path != parent.section_path
+            or child.page_start < parent.page_start
+            or child.page_end > parent.page_end
+        ):
+            raise CorpusCompletenessError("child provenance does not match its parent")
+        _validate_record_text(
+            child.text, child.source_spans, child.content_hash, child.token_count,
+            CHILD_MAX_TOKENS, _token_count, "child",
+        )
+        children_by_parent.setdefault(parent.parent_id, []).append(child)
+
+    if set(children_by_parent) != set(parent_by_id):
+        raise CorpusCompletenessError("each persisted parent must have at least one linked child")
+    for parent_id, parent in parent_by_id.items():
+        linked = sorted(children_by_parent[parent_id], key=lambda child: child.child_ordinal)
+        if [child.child_ordinal for child in linked] != list(range(len(linked))):
+            raise CorpusCompletenessError("child ordinals must be contiguous within each parent")
+        child_span_order = [
+            (span.page, span.start_offset, span.end_offset)
+            for child in linked
+            for span in child.source_spans
+        ]
+        if child_span_order != sorted(child_span_order):
+            raise CorpusCompletenessError("child ordinals do not preserve source span order")
+        covered: set[int] = set()
+        for parent_span in parent.source_spans:
+            source_segments = sorted(
+                (
+                    span
+                    for child in linked
+                    for span in child.source_spans
+                    if span.page == parent_span.page
+                    and parent_span.start_offset <= span.start_offset
+                    and span.end_offset <= parent_span.end_offset
+                ),
+                key=lambda span: span.start_offset,
+            )
+            cursor = parent_span.start_offset
+            text_parts: list[str] = []
+            for span in source_segments:
+                if span.start_offset != cursor:
+                    raise CorpusCompletenessError("child spans do not provide contiguous parent coverage")
+                cursor = span.end_offset
+                text_parts.append(span.text)
+            if cursor != parent_span.end_offset or "".join(text_parts) != parent_span.text:
+                raise CorpusCompletenessError("child spans do not fully cover their parent source span")
+            covered.update(id(span) for span in source_segments)
+        child_span_ids = {id(span) for child in linked for span in child.source_spans}
+        if covered != child_span_ids:
+            raise CorpusCompletenessError("child source spans fall outside their parent")
+
+
+def _validate_record_text(
+    text: str,
+    spans: Sequence[Any],
+    content_hash: str,
+    token_count: int,
+    maximum_tokens: int,
+    count_tokens: Any,
+    kind: str,
+) -> None:
+    expected_text = "\n".join(span.text for span in spans)
+    if text != expected_text:
+        raise CorpusCompletenessError(f"{kind} text does not match its source spans")
+    if sha256(text.encode("utf-8")).hexdigest() != content_hash:
+        raise CorpusCompletenessError(f"{kind} content hash does not match its text")
+    actual_tokens = count_tokens(text)
+    if token_count != actual_tokens or actual_tokens > maximum_tokens:
+        raise CorpusCompletenessError(f"{kind} token count is invalid or exceeds its limit")
+
+
+def _stable_hash(value: Any) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"))
+    return sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def hierarchical_validation_evidence(
+    version: CorpusVersion,
+    parents: Sequence[ParentChunk],
+    children: Sequence[ChildDocumentChunk],
+    *,
+    index_ready: bool,
+    filter_ready: bool,
+) -> CorpusValidationEvidence:
+    """Hash all persisted hierarchy records into deterministic readiness evidence."""
+
+    content = [
+        {"record_type": "parent", "record_id": parent.parent_id, "content_hash": parent.content_hash}
+        for parent in sorted(parents, key=lambda item: item.parent_id)
+    ] + [
+        {"record_type": "child", "record_id": child.chunk_id, "content_hash": child.content_hash}
+        for child in sorted(children, key=lambda item: item.chunk_id)
+    ]
+    provenance = [
+        {
+            "record_type": "parent",
+            "record_id": parent.parent_id,
+            "section_path": list(parent.section_path),
+            "page_start": parent.page_start,
+            "page_end": parent.page_end,
+            "source_spans": [span.model_dump(mode="json") for span in parent.source_spans],
+        }
+        for parent in sorted(parents, key=lambda item: item.parent_id)
+    ] + [
+        {
+            "record_type": "child",
+            "record_id": child.chunk_id,
+            "parent_id": child.parent_id,
+            "section_path": list(child.section_path),
+            "page_start": child.page_start,
+            "page_end": child.page_end,
+            "child_ordinal": child.child_ordinal,
+            "source_spans": [span.model_dump(mode="json") for span in child.source_spans],
+        }
+        for child in sorted(children, key=lambda item: item.chunk_id)
+    ]
+    return CorpusValidationEvidence(
+        chunk_count=len(children),
+        content_hashes_sha256=_stable_hash(content),
+        provenance_sha256=_stable_hash(provenance),
+        embedding_dimensions=version.embedding_dimensions,
+        index_ready=index_ready,
+        filter_ready=filter_ready,
+    )

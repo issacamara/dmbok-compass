@@ -6,19 +6,28 @@ from datetime import datetime, timezone
 from dataclasses import dataclass
 from hashlib import sha256
 import json
+import math
 from collections.abc import Mapping, Sequence
 from typing import Any, Callable, TypeVar
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
 
-from app.contracts import CorpusValidationEvidence, CorpusVersion, ParentChunk
+from app.contracts import (
+    ChildDocumentChunk,
+    CorpusValidationEvidence,
+    CorpusVersion,
+    ParentChunk,
+)
 from app.corpus.indexing import PARENT_COLLECTION, VECTOR_COLLECTION, VECTOR_SCHEMA_VERSION
 from app.corpus.search_probe import SearchReadinessEvidence
 from app.corpus.versions import (
     ConcurrentCorpusActivationError,
+    CorpusCompletenessError,
     CorpusVersionError,
+    hierarchical_validation_evidence,
     legacy_serving_binding,
+    validate_hierarchical_records,
 )
 
 T = TypeVar("T")
@@ -179,7 +188,167 @@ class FirestoreCorpusVersionStore:
     ) -> None:
         if evidence.complete.corpus_version_id != version_id:
             raise CorpusVersionError("search readiness evidence is bound to another corpus")
+        if (
+            evidence.complete.status not in {"complete", "incomplete"}
+            or not evidence.complete.candidate_chunk_id
+            or not evidence.complete.collection_id
+            or not evidence.complete.index_id
+            or evidence.complete.observed_at.tzinfo is None
+        ):
+            raise CorpusVersionError("search readiness evidence is missing collection or index identity")
+        version = self.get(version_id)
+        expected_collection = (
+            version.serving_binding.vector_collection
+            if version is not None and version.serving_binding is not None
+            else self.vector_collection_id
+        )
+        if evidence.complete.collection_id != expected_collection:
+            raise CorpusVersionError("search readiness evidence is bound to another collection")
+        if evidence.search_ready is not None and (
+            evidence.complete.status != "complete"
+            or evidence.search_ready.status != "search_ready"
+            or evidence.search_ready.corpus_version_id != version_id
+            or evidence.search_ready.candidate_chunk_id != evidence.complete.candidate_chunk_id
+            or evidence.search_ready.collection_id != evidence.complete.collection_id
+            or evidence.search_ready.index_id != evidence.complete.index_id
+            or evidence.search_ready.observed_at.tzinfo is None
+            or evidence.search_ready.observed_at < evidence.complete.observed_at
+            or not 1 <= evidence.attempts <= 3
+        ):
+            raise CorpusVersionError("search readiness evidence is inconsistent")
+        if evidence.search_ready is None and evidence.attempts != 0:
+            raise CorpusVersionError("search attempts require a search readiness signal")
+        if evidence.search_ready is not None:
+            candidate_snapshot = self.client.collection(expected_collection).document(
+                evidence.complete.candidate_chunk_id
+            ).get()
+            candidate_data = candidate_snapshot.to_dict() if candidate_snapshot.exists else {}
+            candidate_metadata = candidate_data.get("metadata", {})
+            if (
+                not isinstance(candidate_metadata, dict)
+                or candidate_metadata.get("corpus_version_id") != version_id
+                or candidate_metadata.get("chunk_id") != evidence.complete.candidate_chunk_id
+            ):
+                raise CorpusVersionError("search readiness candidate is not persisted for this corpus")
         self.readiness.document(version_id).set(evidence.model_dump())
+        if evidence.search_ready is None:
+            return
+        version = self.get(version_id)
+        if version is None or version.validation_evidence is None:
+            return
+        validation = version.validation_evidence
+        if (
+            version.status == "staged"
+            and not validation.index_ready
+            and not validation.filter_ready
+        ):
+            ready_evidence = validation.model_copy(
+                update={"index_ready": True, "filter_ready": True}
+            )
+            self.versions.document(version_id).set(
+                version.model_copy(
+                    update={"status": "validated", "validation_evidence": ready_evidence}
+                ).model_dump(mode="json")
+            )
+
+    def validate_hierarchical(
+        self,
+        version_id: str,
+        parents: Sequence[ParentChunk],
+        children: Sequence[ChildDocumentChunk],
+    ) -> CorpusVersion:
+        """Validate expected parent and child records against persisted Firestore data."""
+
+        version = self.get(version_id)
+        if version is None:
+            raise CorpusVersionError(f"unknown corpus version: {version_id}")
+        if version.status in {"validated", "active"}:
+            return version
+        if version.status != "staged":
+            raise CorpusVersionError(f"cannot validate a {version.status} corpus version")
+        validate_hierarchical_records(version_id, parents, children)
+
+        expected_parents = {parent.parent_id: parent for parent in parents}
+        parent_snapshots = self.client.collection(PARENT_COLLECTION).where(
+            filter=FieldFilter("corpus_version_id", "==", version_id)
+        ).stream()
+        persisted_parents: dict[str, ParentChunk] = {}
+        for snapshot in parent_snapshots:
+            data = snapshot.to_dict()
+            parent_id = data.get("parent_id") or _document_id(snapshot)
+            if parent_id in persisted_parents:
+                raise CorpusCompletenessError("persisted parent collection contains duplicate IDs")
+            persisted_parents[parent_id] = ParentChunk.model_validate(
+                {key: value for key, value in data.items() if key != "metadata"}
+            )
+        if set(persisted_parents) != set(expected_parents):
+            raise CorpusCompletenessError("persisted parents do not match the staged hierarchy")
+        for parent_id, parent in expected_parents.items():
+            if persisted_parents[parent_id] != parent:
+                raise CorpusCompletenessError("persisted parent failed content or provenance validation")
+
+        binding = version.serving_binding or legacy_serving_binding(
+            version, vector_collection=self.vector_collection_id
+        )
+        if binding.vector_schema_version != VECTOR_SCHEMA_VERSION:
+            raise CorpusCompletenessError("hierarchical corpus uses an unsupported vector schema")
+        expected_children = {child.chunk_id: child for child in children}
+        child_snapshots = self.client.collection(binding.vector_collection).where(
+            filter=FieldFilter("metadata.corpus_version_id", "==", version_id)
+        ).stream()
+        persisted_children: dict[str, ChildDocumentChunk] = {}
+        for snapshot in child_snapshots:
+            data = snapshot.to_dict()
+            metadata = data.get("metadata")
+            if not isinstance(metadata, dict):
+                raise CorpusCompletenessError("persisted child is missing provenance metadata")
+            chunk_id = metadata.get("chunk_id") or _document_id(snapshot)
+            if chunk_id in persisted_children:
+                raise CorpusCompletenessError("persisted child collection contains duplicate IDs")
+            child_data = {
+                key: metadata[key]
+                for key in (
+                    "schema_version", "chunk_id", "corpus_version_id", "parent_id",
+                    "section_path", "page_start", "page_end", "source_spans",
+                    "child_ordinal", "content_hash", "token_count",
+                )
+                if key in metadata
+            }
+            required_metadata = {
+                "schema_version", "chunk_id", "corpus_version_id", "parent_id",
+                "section_path", "page_start", "page_end", "source_spans",
+                "child_ordinal", "content_hash", "token_count",
+                "corpus_manifest_sha256", "derivation_sha256",
+            }
+            if not required_metadata.issubset(metadata):
+                raise CorpusCompletenessError("persisted child is missing required binding or provenance metadata")
+            child_data["text"] = data.get("text")
+            child = ChildDocumentChunk.model_validate(child_data)
+            embedding = data.get("embedding")
+            if not isinstance(embedding, (list, tuple)) or len(embedding) != version.embedding_dimensions:
+                raise CorpusCompletenessError("persisted child embedding has an invalid provider dimension")
+            if any(not isinstance(value, (int, float)) or not math.isfinite(float(value)) for value in embedding):
+                raise CorpusCompletenessError("persisted child embedding contains a non-finite value")
+            if (
+                metadata.get("corpus_manifest_sha256") != binding.ingestion_fingerprint
+                or metadata.get("derivation_sha256") != binding.configuration_fingerprint
+            ):
+                raise CorpusCompletenessError("persisted child does not match its corpus binding")
+            if _document_id(snapshot) != chunk_id:
+                raise CorpusCompletenessError("persisted child ID differs from its deterministic vector ID")
+            persisted_children[chunk_id] = child
+        if set(persisted_children) != set(expected_children):
+            raise CorpusCompletenessError("persisted children do not match the staged hierarchy")
+        for chunk_id, child in expected_children.items():
+            if persisted_children[chunk_id] != child:
+                raise CorpusCompletenessError("persisted child failed content or provenance validation")
+
+        evidence = hierarchical_validation_evidence(
+            version, parents, children, index_ready=False, filter_ready=False
+        )
+        updated = version.model_copy(update={"validation_evidence": evidence})
+        self.versions.document(version_id).set(updated.model_dump(mode="json"))
+        return updated
 
     def cleanup_staging(self, version_id: str, *, dry_run: bool = True) -> CorpusCleanupResult:
         """Remove exactly one abandoned staged corpus after safety checks.
@@ -453,6 +622,15 @@ def _validation_evidence(chunks: tuple[Any, ...]) -> CorpusValidationEvidence:
 def _hash(value: list[dict[str, Any]]) -> str:
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":"))
     return sha256(encoded.encode()).hexdigest()
+
+
+def _document_id(snapshot: Any) -> str:
+    document_id = getattr(snapshot, "id", None)
+    if isinstance(document_id, str) and document_id:
+        return document_id
+    reference = getattr(snapshot, "reference", None)
+    path = getattr(reference, "path", "")
+    return str(path).rsplit("/", 1)[-1]
 
 
 def _ready(version: CorpusVersion) -> bool:

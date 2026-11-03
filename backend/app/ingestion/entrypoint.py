@@ -117,6 +117,7 @@ def _run(termination_requested: Callable[[], bool]) -> None:
             staged,
             candidate.parents,
             candidate.children,
+            unresolved_exceptions=candidate.exceptions,
             termination_requested=termination_requested,
         )
         readiness = (

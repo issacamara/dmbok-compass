@@ -16,13 +16,25 @@ from app.corpus.embedding import (
     EMBEDDING_MODEL,
     QUERY_TASK_TYPE,
 )
-from app.corpus.chunking import MAX_CHUNK_CHARACTERS, SUBDIVISION_ALGORITHM_VERSION
+from app.corpus.chunking import (
+    CHILD_MAX_TOKENS,
+    CHILD_TARGET_TOKENS,
+    MAX_CHUNK_CHARACTERS,
+    PARENT_MAX_TOKENS,
+    PARENT_SEGMENTATION_VERSION,
+    PARENT_TARGET_TOKENS,
+    SUBDIVISION_ALGORITHM_VERSION,
+)
 from app.corpus.indexing import VECTOR_COLLECTION, VECTOR_SCHEMA_VERSION
+from app.corpus.tokenization import TOKENIZER_ENCODING, TOKENIZER_PACKAGE_VERSION
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SECRET_KEY = re.compile(r"(?:api[_-]?key|credential|password|secret|token)", re.IGNORECASE)
 RAG_DERIVATION = "langchain-rag-v2"
+HIERARCHICAL_DERIVATION = "hierarchical-corpus-v1"
+STRUCTURE_MAP_PARSER_VERSION = "structure-map-v1"
+CHILD_SEGMENTATION_VERSION = "stable-child-v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +123,88 @@ def default_derivation(*, vector_collection: str = VECTOR_COLLECTION) -> dict[st
             "embedding_field": "embedding",
         },
     }
+
+
+def hierarchical_derivation(
+    *,
+    map_id: str,
+    map_uri: str,
+    map_generation: int,
+    map_file_sha256: str,
+    map_content_sha256: str,
+    approval_uri: str,
+    approval_generation: int,
+    approval_sha256: str,
+    ingestion_gate: Mapping[str, Any],
+    vector_collection: str = VECTOR_COLLECTION,
+) -> dict[str, Any]:
+    """Return all approved map and parent/child algorithm inputs explicitly."""
+
+    for name, digest in (
+        ("map_file_sha256", map_file_sha256),
+        ("map_content_sha256", map_content_sha256),
+        ("approval_sha256", approval_sha256),
+    ):
+        if not _SHA256.fullmatch(digest):
+            raise ValueError(f"{name} must be a lowercase SHA-256 digest")
+    if not map_id or map_id.strip() != map_id:
+        raise ValueError("map_id must be a non-empty normalized value")
+    if not map_uri or map_generation < 1:
+        raise ValueError("map URI and positive generation are required")
+    if not approval_uri or approval_generation < 1:
+        raise ValueError("approval URI and positive generation are required")
+
+    result = default_derivation(vector_collection=vector_collection)
+    result["implementation_revision"] = HIERARCHICAL_DERIVATION
+    result["normalization"] = {"version": "page-whitespace-v1"}
+    result["provenance"] = {
+        "version": "reviewed-structure-map-v1",
+        "parser_version": STRUCTURE_MAP_PARSER_VERSION,
+    }
+    result["structure_map"] = {
+        "map_id": map_id,
+        "schema_version": STRUCTURE_MAP_PARSER_VERSION,
+        "artifact_uri": map_uri,
+        "generation": map_generation,
+        "file_sha256": map_file_sha256,
+        "content_sha256": map_content_sha256,
+        "approval_uri": approval_uri,
+        "approval_generation": approval_generation,
+        "approval_sha256": approval_sha256,
+    }
+    result["readiness_gate"] = _json_value(ingestion_gate)
+    result["corpus_schema"] = {
+        "parent": "parent-chunk-v1",
+        "child": "child-document-chunk-v1",
+        "vector": VECTOR_SCHEMA_VERSION,
+    }
+    result["splitter"] = {
+        "type": "semantic-parent-child",
+        "version": "parent-child-segmentation-v1",
+        "units": "cl100k_base tokens",
+        "chunk_size": CHILD_TARGET_TOKENS,
+        "chunk_overlap": 0,
+        "parent": {
+            "algorithm": PARENT_SEGMENTATION_VERSION,
+            "target_size": PARENT_TARGET_TOKENS,
+            "max_size": PARENT_MAX_TOKENS,
+        },
+        "child": {
+            "algorithm": CHILD_SEGMENTATION_VERSION,
+            "target_size": CHILD_TARGET_TOKENS,
+            "max_size": CHILD_MAX_TOKENS,
+        },
+        "segmentation_counter": {
+            "encoding": TOKENIZER_ENCODING,
+            "library": "tiktoken",
+            "library_version": TOKENIZER_PACKAGE_VERSION,
+        },
+        "subdivision": {
+            "algorithm": SUBDIVISION_ALGORITHM_VERSION,
+            "max_characters": MAX_CHUNK_CHARACTERS,
+        },
+    }
+    return result
 
 
 def create_source_manifest(

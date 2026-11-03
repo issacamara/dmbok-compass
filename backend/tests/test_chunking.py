@@ -1,6 +1,40 @@
 import pytest
 
-from app.corpus import SourcePage, chunk_pages
+from app.contracts import SourceSpan
+from app.corpus.structure_map import LogicalSection
+
+from app.corpus import SourcePage, chunk_pages, segment_parents
+
+
+def section(*spans: tuple[int, str]) -> LogicalSection:
+    return LogicalSection(
+        ("Data", "Governance"),
+        tuple(SourceSpan(page=page, start_offset=0, end_offset=len(text), text=text) for page, text in spans),
+    )
+
+
+def test_parent_segmentation_preserves_cross_page_source_spans_and_is_repeatable() -> None:
+    source = section((1, "one two\nthree four"), (2, "five six"))
+
+    first = segment_parents([source], corpus_version_id="v1", target_tokens=4, max_tokens=6)
+    second = segment_parents([source], corpus_version_id="v1", target_tokens=4, max_tokens=6)
+
+    assert first == second
+    assert first.ready_for_promotion
+    assert [(parent.page_start, parent.page_end) for parent in first.parents] == [(1, 1), (2, 2)]
+    assert [span.text for parent in first.parents for span in parent.source_spans] == ["one two", "three four", "five six"]
+
+
+def test_parent_segmentation_keeps_short_sections_and_blocks_indivisible_rows() -> None:
+    short = section((1, "short section"))
+    oversized_row = section((2, "| " + "word " * 1_501 + "|"))
+
+    result = segment_parents([short, oversized_row], corpus_version_id="v1", target_tokens=10, max_tokens=1_500)
+
+    assert [parent.text for parent in result.parents] == ["short section"]
+    assert not result.ready_for_promotion
+    assert result.exceptions[0].page_start == result.exceptions[0].page_end == 2
+    assert "table row" in result.exceptions[0].reason
 
 
 def test_chunking_never_crosses_pages_and_preserves_provenance() -> None:

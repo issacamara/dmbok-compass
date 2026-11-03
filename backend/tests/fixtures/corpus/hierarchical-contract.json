@@ -1,0 +1,11 @@
+{
+  "section_path": ["Data Governance", "Accountability"],
+  "parent_id": "v2:parent:0",
+  "corpus_version_id": "v2",
+  "content_hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "unclassified_section_path": ["Data Governance", "Unclassified"],
+  "spans": [
+    {"page": 10, "start_offset": 0, "end_offset": 18, "text": "1. Accountability\n"},
+    {"page": 11, "start_offset": 0, "end_offset": 23, "text": "- owner\n| role | duty |"}
+  ]
+}

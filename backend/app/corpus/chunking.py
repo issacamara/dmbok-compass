@@ -10,11 +10,17 @@ from typing import Iterable
 from langchain_core.documents import Document
 from langchain_text_splitters import CharacterTextSplitter
 
+from app.contracts import ParentChunk, SourceSpan
+from app.corpus.structure_map import LogicalSection
+
 
 _WHITESPACE = re.compile(r"\s+")
 MAX_CHUNK_CHARACTERS = 5_000
 MAX_SECTION_CHARACTERS = 500
 SUBDIVISION_ALGORITHM_VERSION = "fixed-character-window-v1"
+PARENT_SEGMENTATION_VERSION = "semantic-parent-v1"
+PARENT_TARGET_TOKENS = 1_000
+PARENT_MAX_TOKENS = 1_500
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +43,119 @@ class TextChunk:
     chunk_ordinal: int
     content_hash: str
     text: str
+
+
+@dataclass(frozen=True, slots=True)
+class ParentReviewException:
+    """An intact source item that is too large to safely segment automatically."""
+
+    section_path: tuple[str, ...]
+    page_start: int
+    page_end: int
+    token_count: int
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class ParentSegmentation:
+    parents: tuple[ParentChunk, ...]
+    exceptions: tuple[ParentReviewException, ...]
+
+    @property
+    def ready_for_promotion(self) -> bool:
+        return not self.exceptions
+
+
+def segment_parents(
+    sections: Iterable[LogicalSection],
+    *,
+    corpus_version_id: str,
+    target_tokens: int = PARENT_TARGET_TOKENS,
+    max_tokens: int = PARENT_MAX_TOKENS,
+) -> ParentSegmentation:
+    """Create bounded parent records without splitting a source list item or table row.
+
+    This is additive while child-chunk migration is in flight; ``chunk_pages``
+    remains only for the legacy writer until issue #299 replaces that consumer.
+    """
+
+    if not corpus_version_id or corpus_version_id.strip() != corpus_version_id:
+        raise ValueError("corpus_version_id must be a non-empty value without surrounding whitespace")
+    if target_tokens < 1 or max_tokens < target_tokens:
+        raise ValueError("parent token limits must be positive and ordered")
+
+    parents: list[ParentChunk] = []
+    exceptions: list[ParentReviewException] = []
+    for section_ordinal, section in enumerate(sections):
+        units = _section_units(section)
+        pending: list[SourceSpan] = []
+        pending_tokens = 0
+        parent_ordinal = 0
+        for unit in units:
+            unit_tokens = _token_count(unit.text)
+            if unit_tokens > max_tokens:
+                if pending:
+                    parents.append(_parent(corpus_version_id, section, section_ordinal, parent_ordinal, pending))
+                    parent_ordinal += 1
+                    pending, pending_tokens = [], 0
+                exceptions.append(
+                    ParentReviewException(
+                        section.section_path, unit.page, unit.page, unit_tokens,
+                        "indivisible list item or table row exceeds parent maximum",
+                    )
+                )
+                continue
+            if pending and pending_tokens + unit_tokens > target_tokens:
+                parents.append(_parent(corpus_version_id, section, section_ordinal, parent_ordinal, pending))
+                parent_ordinal += 1
+                pending, pending_tokens = [], 0
+            pending.append(unit)
+            pending_tokens += unit_tokens
+        if pending:
+            parents.append(_parent(corpus_version_id, section, section_ordinal, parent_ordinal, pending))
+    return ParentSegmentation(tuple(parents), tuple(exceptions))
+
+
+def _parent(
+    corpus_version_id: str,
+    section: LogicalSection,
+    section_ordinal: int,
+    parent_ordinal: int,
+    spans: list[SourceSpan],
+) -> ParentChunk:
+    text = "\n".join(span.text for span in spans)
+    return ParentChunk(
+        parent_id=f"{corpus_version_id}:parent:{section_ordinal}:{parent_ordinal}",
+        corpus_version_id=corpus_version_id,
+        section_path=section.section_path,
+        page_start=spans[0].page,
+        page_end=spans[-1].page,
+        source_spans=spans,
+        content_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        token_count=_token_count(text),
+        text=text,
+    )
+
+
+def _section_units(section: LogicalSection) -> tuple[SourceSpan, ...]:
+    """Use complete non-empty lines as the smallest safe structural boundary."""
+
+    units: list[SourceSpan] = []
+    for span in section.source_spans:
+        cursor = 0
+        for line in span.text.splitlines(keepends=True):
+            text = line.rstrip("\r\n")
+            if text.strip():
+                units.append(SourceSpan(page=span.page, start_offset=span.start_offset + cursor, end_offset=span.start_offset + cursor + len(text), text=text))
+            cursor += len(line)
+    return tuple(units)
+
+
+def _token_count(text: str) -> int:
+    # Keep legacy extraction/proposal imports offline until parent segmentation is requested.
+    from app.corpus.tokenization import count_tokens
+
+    return count_tokens(text)
 
 
 def chunk_pages(

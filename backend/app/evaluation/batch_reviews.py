@@ -181,10 +181,16 @@ def _validate_evidence_binding(
     ):
         raise BatchReviewStaleError("support evidence is not bound to this evaluation snapshot")
     if evidence.match_status == "eligible":
-        if evidence.selected_chunk is None or len(evidence.verified_chunks) != 1:
-            raise BatchReviewError("eligible support must contain one verified selected chunk")
-        if evidence.selected_chunk.content_hash != evidence.verified_chunks[0].content_hash:
-            raise BatchReviewError("eligible support content hashes do not match")
+        selected = evidence.selected_chunks or ([evidence.selected_chunk] if evidence.selected_chunk is not None else [])
+        if not selected or [chunk.chunk_id for chunk in selected] != evidence.candidate_chunk_ids:
+            raise BatchReviewError("eligible support must contain all selected child chunks")
+        if [chunk.chunk_id for chunk in evidence.verified_chunks] != evidence.candidate_chunk_ids:
+            raise BatchReviewError("eligible support candidate chunks are not fully verified")
+        if evidence.binding_version == "run-bound-support-v2" and (
+            not evidence.parent_id or not evidence.parent_content_hash
+            or any(chunk.parent_id != evidence.parent_id or chunk.parent_content_hash != evidence.parent_content_hash for chunk in selected)
+        ):
+            raise BatchReviewError("eligible support is not bound to one verified parent")
 
 
 @dataclass(frozen=True)
@@ -232,6 +238,8 @@ def _sample_entry(run: EvaluationRun, candidate: _Candidate, *, decision_version
         candidate_chunk_ids=list(evidence.candidate_chunk_ids),
         content_hashes=[chunk.content_hash for chunk in evidence.verified_chunks],
         provenance_digests=[chunk.source_provenance_sha256 for chunk in evidence.verified_chunks],
+        parent_id=evidence.parent_id,
+        parent_content_hash=evidence.parent_content_hash,
         status="eligible",
         decision_version=decision_version,
     )
@@ -254,6 +262,8 @@ def _exception_record(
         candidate_chunk_ids=list(evidence.candidate_chunk_ids),
         content_hashes=[chunk.content_hash for chunk in evidence.verified_chunks],
         provenance_digests=[chunk.source_provenance_sha256 for chunk in evidence.verified_chunks],
+        parent_id=evidence.parent_id,
+        parent_content_hash=evidence.parent_content_hash,
         status="inapplicable" if evidence.match_status == "inapplicable" else "exception",
         reason=evidence.reason or evidence.match_status,
         decision_version=decision_version,

@@ -56,8 +56,8 @@ def test_support_statuses_are_explicit_and_run_bound(status: str) -> None:
     assert evidence.corpus_version_id == FIXTURE["identities"]["corpusVersionId"]
 
 
-def test_eligible_support_requires_one_verified_chunk_and_rejects_refusal() -> None:
-    with pytest.raises(ValidationError, match="exactly one"):
+def test_eligible_support_requires_verified_chunks_and_rejects_refusal() -> None:
+    with pytest.raises(ValidationError, match="all and only its verified selected chunks"):
         _evidence(verified_chunks=[], selected_chunk=None)
     with pytest.raises(ValidationError, match="cannot be eligible"):
         _evidence(expected_refusal=True)

@@ -288,12 +288,32 @@ def test_candidate_review_is_persisted_with_its_binding_and_requires_matching_su
     assert repository.review("generation-1", "item-1", "approved").review_status == "approved"
 
 
-def test_candidate_review_rejects_legacy_approval_and_unresolved_support() -> None:
+def test_candidate_review_clears_legacy_approval_and_unresolved_support() -> None:
     client = FakeFirestore()
     repository = store(client)
     approved = dataset("generation-approved", approved=True)
-    with pytest.raises(GenerationIntegrityError, match="cannot carry forward"):
-        repository.stage(approved, candidate_review=_candidate_review(approved))
+    approved = approved.model_copy(
+        update={
+            "gold_annotations": [
+                approved.gold_annotations[0].model_copy(
+                    update={
+                        "semantic_assessment": {
+                            "response_sha256": "d" * 64,
+                            "scorer_version": "v1",
+                            "claim_support": True,
+                            "claim_citation_support": True,
+                            "rubric_passed": True,
+                        }
+                    }
+                )
+            ]
+        }
+    )
+    repository.stage(approved, candidate_review=_candidate_review(approved))
+    staged_annotation = client.data["evaluation_generations/generation-approved/annotations/item-1"]
+    assert staged_annotation["review_status"] == "candidate"
+    assert staged_annotation["relevant_chunk_ids"] == []
+    assert staged_annotation["semantic_assessment"] is None
 
     unresolved = dataset("generation-unresolved").model_copy(
         update={

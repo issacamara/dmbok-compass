@@ -105,6 +105,18 @@ class FirestoreEvaluationGenerationStore:
     def stage(self, dataset: EvaluationDataset, *, candidate_review: CandidateGoldReview | None = None) -> str:
         """Durably write one immutable generation without changing visibility."""
 
+        if candidate_review is not None:
+            annotations = [
+                annotation.model_copy(
+                    update={
+                        "relevant_chunk_ids": list(candidate_review.remap_for(annotation.item_id).relevant_chunk_ids),
+                        "review_status": "candidate",
+                        "semantic_assessment": None,
+                    }
+                )
+                for annotation in dataset.gold_annotations
+            ]
+            dataset = dataset.model_copy(update={"gold_annotations": annotations}, deep=True)
         generation = self.generations.document(dataset.dataset_version_id)
         _validate_candidate_review(dataset, candidate_review)
         fingerprint = _dataset_fingerprint(dataset, candidate_review)
@@ -473,6 +485,15 @@ def _validate_candidate_review(
         raise GenerationIntegrityError("candidate review must bind every and only dataset annotation")
     if any(annotation.review_status != "candidate" for annotation in dataset.gold_annotations):
         raise GenerationIntegrityError("candidate review cannot carry forward annotation approval")
+    for remap in candidate_review.remaps:
+        if any(chunk_id.startswith(("imported-passage-", "placeholder-")) for chunk_id in remap.relevant_chunk_ids):
+            raise GenerationIntegrityError("candidate review cannot retain placeholder chunk IDs")
+        if remap.remap_status == "matched" and any(
+            (candidate_review.chunk_hashes or {}).get(chunk_id) is None for chunk_id in remap.relevant_chunk_ids
+        ):
+            raise GenerationIntegrityError("matched candidate chunks require content hashes")
+        if (remap.parent_id is None) != (remap.parent_content_hash is None):
+            raise GenerationIntegrityError("candidate parent identity and hash must be supplied together")
 
 
 def _active_generation(payload: dict[str, Any]) -> ActiveEvaluationGeneration:

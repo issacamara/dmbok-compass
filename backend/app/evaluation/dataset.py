@@ -15,7 +15,14 @@ import json
 from threading import RLock
 from typing import Iterable, Literal, Protocol
 
-from app.contracts import DocumentChunk, EvaluationDataset, EvaluationReportEligibility, GoldAnnotation
+from app.contracts import (
+    ChildDocumentChunk,
+    DocumentChunk,
+    EvaluationDataset,
+    EvaluationReportEligibility,
+    GoldAnnotation,
+    ParentChunk,
+)
 
 
 class EvaluationDatasetError(ValueError):
@@ -90,6 +97,10 @@ class GoldAnnotationRemap:
     section_origin: Literal["explicit", "carried"] | None
     review_reasons: tuple[str, ...]
     content_hash: str | None = None
+    candidate_chunk_ids: tuple[str, ...] = ()
+    parent_id: str | None = None
+    parent_content_hash: str | None = None
+    parent_span_sha256: str | None = None
 
     def model_dump(self) -> dict[str, object]:
         return {
@@ -102,6 +113,10 @@ class GoldAnnotationRemap:
             "section_origin": self.section_origin,
             "review_reasons": list(self.review_reasons),
             "content_hash": self.content_hash,
+            "candidate_chunk_ids": list(self.candidate_chunk_ids),
+            "parent_id": self.parent_id,
+            "parent_content_hash": self.parent_content_hash,
+            "parent_span_sha256": self.parent_span_sha256,
         }
 
 
@@ -137,7 +152,7 @@ class CandidateGoldReview:
 
 def remap_gold_annotations(
     dataset: EvaluationDataset,
-    candidate_chunks: Iterable[DocumentChunk | CandidateChunk],
+    candidate_chunks: Iterable[DocumentChunk | CandidateChunk | ParentChunk | ChildDocumentChunk],
     binding: CandidateGoldBinding,
 ) -> CandidateGoldReview:
     """Propose candidate-corpus mappings without carrying approval forward.
@@ -148,12 +163,32 @@ def remap_gold_annotations(
     support have no candidate chunk IDs to approve accidentally.
     """
 
-    chunks = tuple(_candidate_chunk(chunk) for chunk in candidate_chunks)
-    if any(chunk.chunk.corpus_version_id != binding.corpus_version_id for chunk in chunks):
+    chunks = tuple(candidate_chunks)
+    hierarchical = any(isinstance(chunk, (ParentChunk, ChildDocumentChunk)) for chunk in chunks)
+    if hierarchical:
+        if any(not isinstance(chunk, (ParentChunk, ChildDocumentChunk)) for chunk in chunks):
+            raise CandidateBindingError("hierarchical candidate binding cannot mix flat and parent/child records")
+        parents = tuple(chunk for chunk in chunks if isinstance(chunk, ParentChunk))
+        children = tuple(chunk for chunk in chunks if isinstance(chunk, ChildDocumentChunk))
+        try:
+            from app.corpus.versions import validate_hierarchical_records
+
+            validate_hierarchical_records(binding.corpus_version_id, parents, children)
+        except (ValueError, TypeError) as exc:
+            raise CandidateBindingError("candidate parent/child records failed validation") from exc
+        remaps = tuple(_remap_hierarchical_annotation(annotation, parents, children) for annotation in dataset.gold_annotations)
+        referenced = {chunk_id for remap in remaps for chunk_id in (*remap.relevant_chunk_ids, *remap.candidate_chunk_ids)}
+        hashes = {child.chunk_id: child.content_hash for child in children if child.chunk_id in referenced}
+        return CandidateGoldReview(binding=binding, remaps=remaps, chunk_hashes=hashes)
+
+    flat_chunks = tuple(_candidate_chunk(chunk) for chunk in chunks)
+    if any(chunk.chunk.corpus_version_id != binding.corpus_version_id for chunk in flat_chunks):
         raise CandidateBindingError("candidate chunks must all belong to the bound candidate corpus")
 
-    remaps = tuple(_remap_annotation(annotation, chunks) for annotation in dataset.gold_annotations)
-    return CandidateGoldReview(binding=binding, remaps=remaps)
+    remaps = tuple(_remap_annotation(annotation, flat_chunks) for annotation in dataset.gold_annotations)
+    referenced = {chunk_id for remap in remaps for chunk_id in (*remap.relevant_chunk_ids, *remap.candidate_chunk_ids)}
+    hashes = {chunk.chunk.chunk_id: chunk.chunk.content_hash for chunk in flat_chunks if chunk.chunk.chunk_id in referenced}
+    return CandidateGoldReview(binding=binding, remaps=remaps, chunk_hashes=hashes)
 
 
 def candidate_review_fingerprint(review: CandidateGoldReview) -> str:
@@ -168,6 +203,109 @@ def candidate_review_fingerprint(review: CandidateGoldReview) -> str:
 
 def _candidate_chunk(chunk: DocumentChunk | CandidateChunk) -> CandidateChunk:
     return chunk if isinstance(chunk, CandidateChunk) else CandidateChunk(chunk=chunk)
+
+
+def _remap_hierarchical_annotation(
+    annotation: GoldAnnotation,
+    parents: tuple[ParentChunk, ...],
+    children: tuple[ChildDocumentChunk, ...],
+) -> GoldAnnotationRemap:
+    if annotation.semantic_assessment is not None and annotation.semantic_assessment.expected_refusal is True:
+        return GoldAnnotationRemap(
+            item_id=annotation.item_id, relevant_chunk_ids=(), remap_status="unknown",
+            page=None, section=None, section_origin=None,
+            review_reasons=("prior_refusal_requires_current_corpus_review",),
+        )
+    support = _normalise(annotation.supporting_passage or "")
+    if not support:
+        return GoldAnnotationRemap(
+            item_id=annotation.item_id, relevant_chunk_ids=(), remap_status="missing",
+            page=None, section=None, section_origin=None, review_reasons=("missing_supporting_passage",),
+        )
+
+    matches: list[tuple[ParentChunk, tuple[ChildDocumentChunk, ...], str]] = []
+    for parent in parents:
+        normalized, mapping = _normalise_parent_spans(parent)
+        start = normalized.find(support)
+        while start >= 0:
+            stop = start + len(support)
+            locations = [location for location in mapping[start:stop] if location is not None]
+            linked = tuple(
+                child for child in children
+                if child.parent_id == parent.parent_id
+                and any(
+                    location[0] == span.page
+                    and location[1] < span.end_offset
+                    and span.start_offset < location[2]
+                    for location in locations
+                    for span in child.source_spans
+                )
+            )
+            if locations and linked:
+                span_digest = sha256(
+                    f"{parent.parent_id}|{start}|{stop}|{support}".encode("utf-8")
+                ).hexdigest()
+                matches.append((parent, tuple(sorted(linked, key=lambda child: child.child_ordinal)), span_digest))
+            start = normalized.find(support, start + 1)
+
+    candidate_ids = tuple(dict.fromkeys(child.chunk_id for _, linked, _ in matches for child in linked))
+    if len(candidate_ids) > 64:
+        return GoldAnnotationRemap(
+            item_id=annotation.item_id,
+            relevant_chunk_ids=(),
+            remap_status="changed",
+            page=None,
+            section=None,
+            section_origin=None,
+            review_reasons=("support_spans_too_many_children",),
+        )
+    if len(matches) != 1:
+        return GoldAnnotationRemap(
+            item_id=annotation.item_id,
+            relevant_chunk_ids=(),
+            remap_status="ambiguous" if matches else "unknown",
+            page=None,
+            section=None,
+            section_origin=None,
+            review_reasons=("ambiguous_parent_support" if matches else "unknown_support",),
+            candidate_chunk_ids=candidate_ids,
+        )
+
+    parent, linked, span_digest = matches[0]
+    first = linked[0]
+    return GoldAnnotationRemap(
+        item_id=annotation.item_id,
+        relevant_chunk_ids=tuple(child.chunk_id for child in linked),
+        remap_status="matched",
+        page=first.page_start,
+        section=" / ".join(first.section_path),
+        section_origin="explicit",
+        review_reasons=("unique_parent_source_span",),
+        content_hash=first.content_hash,
+        candidate_chunk_ids=tuple(child.chunk_id for child in linked),
+        parent_id=parent.parent_id,
+        parent_content_hash=parent.content_hash,
+        parent_span_sha256=span_digest,
+    )
+
+
+def _normalise_parent_spans(parent: ParentChunk) -> tuple[str, tuple[tuple[int, int, int] | None, ...]]:
+    chars: list[str] = []
+    mapping: list[tuple[int, int, int] | None] = []
+    for span_index, span in enumerate(parent.source_spans):
+        if span_index and chars and chars[-1] != " ":
+            chars.append(" ")
+            mapping.append(None)
+        for offset, char in enumerate(span.text):
+            if char.isspace():
+                if chars and chars[-1] != " ":
+                    chars.append(" ")
+                    mapping.append(None)
+                continue
+            folded = char.casefold()
+            chars.extend(folded)
+            mapping.extend([(span.page, span.start_offset + offset, span.start_offset + offset + 1)] * len(folded))
+    return "".join(chars).strip(), tuple(mapping[: len("".join(chars).strip())])
 
 
 def _remap_annotation(

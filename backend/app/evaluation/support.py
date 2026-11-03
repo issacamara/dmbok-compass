@@ -315,11 +315,28 @@ class FirestoreRunPinnedChunkSource:
         )
         if hierarchy_error is None:
             try:
-                from app.corpus.versions import validate_hierarchical_records
+                from app.corpus.versions import (
+                    hierarchical_provenance_sha256,
+                    validate_hierarchical_records,
+                )
 
                 validate_hierarchical_records(corpus_version_id, tuple(parents.values()), children)
+                if hierarchical_provenance_sha256(tuple(parents.values()), children) != provenance:
+                    hierarchy_error = "hierarchical source provenance differs from the pinned corpus"
             except (ValueError, TypeError) as exc:
                 hierarchy_error = str(exc)
+        if hierarchy_error:
+            records = [
+                StoredSupportChunk(
+                    record.chunk,
+                    record.chunk_id,
+                    record.source_provenance_sha256,
+                    False,
+                    hierarchy_error,
+                    record.parent,
+                )
+                for record in records
+            ]
         self._hierarchy_errors[corpus_version_id] = hierarchy_error
         return tuple(sorted(records, key=lambda record: record.chunk_id))
 
@@ -426,6 +443,7 @@ def prepare_support(
                         selected_chunks=list(selected),
                         parent_id=remap.parent_id,
                         parent_content_hash=remap.parent_content_hash,
+                        parent_span_sha256=remap.parent_span_sha256,
                         binding_version="run-bound-support-v2",
                     )
                 else:

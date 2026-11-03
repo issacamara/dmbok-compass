@@ -18,11 +18,14 @@ from app.contracts import (
     SourceSpan,
 )
 from app.corpus.chunking import _token_count
+from app.corpus.indexing import PARENT_COLLECTION
+from app.corpus.versions import hierarchical_provenance_sha256, validate_hierarchical_records
 from app.evaluation.job import EvaluationOutcome, EvaluationWorker, InMemoryEvaluationRunStore
 from app.evaluation.dataset import CandidateGoldBinding, remap_gold_annotations
 from app.evaluation.batch_reviews import create_batch_review
 from app.evaluation.support import (
     InMemorySupportEvidenceStore,
+    FirestoreRunPinnedChunkSource,
     StoredSupportChunk,
     SupportPreparationError,
     prepare_support,
@@ -132,6 +135,34 @@ class Source:
         return next((record for record in self.records if record.chunk_id == chunk_id), None)
 
 
+class _Snapshot:
+    def __init__(self, record_id: str, payload: dict[str, object]) -> None:
+        self.id = record_id
+        self._payload = payload
+
+    def to_dict(self) -> dict[str, object]:
+        return self._payload
+
+
+class _Collection:
+    def __init__(self, records: list[_Snapshot]) -> None:
+        self.records = records
+
+    def where(self, **_: object) -> "_Collection":
+        return self
+
+    def stream(self) -> list[_Snapshot]:
+        return self.records
+
+
+class _FirestoreClient:
+    def __init__(self, collections: dict[str, list[_Snapshot]]) -> None:
+        self.collections = collections
+
+    def collection(self, collection_id: str) -> _Collection:
+        return _Collection(self.collections.get(collection_id, []))
+
+
 def run(item_ids: list[str]) -> EvaluationRun:
     return EvaluationRun(
         run_id="run-v1",
@@ -201,7 +232,13 @@ def test_hierarchical_support_maps_a_unique_parent_span_to_every_intersecting_ch
     assert [choice.chunk_id for choice in evidence.selected_chunks] == child_ids
     assert evidence.parent_id == parent.parent_id
     assert evidence.parent_content_hash == parent.content_hash
+    assert evidence.parent_span_sha256 == remap.parent_span_sha256
+    assert evidence.parent_span_sha256 is not None
     assert batch_review.summary.eligible_count == 1
+    assert batch_review.samples[0].parent_span_sha256 == evidence.parent_span_sha256
+    assert type(evidence).model_validate(evidence.model_dump()).parent_span_sha256 == evidence.parent_span_sha256
+    with pytest.raises(ValueError, match="unique parent source span digest"):
+        type(evidence).model_validate(evidence.model_dump() | {"parent_span_sha256": None})
 
 
 def test_hierarchical_support_repeated_and_absent_parent_spans_remain_unresolved() -> None:
@@ -331,6 +368,64 @@ def test_hierarchical_support_rejects_child_with_missing_or_wrong_parent() -> No
     assert evidence.match_status == "invalid"
     assert evidence.reason == "invalid_parent_child_hierarchy"
     assert evidence.selected_chunks == []
+
+
+@pytest.mark.parametrize("changed", ["page", "offset"])
+def test_firestore_support_rejects_changed_hierarchy_provenance_with_unchanged_text_hashes(changed: str) -> None:
+    parent, children = hierarchy(("one two three", "four five six"))
+    pinned_digest = hierarchical_provenance_sha256((parent,), children)
+    if changed == "page":
+        parent = parent.model_copy(update={
+            "page_start": 2,
+            "page_end": 2,
+            "source_spans": [span.model_copy(update={"page": 2}) for span in parent.source_spans],
+        })
+        children = tuple(child.model_copy(update={
+            "page_start": 2,
+            "page_end": 2,
+            "source_spans": [span.model_copy(update={"page": 2}) for span in child.source_spans],
+        }) for child in children)
+    else:
+        def shift(span: SourceSpan) -> SourceSpan:
+            return span.model_copy(update={
+                "start_offset": span.start_offset + 10,
+                "end_offset": span.end_offset + 10,
+            })
+
+        parent = parent.model_copy(update={"source_spans": [shift(span) for span in parent.source_spans]})
+        children = tuple(child.model_copy(update={"source_spans": [shift(span) for span in child.source_spans]}) for child in children)
+
+    validate_hierarchical_records("corpus-v1", (parent,), children)
+    parent_payload = parent.model_dump(mode="json") | {
+        "metadata": {"corpus_manifest_sha256": "a" * 64, "derivation_sha256": "b" * 64}
+    }
+    parent_snapshots = [_Snapshot(parent.parent_id, parent_payload)]
+    child_snapshots = []
+    for child in children:
+        metadata = child.model_dump(mode="json")
+        text = metadata.pop("text")
+        metadata.update({"corpus_manifest_sha256": "a" * 64, "derivation_sha256": "b" * 64})
+        child_snapshots.append(_Snapshot(child.chunk_id, {"text": text, "metadata": metadata}))
+
+    source = FirestoreRunPinnedChunkSource(
+        _FirestoreClient({PARENT_COLLECTION: parent_snapshots, "child_vectors": child_snapshots}),
+        vector_collection="child_vectors",
+        provenance_by_corpus={"corpus-v1": pinned_digest},
+        ingestion_fingerprint="a" * 64,
+        configuration_fingerprint="b" * 64,
+    )
+
+    records = source.chunks(corpus_version_id="corpus-v1")
+
+    assert source.hierarchy_error(corpus_version_id="corpus-v1") == (
+        "hierarchical source provenance differs from the pinned corpus"
+    )
+    assert records and all(not record.valid for record in records)
+    assert all(
+        record.chunk is not None
+        and record.chunk.content_hash == sha256(record.chunk.text.encode()).hexdigest()
+        for record in records
+    )
 
 
 def test_hierarchical_support_over_cap_is_invalid_without_truncating_child_ids() -> None:

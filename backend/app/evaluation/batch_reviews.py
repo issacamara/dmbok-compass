@@ -240,6 +240,7 @@ def _sample_entry(run: EvaluationRun, candidate: _Candidate, *, decision_version
         provenance_digests=[chunk.source_provenance_sha256 for chunk in evidence.verified_chunks],
         parent_id=evidence.parent_id,
         parent_content_hash=evidence.parent_content_hash,
+        parent_span_sha256=evidence.parent_span_sha256,
         status="eligible",
         decision_version=decision_version,
     )
@@ -264,6 +265,7 @@ def _exception_record(
         provenance_digests=[chunk.source_provenance_sha256 for chunk in evidence.verified_chunks],
         parent_id=evidence.parent_id,
         parent_content_hash=evidence.parent_content_hash,
+        parent_span_sha256=evidence.parent_span_sha256,
         status="inapplicable" if evidence.match_status == "inapplicable" else "exception",
         reason=evidence.reason or evidence.match_status,
         decision_version=decision_version,

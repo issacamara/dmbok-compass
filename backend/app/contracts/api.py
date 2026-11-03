@@ -143,6 +143,7 @@ class RunBoundSupportEvidence(ContractModel):
     selected_chunks: list[VerifiedChunkChoice] = Field(default_factory=list, max_length=64)
     parent_id: str | None = Field(default=None, min_length=1, max_length=256)
     parent_content_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    parent_span_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     reason: str | None = Field(default=None, min_length=1, max_length=500)
     expected_refusal: bool = False
     reviewer_actor: str | None = Field(default=None, min_length=1, max_length=128)
@@ -168,6 +169,8 @@ class RunBoundSupportEvidence(ContractModel):
             raise ValueError("selected chunks must belong to the bound corpus")
         if (self.parent_id is None) != (self.parent_content_hash is None):
             raise ValueError("parent identity and hash must be supplied together")
+        if self.parent_span_sha256 is not None and self.parent_id is None:
+            raise ValueError("parent span digest requires its verified parent identity")
         if self.parent_id is not None and any(
             choice.parent_id != self.parent_id or choice.parent_content_hash != self.parent_content_hash
             for choice in selected
@@ -193,6 +196,8 @@ class RunBoundSupportEvidence(ContractModel):
                 raise ValueError("eligible support requires all and only its verified selected chunks")
             if self.binding_version == "run-bound-support-v2" and (self.parent_id is None or self.parent_content_hash is None):
                 raise ValueError("hierarchical support requires the matched parent identity and hash")
+            if self.binding_version == "run-bound-support-v2" and self.parent_span_sha256 is None:
+                raise ValueError("hierarchical support requires the unique parent source span digest")
             if self.reviewer_actor is not None or self.reviewed_at is not None:
                 raise ValueError("eligible support cannot contain reviewer fields")
         if self.match_status == "review_approved":
@@ -371,6 +376,7 @@ class DurableRepresentativeSampleEntry(ContractModel):
     provenance_digests: list[str] = Field(default_factory=list, max_length=64)
     parent_id: str | None = Field(default=None, min_length=1, max_length=256)
     parent_content_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    parent_span_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     status: BatchReviewStatus
     decision_version: str = Field(min_length=1, max_length=64)
 
@@ -389,6 +395,7 @@ class DurableExceptionRecord(ContractModel):
     provenance_digests: list[str] = Field(default_factory=list, max_length=64)
     parent_id: str | None = Field(default=None, min_length=1, max_length=256)
     parent_content_hash: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    parent_span_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     status: Literal["exception", "stale", "inapplicable"]
     reason: str = Field(min_length=1, max_length=500)
     decision_version: str = Field(min_length=1, max_length=64)

@@ -15,7 +15,7 @@ from langchain_core.documents import Document
 from langchain_google_firestore import FirestoreVectorStore
 from pydantic import ValidationError
 
-from app.contracts import ParentChunk, RetrievedPassage, SelectedParent
+from app.contracts import ChildDocumentChunk, ParentChunk, RetrievedPassage, SelectedParent
 from app.corpus.indexing import PARENT_COLLECTION
 from app.corpus.tokenization import count_tokens
 
@@ -32,6 +32,8 @@ class RetrievalEvidence:
     passages: tuple[RetrievedPassage, ...]
     parent_context: tuple[ParentChunk, ...]
     selected_parents: tuple[SelectedParent, ...]
+    child_sources: tuple[ChildDocumentChunk, ...] = ()
+    source_parents: tuple[ParentChunk, ...] = ()
 
 
 class ParentChunkReader(Protocol):
@@ -128,7 +130,7 @@ class FirestorePassageRetriever:
         if not question or not question.strip():
             raise ValueError("question must be non-empty")
 
-        return tuple(passage for passage, _ in self._ranked_children(
+        return tuple(passage for passage, _, _ in self._ranked_children(
             question,
             active_corpus_version_id=active_corpus_version_id,
             limit=limit,
@@ -144,19 +146,24 @@ class FirestorePassageRetriever:
         """Return unchanged dense child ranking with request-local parent context."""
 
         if self.parent_reader is None:
-            passages = self.retrieve(
+            ranked = self._ranked_children(
                 question,
                 active_corpus_version_id=active_corpus_version_id,
                 limit=limit,
             )
-            return RetrievalEvidence(passages, (), ())
+            return RetrievalEvidence(
+                tuple(passage for passage, _, _ in ranked),
+                (),
+                (),
+                tuple(child for _, _, child in ranked if child is not None),
+            )
         ranked = self._ranked_children(
             question,
             active_corpus_version_id=active_corpus_version_id,
             limit=limit,
         )
         parent_ids = tuple(dict.fromkeys(
-            parent_id for _, parent_id in ranked if parent_id
+            parent_id for _, parent_id, _ in ranked if parent_id
         ))
         parents = self.parent_reader.get_many(
             parent_ids, corpus_version_id=active_corpus_version_id
@@ -168,19 +175,23 @@ class FirestorePassageRetriever:
             and parent.parent_id in parent_ids
         )
         child_scores: dict[str, float] = {}
-        for passage, parent_id in ranked:
+        for passage, parent_id, _ in ranked:
             if parent_id and passage.relevance_score is not None:
                 child_scores[parent_id] = max(
                     child_scores.get(parent_id, float("-inf")), passage.relevance_score
                 )
         context, selected = select_parent_context(
             question,
-            ranked,
+            tuple((passage, parent_id) for passage, parent_id, _ in ranked),
             parents,
             child_scores=child_scores,
         )
         return RetrievalEvidence(
-            tuple(passage for passage, _ in ranked), context, selected
+            tuple(passage for passage, _, _ in ranked),
+            context,
+            selected,
+            tuple(child for _, _, child in ranked if child is not None),
+            parents,
         )
 
     def _ranked_children(
@@ -189,7 +200,7 @@ class FirestorePassageRetriever:
         *,
         active_corpus_version_id: str,
         limit: int,
-    ) -> tuple[tuple[RetrievedPassage, str | None], ...]:
+    ) -> tuple[tuple[RetrievedPassage, str | None, ChildDocumentChunk | None], ...]:
         if not question or not question.strip():
             raise ValueError("question must be non-empty")
         if not active_corpus_version_id or not active_corpus_version_id.strip():
@@ -204,11 +215,13 @@ class FirestorePassageRetriever:
                 "metadata.corpus_version_id", "==", active_corpus_version_id
             ),
         )
-        passages = [
-            (_passage_from_result(document, score), _parent_id_from_document(document))
-            for document, score in results
-            if isfinite(score)
-        ]
+        passages = []
+        for document, score in results:
+            if not isfinite(score):
+                continue
+            child = _child_source_from_document(document)
+            parent_id = child.parent_id if child is not None else _parent_id_from_document(document)
+            passages.append((_passage_from_result(document, score, child), parent_id, child))
         passages.sort(
             key=lambda item: (
                 -(
@@ -364,15 +377,49 @@ def _parent_id_from_document(document: Document) -> str | None:
     return str(parent_id) if isinstance(parent_id, str) and parent_id else None
 
 
-def _passage_from_result(document: Document, score: float) -> RetrievedPassage:
+def _child_source_from_document(document: Document) -> ChildDocumentChunk | None:
+    metadata = document.metadata.get("metadata", document.metadata)
+    if not isinstance(metadata, dict):
+        raise ValueError("retrieved document metadata is invalid")
+    if metadata.get("schema_version") != "child-document-chunk-v1":
+        return None
+    fields = (
+        "schema_version", "chunk_id", "corpus_version_id", "parent_id",
+        "section_path", "page_start", "page_end", "source_spans",
+        "child_ordinal", "content_hash", "token_count",
+    )
+    try:
+        return ChildDocumentChunk.model_validate({
+            **{field: metadata[field] for field in fields if field in metadata},
+            "text": document.page_content,
+        })
+    except ValidationError:
+        return None
+
+
+def _passage_from_result(
+    document: Document, score: float, child: ChildDocumentChunk | None = None
+) -> RetrievedPassage:
+    if child is not None:
+        return RetrievedPassage(
+            chunk_id=child.chunk_id,
+            page=child.page_start,
+            section=" / ".join(child.section_path)[:500],
+            excerpt=document.page_content,
+            relevance_score=float(score),
+        )
     metadata = document.metadata.get("metadata", document.metadata)
     if not isinstance(metadata, dict):
         raise ValueError("retrieved document metadata is invalid")
     reference = document.metadata.get("reference", {})
     reference_path = reference.get("path", "") if isinstance(reference, dict) else ""
     chunk_id = metadata.get("chunk_id") or reference_path.rsplit("/", 1)[-1]
-    section = metadata.get("section")
-    page = metadata.get("page")
+    if isinstance(metadata.get("section_path"), (list, tuple)):
+        section = " / ".join(str(item) for item in metadata["section_path"])[:500]
+        page = metadata.get("page_start")
+    else:
+        section = metadata.get("section")
+        page = metadata.get("page")
     if not chunk_id or not section or not isinstance(page, int) or page < 1:
         raise ValueError("retrieved document is missing chunk provenance")
     if not document.page_content:

@@ -20,7 +20,7 @@ from .search_probe import (
     SearchReadinessEvidence,
 )
 from .manifest import RAG_DERIVATION, SourceManifest, create_source_manifest, default_derivation
-from .structure_map import HeadingAnchor, SourceIdentity, StructureMapProposal, propose_structure_map
+from .structure_map import HeadingAnchor, LogicalSection, SourceIdentity, StructureMapProposal, propose_structure_map, sections_from_pages
 from .lexical_artifact import (
     LexicalArtifactError,
     LexicalArtifactManifest,
@@ -39,8 +39,10 @@ __all__ = [
     "SourceManifest",
     "SourceIdentity",
     "HeadingAnchor",
+    "LogicalSection",
     "StructureMapProposal",
     "propose_structure_map",
+    "sections_from_pages",
     "RAG_DERIVATION",
     "default_derivation",
     "SourcePage",

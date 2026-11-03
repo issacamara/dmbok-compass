@@ -140,8 +140,11 @@ def test_map_verification_failure_leaves_active_corpus_unchanged() -> None:
 
 def test_repeated_derivation_resumes_same_staged_identity_without_activating() -> None:
     versions = InMemoryCorpusVersionStore()
-    first = entrypoint.build_and_stage_hierarchical_candidate(versions=versions, **_candidate_args())
-    retry = entrypoint.build_and_stage_hierarchical_candidate(versions=versions, **_candidate_args())
+    first_args = _candidate_args()
+    first = entrypoint.build_and_stage_hierarchical_candidate(versions=versions, **first_args)
+    retry = entrypoint.build_and_stage_hierarchical_candidate(
+        versions=versions, **_candidate_args()
+    )
 
     assert first.version.version_id == retry.version.version_id
     assert first.manifest.manifest_sha256 == retry.manifest.manifest_sha256
@@ -153,6 +156,12 @@ def test_repeated_derivation_resumes_same_staged_identity_without_activating() -
     )
     assert all(parent.corpus_version_id == first.version.version_id for parent in first.parents)
     assert all(child.corpus_version_id == first.version.version_id for child in first.children)
+    assert all(parent.parent_id != "legacy:parent:0:0" for parent in first.parents)
+    assert all(child.chunk_id != "legacy:1:0" for child in first.children)
+    assert (
+        first.manifest.manifest["derivation"]["structure_map"]["approval_sha256"]
+        == first_args["expected_approval_sha256"]
+    )
     assert versions.active() is None
     assert versions.get(first.version.version_id).status == "staged"  # type: ignore[union-attr]
     assert first.ingestion_gate == INGESTION_GATE

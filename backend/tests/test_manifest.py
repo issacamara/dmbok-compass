@@ -5,6 +5,7 @@ import json
 import pytest
 
 from app.corpus import create_source_manifest, default_derivation
+from app.corpus.manifest import hierarchical_derivation
 
 
 PDF_HASH = "a" * 64
@@ -141,6 +142,64 @@ def test_identical_derivation_is_canonical_across_retries_and_dictionary_orderin
 
     assert retry.corpus_version_id == first.corpus_version_id
     assert retry.manifest_sha256 == first.manifest_sha256
+
+
+def test_hierarchical_derivation_records_map_approval_tokenizer_and_schema() -> None:
+    derivation = hierarchical_derivation(
+        map_id="reviewed-map",
+        map_uri="gs://corpus/maps/reviewed.json",
+        map_generation=12,
+        map_file_sha256="b" * 64,
+        map_content_sha256="c" * 64,
+        approval_uri="gs://corpus/approvals/reviewed.json",
+        approval_generation=13,
+        approval_sha256="d" * 64,
+        ingestion_gate={"oversized_indivisible_list_items_or_table_rows": "blocking_if_found"},
+    )
+    manifest = create_source_manifest(
+        bucket="dmbok-corpus",
+        object_name="source/dmbok.pdf",
+        generation=7,
+        content_sha256=PDF_HASH,
+        derivation=derivation,
+    )
+
+    assert manifest.manifest["derivation"]["structure_map"] == {
+        "map_id": "reviewed-map",
+        "schema_version": "structure-map-v1",
+        "artifact_uri": "gs://corpus/maps/reviewed.json",
+        "generation": 12,
+        "file_sha256": "b" * 64,
+        "content_sha256": "c" * 64,
+        "approval_uri": "gs://corpus/approvals/reviewed.json",
+        "approval_generation": 13,
+        "approval_sha256": "d" * 64,
+    }
+    assert manifest.manifest["derivation"]["splitter"]["segmentation_counter"] == {
+        "encoding": "cl100k_base",
+        "library": "tiktoken",
+        "library_version": "0.12.0",
+    }
+    assert manifest.manifest["derivation"]["corpus_schema"] == {
+        "parent": "parent-chunk-v1",
+        "child": "child-document-chunk-v1",
+        "vector": "2",
+    }
+
+
+def test_hierarchical_manifest_rejects_invalid_map_or_approval_digest() -> None:
+    with pytest.raises(ValueError, match="map_file_sha256"):
+        hierarchical_derivation(
+            map_id="reviewed-map",
+            map_uri="gs://corpus/maps/reviewed.json",
+            map_generation=12,
+            map_file_sha256="not-a-digest",
+            map_content_sha256="c" * 64,
+            approval_uri="gs://corpus/approvals/reviewed.json",
+            approval_generation=13,
+            approval_sha256="d" * 64,
+            ingestion_gate={},
+        )
 
 
 def test_manifest_metadata_records_reproducible_material_and_hashes_without_secrets() -> None:

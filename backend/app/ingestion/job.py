@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from collections.abc import Callable, Sequence
+from typing import Any
 
 from app.contracts import ChildDocumentChunk, CorpusVersion, ParentChunk
 from app.corpus.indexing import CorpusEmbeddingWriter, HierarchicalCorpusWriter

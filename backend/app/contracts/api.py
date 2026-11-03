@@ -76,6 +76,7 @@ class RetrievalResult(ContractModel):
     strategy: RetrievalStrategy
     stage_status: StageStatus
     search_ready: bool = False
+    selected_parents: list[SelectedParent] = Field(default_factory=list, max_length=5)
 
     @model_validator(mode="after")
     def validate_scores(self) -> "RetrievalResult":
@@ -83,6 +84,9 @@ class RetrievalResult(ContractModel):
             raise ValueError("scores must align with ordered_chunk_ids")
         if self.stage_status != "succeeded" and self.search_ready:
             raise ValueError("search_ready requires a succeeded retrieval stage")
+        ranks = [parent.rank for parent in self.selected_parents]
+        if ranks != list(range(len(ranks))):
+            raise ValueError("selected_parents must have contiguous ranks")
         return self
 
 
@@ -644,6 +648,99 @@ class CorpusValidationEvidence(ContractModel):
     embedding_dimensions: Literal[768] = 768
     index_ready: bool
     filter_ready: bool
+
+
+class SourceSpan(ContractModel):
+    """An ordered, page-linked slice of the approved source document."""
+
+    page: int = Field(ge=1)
+    start_offset: int = Field(ge=0)
+    end_offset: int = Field(gt=0)
+    text: str = Field(min_length=1, max_length=20_000)
+
+    @model_validator(mode="after")
+    def validate_offsets(self) -> "SourceSpan":
+        if self.end_offset <= self.start_offset:
+            raise ValueError("end_offset must be greater than start_offset")
+        return self
+
+
+class StructureMapEntry(ContractModel):
+    section_path: tuple[str, ...] = Field(min_length=1, max_length=4)
+    page_start: int = Field(ge=1)
+    page_end: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def validate_page_range(self) -> "StructureMapEntry":
+        if self.page_end < self.page_start:
+            raise ValueError("page_end must not precede page_start")
+        return self
+
+
+class StructureMap(ContractModel):
+    schema_version: Literal["structure-map-v1"] = "structure-map-v1"
+    map_id: str = Field(min_length=1, max_length=128)
+    source_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    content_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    entries: list[StructureMapEntry] = Field(min_length=1)
+
+
+class ParentChunk(ContractModel):
+    schema_version: Literal["parent-chunk-v1"] = "parent-chunk-v1"
+    parent_id: str = Field(min_length=1, max_length=256)
+    corpus_version_id: str = Field(min_length=1, max_length=128)
+    section_path: tuple[str, ...] = Field(min_length=1, max_length=4)
+    page_start: int = Field(ge=1)
+    page_end: int = Field(ge=1)
+    source_spans: list[SourceSpan] = Field(min_length=1)
+    content_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    token_count: int = Field(ge=1)
+    text: str = Field(min_length=1, max_length=20_000)
+
+    @model_validator(mode="after")
+    def validate_provenance(self) -> "ParentChunk":
+        if self.page_end < self.page_start:
+            raise ValueError("page_end must not precede page_start")
+        pages = [span.page for span in self.source_spans]
+        if pages != sorted(pages):
+            raise ValueError("source_spans must be ordered by page")
+        if pages[0] != self.page_start or pages[-1] != self.page_end:
+            raise ValueError("page range must cover source_spans")
+        return self
+
+
+class ChildDocumentChunk(ContractModel):
+    """Vector-safe child record; legacy flat chunks cannot satisfy this contract."""
+
+    schema_version: Literal["child-document-chunk-v1"] = "child-document-chunk-v1"
+    chunk_id: str = Field(min_length=1, max_length=256)
+    corpus_version_id: str = Field(min_length=1, max_length=128)
+    parent_id: str = Field(min_length=1, max_length=256)
+    section_path: tuple[str, ...] = Field(min_length=1, max_length=4)
+    page_start: int = Field(ge=1)
+    page_end: int = Field(ge=1)
+    source_spans: list[SourceSpan] = Field(min_length=1)
+    child_ordinal: int = Field(ge=0)
+    content_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    token_count: int = Field(ge=1)
+    text: str = Field(min_length=1, max_length=20_000)
+
+    @model_validator(mode="after")
+    def validate_provenance(self) -> "ChildDocumentChunk":
+        if self.page_end < self.page_start:
+            raise ValueError("page_end must not precede page_start")
+        pages = [span.page for span in self.source_spans]
+        if pages != sorted(pages):
+            raise ValueError("source_spans must be ordered by page")
+        if pages[0] != self.page_start or pages[-1] != self.page_end:
+            raise ValueError("page range must cover source_spans")
+        return self
+
+
+class SelectedParent(ContractModel):
+    parent_id: str = Field(min_length=1, max_length=256)
+    token_count: int = Field(ge=1)
+    rank: int = Field(ge=0)
 
 
 class DocumentChunk(ContractModel):

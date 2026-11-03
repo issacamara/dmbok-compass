@@ -13,7 +13,9 @@ from app.corpus import (
     create_source_manifest,
     default_derivation,
 )
+from app.corpus.chunking import _token_count
 from app.corpus.indexing import HierarchicalCorpusWriter
+from app.corpus.versions import CorpusCompletenessError
 from app.ingestion import CorpusIngestionJob
 from app.ingestion.job import IngestionInterrupted
 
@@ -23,6 +25,7 @@ class FakeVectorStore:
         self.documents: dict[str, object] = {}
         self.batch_sizes: list[int] = []
         self.fail_next = False
+        self.search_calls: list[dict[str, object]] = []
 
     def add_documents(self, documents, *, ids):
         if self.fail_next:
@@ -31,6 +34,14 @@ class FakeVectorStore:
         self.batch_sizes.append(len(ids))
         self.documents.update(zip(ids, documents))
         return ids
+
+    def similarity_search_with_score(self, query, *, k, filters):
+        self.search_calls.append({"query": query, "k": k, "filters": filters})
+        return [
+            (document, 0.9)
+            for document in self.documents.values()
+            if document.metadata.get("corpus_version_id") == filters.value
+        ][:k]
 
 
 class FakeParentStore:
@@ -83,7 +94,7 @@ def many_hierarchical_records(count: int, *, version_id: str = "v1"):
         page_end=1,
         source_spans=[SourceSpan(page=1, start_offset=0, end_offset=count, text=text)],
         content_hash=sha256(text.encode()).hexdigest(),
-        token_count=count,
+        token_count=_token_count(text),
         text=text,
     )
     children = tuple(
@@ -99,7 +110,7 @@ def many_hierarchical_records(count: int, *, version_id: str = "v1"):
             ],
             child_ordinal=ordinal,
             content_hash=sha256(b"x").hexdigest(),
-            token_count=1,
+            token_count=_token_count("x"),
             text="x",
         )
         for ordinal in range(count)
@@ -220,11 +231,19 @@ def test_hierarchical_ingestion_batches_501_children_and_retries_by_explicit_ide
     first = job.run_hierarchical(staged_version(), parents, children)
     retry = job.run_hierarchical(staged_version(), parents, children)
 
-    assert first.version.status == retry.version.status == "staged"
-    assert vector_store.batch_sizes == [500, 1, 500, 1]
-    assert parent_store.batch_sizes == [1, 1]
+    assert first.version.status == retry.version.status == "validated"
+    assert vector_store.batch_sizes == [500, 1]
+    assert parent_store.batch_sizes == [1]
     assert set(vector_store.documents) == {child.chunk_id for child in children}
     assert len(vector_store.documents) == len(children)
+    assert len(vector_store.search_calls) == 1
+    readiness = versions._search_readiness["v1"]
+    assert readiness.complete.status == "complete"
+    assert readiness.search_ready is not None
+    assert readiness.search_ready.candidate_chunk_id == children[0].chunk_id
+    assert first.version.validation_evidence is not None
+    assert first.version.validation_evidence.index_ready is True
+    assert first.version.validation_evidence.filter_ready is True
     assert all(
         document.metadata["parent_id"] == parents[0].parent_id
         and document.metadata["chunk_id"] == chunk_id
@@ -261,6 +280,75 @@ def test_hierarchical_write_failure_leaves_active_corpus_untouched() -> None:
     assert len(parent_store.documents) == 1
     assert vector_store.documents == {}
     assert vector_store.batch_sizes == []
+
+
+def test_unresolved_oversized_structures_block_readiness_and_activation() -> None:
+    vector_store = FakeVectorStore()
+    parent_store = FakeParentStore()
+    versions = InMemoryCorpusVersionStore()
+    parents, children = many_hierarchical_records(1)
+    job = CorpusIngestionJob(
+        versions,
+        HierarchicalCorpusWriter(vector_store, parent_store),
+    )
+
+    result = job.run_hierarchical(
+        staged_version(), parents, children, unresolved_exceptions=[object()]
+    )
+
+    assert result.version.status == "staged"
+    assert versions.get("v1").status == "staged"  # type: ignore[union-attr]
+    assert versions.active() is None
+    evidence = versions._search_readiness["v1"]
+    assert evidence.complete.status == "incomplete"
+    assert evidence.search_ready is None
+    assert vector_store.search_calls == []
+
+
+def test_child_span_gap_blocks_candidate_before_any_persistence() -> None:
+    vector_store = FakeVectorStore()
+    parent_store = FakeParentStore()
+    versions = InMemoryCorpusVersionStore()
+    parents, children = many_hierarchical_records(2)
+    invalid_child = children[0].model_copy(
+        update={
+            "source_spans": [
+                children[0].source_spans[0].model_copy(update={"start_offset": 1})
+            ]
+        }
+    )
+
+    with pytest.raises(CorpusCompletenessError, match="contiguous parent coverage"):
+        CorpusIngestionJob(
+            versions, HierarchicalCorpusWriter(vector_store, parent_store)
+        ).run_hierarchical(staged_version(), parents, (invalid_child, children[1]))
+
+    assert vector_store.documents == {}
+    assert parent_store.documents == {}
+    assert versions.active() is None
+
+
+@pytest.mark.parametrize(
+    ("invalid_parent", "invalid_child", "error"),
+    [
+        (True, False, "content hash"),
+        (False, True, "another corpus version"),
+    ],
+)
+def test_hierarchical_integrity_rejects_tampered_hash_and_cross_version_child(
+    invalid_parent: bool, invalid_child: bool, error: str
+) -> None:
+    parents, children = many_hierarchical_records(1)
+    if invalid_parent:
+        parents = (parents[0].model_copy(update={"content_hash": "a" * 64}),)
+    if invalid_child:
+        children = (children[0].model_copy(update={"corpus_version_id": "other"}),)
+
+    with pytest.raises(CorpusCompletenessError, match=error):
+        CorpusIngestionJob(
+            InMemoryCorpusVersionStore(),
+            HierarchicalCorpusWriter(FakeVectorStore(), FakeParentStore()),
+        ).run_hierarchical(staged_version(), parents, children)
 
 
 def test_entrypoint_exits_nonzero_and_emits_content_free_interruption_status(

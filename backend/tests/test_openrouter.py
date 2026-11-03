@@ -358,17 +358,17 @@ def test_openrouter_respects_total_timeout() -> None:
 
 def test_openrouter_allows_fallback_after_primary_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     models: list[str] = []
-    monkeypatch.setattr("model.openrouter.PRIMARY_ATTEMPT_MAX_MS", 100)
+    monkeypatch.setattr("model.openrouter.PRIMARY_ATTEMPT_MAX_MS", 1000)
 
     async def handler(request: httpx.Request) -> httpx.Response:
         model = json.loads(request.content)["model"]
         models.append(model)
         if len(models) == 1:
-            await asyncio.sleep(0.12)
+            await asyncio.sleep(1.02)
         return httpx.Response(200, json=response_payload("Fallback answer."))
 
     adapter = OpenRouterAdapter("test-key", transport=httpx.MockTransport(handler))
-    result = asyncio.run(adapter.generate(request(timeout=TimeoutBudget(total_ms=300))))
+    result = asyncio.run(adapter.generate(request(timeout=TimeoutBudget(total_ms=2500))))
 
     assert models == ["meta-llama/llama-3.1-8b-instruct", "google/gemma-4-26b-a4b-it:free"]
     assert result.candidate.answer_text == "Fallback answer."

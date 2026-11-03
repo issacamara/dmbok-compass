@@ -100,7 +100,7 @@ class CandidateFilteredVectorProbe:
                     results,
                     version_id=version_id,
                     candidate=candidate,
-                    schema_version=self.schema_version,
+                    schema_version=getattr(candidate, "schema_version", self.schema_version),
                 )
                 search_ready = ReadinessSignal(
                     status="search_ready",
@@ -136,17 +136,41 @@ class CandidateFilteredVectorProbe:
         if not results:
             raise ValueError("candidate-filtered vector probe returned no results")
         for document, score in results:
-            if not isfinite(float(score)):
+            try:
+                if not isfinite(float(score)):
+                    continue
+            except (TypeError, ValueError):
                 continue
             metadata = document.metadata.get("metadata", document.metadata)
             if not isinstance(metadata, dict):
                 continue
-            if (
-                metadata.get("corpus_version_id") == version_id
-                and metadata.get("chunk_id") == candidate.chunk_id
-                and metadata.get("schema_version") == schema_version
-                and metadata.get("page") == candidate.page
-                and metadata.get("section") == candidate.section
+            if not _candidate_metadata_matches(
+                metadata, version_id=version_id, candidate=candidate, schema_version=schema_version
             ):
-                return
+                continue
+            return
         raise ValueError("candidate-filtered vector probe returned invalid provenance")
+
+
+def _candidate_metadata_matches(
+    metadata: dict[str, Any], *, version_id: str, candidate: Any, schema_version: str
+) -> bool:
+    if (
+        metadata.get("corpus_version_id") != version_id
+        or metadata.get("chunk_id") != candidate.chunk_id
+        or metadata.get("schema_version") != schema_version
+    ):
+        return False
+    if hasattr(candidate, "section_path"):
+        expected = {
+            "parent_id": candidate.parent_id,
+            "section_path": list(candidate.section_path),
+            "page_start": candidate.page_start,
+            "page_end": candidate.page_end,
+            "source_spans": [span.model_dump(mode="json") for span in candidate.source_spans],
+            "child_ordinal": candidate.child_ordinal,
+            "content_hash": candidate.content_hash,
+            "token_count": candidate.token_count,
+        }
+        return all(metadata.get(key) == value for key, value in expected.items())
+    return metadata.get("page") == candidate.page and metadata.get("section") == candidate.section

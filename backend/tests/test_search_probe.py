@@ -2,6 +2,7 @@ from dataclasses import dataclass
 
 import pytest
 
+from app.contracts import ChildDocumentChunk, SourceSpan
 from app.corpus.search_probe import CandidateFilteredVectorProbe
 
 
@@ -94,3 +95,45 @@ def test_probe_retries_bounded_index_propagation_failures() -> None:
             sleeper=lambda _: None,
         ).run(version_id="v1", candidate=candidate())
     assert store.calls == 2
+
+
+def test_probe_validates_hierarchical_child_provenance_and_schema() -> None:
+    span = SourceSpan(page=2, start_offset=4, end_offset=9, text="child")
+    child = ChildDocumentChunk(
+        chunk_id="v1:child:abc",
+        corpus_version_id="v1",
+        parent_id="v1:parent:1",
+        section_path=("Chapter 1", "Section A"),
+        page_start=2,
+        page_end=2,
+        source_spans=[span],
+        child_ordinal=0,
+        content_hash="a" * 64,
+        token_count=1,
+        text="child",
+    )
+    metadata = {
+        **child.model_dump(mode="json"),
+        "chunk_id": child.chunk_id,
+    }
+    store = FakeVectorStore([(Document(metadata), 0.91)])
+
+    evidence = CandidateFilteredVectorProbe(
+        store, collection_id="document_chunks_v2", index_id="idx-1"
+    ).run(version_id="v1", candidate=child)
+
+    assert evidence.search_ready is not None
+    assert evidence.search_ready.candidate_chunk_id == child.chunk_id
+    assert store.calls[0]["filters"].field_path == "metadata.corpus_version_id"
+    assert store.calls[0]["filters"].value == "v1"
+
+    stale = {**metadata, "parent_id": "v0:parent:1"}
+    stale_store = FakeVectorStore([(Document(stale), 0.91)])
+    with pytest.raises(RuntimeError, match="readiness probe failed"):
+        CandidateFilteredVectorProbe(
+            stale_store,
+            collection_id="document_chunks_v2",
+            max_attempts=2,
+            sleeper=lambda _: None,
+        ).run(version_id="v1", candidate=child)
+    assert len(stale_store.calls) == 2

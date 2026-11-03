@@ -401,6 +401,41 @@ def test_hierarchical_validation_rejects_provider_dimension_mismatch() -> None:
     assert store(client).get("v2").status == "staged"  # type: ignore[union-attr]
 
 
+def test_search_readiness_does_not_change_an_active_version_status() -> None:
+    client = FakeFirestore()
+    candidate_binding = binding("v2")
+    partial = CorpusValidationEvidence(
+        chunk_count=1,
+        content_hashes_sha256="c" * 64,
+        provenance_sha256="d" * 64,
+        index_ready=False,
+        filter_ready=False,
+    )
+    active = version(
+        "v2", "active", serving_binding=candidate_binding, validation_evidence=partial
+    )
+    persist(client, active)
+    client.data[f"{candidate_binding.vector_collection}/v2:child:1"] = {
+        "text": "child",
+        "embedding": [0.0] * 768,
+        "metadata": {"corpus_version_id": "v2", "chunk_id": "v2:child:1"},
+    }
+    complete = ReadinessSignal(
+        "complete", datetime.now(timezone.utc), candidate_binding.vector_collection,
+        "index-v2", "v2:child:1", "v2",
+    )
+    ready = ReadinessSignal(
+        "search_ready", datetime.now(timezone.utc), candidate_binding.vector_collection,
+        "index-v2", "v2:child:1", "v2",
+    )
+
+    store(client).persist_search_readiness(
+        "v2", SearchReadinessEvidence(complete, ready, 1)
+    )
+
+    assert store(client).get("v2").status == "active"  # type: ignore[union-attr]
+
+
 def persist_vector(
     client: FakeFirestore,
     item: TextChunk,

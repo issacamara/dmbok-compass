@@ -237,7 +237,11 @@ class FirestoreCorpusVersionStore:
         if version is None or version.validation_evidence is None:
             return
         validation = version.validation_evidence
-        if not validation.index_ready and not validation.filter_ready:
+        if (
+            version.status == "staged"
+            and not validation.index_ready
+            and not validation.filter_ready
+        ):
             ready_evidence = validation.model_copy(
                 update={"index_ready": True, "filter_ready": True}
             )

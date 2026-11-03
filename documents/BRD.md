@@ -3,8 +3,8 @@
 | Document field | Value |
 |---|---|
 | Status | Draft for Review |
-| Version | 0.2 |
-| Date | 1 November 2026 |
+| Version | 0.3 |
+| Date | 3 November 2026 |
 | Initiative owner | Sponsor / product owner / administrator (same individual) |
 | Priority scale | Must, Should, Could, Won't for now |
 
@@ -29,6 +29,7 @@ The publisher's rights notice expressly restricts reproduction and transmission,
 | OBJ-03 | Ensure answers remain grounded in the DMBOK corpus and provide verifiable source citations. |
 | OBJ-04 | Prevent release unless retrieval, grounding, answer quality, refusal behavior, and performance meet agreed thresholds. |
 | OBJ-05 | Operate a secure, recoverable learning service for a maximum of 10 approved users within the sponsor's cost constraint. |
+| OBJ-06 | Let the administrator prepare a new corpus version without manually managing ingestion artifact locations or hashes, while reviewing the supplied chapter and section structure before chunk creation. |
 
 ### 2.2 Success measures and release gates
 
@@ -44,6 +45,7 @@ The initial thresholds may be recalibrated after the first baseline run, but any
 | SM-06 | End-to-end response time | At least 95% within 30 seconds | Complete answer, citations, and retrieval status are received from browser submission under normal test conditions with up to three simultaneous users. |
 | SM-07 | Approved-user ceiling | 100% compliance | No more than 10 approved user accounts can access question answering. |
 | SM-08 | Infrastructure cost | No more than €5 per month for GCP infrastructure, plus an approved provider budget | Sponsor review of infrastructure and provider usage; production provider calls use OpenRouter with a free model preferred for both primary and fallback, subject to release gates. |
+| SM-09 | Administrator corpus staging | A valid submission can be reviewed and staged without manually calculating or entering artifact locations or hashes | Acceptance evidence confirms the administrator can download the example structure template, upload it with the source PDF, review the validated structure, approve chunk creation, and see the resulting corpus version and chunk count or actionable failure guidance. |
 
 ## 3. Stakeholders and user groups
 
@@ -51,12 +53,12 @@ The initial thresholds may be recalibrated after the first baseline run, but any
 |---|---|
 | Sponsor / product owner | Owns scope, budget, risk acceptance, priorities, and release approval. |
 | Administrator | Approves or rejects registrations, manages approved users, configures usage caps, monitors aggregate usage, and runs evaluations. |
-| Evaluator / corpus owner | Supplies approximately 200 representative questions, validates the curated hierarchy map, and reviews generated reference answers and evidence for a 40–50-question gold subset. |
+| Evaluator / corpus owner | Supplies approximately 200 representative questions, reviews the administrator-supplied hierarchy and corpus evidence, and reviews generated reference answers and evidence for a 40–50-question gold subset. |
 | Approved user | Asks DMBOK questions and receives grounded answers, supporting excerpts, and citations. |
 | Registration applicant | Submits an email address, username, and password for administrator review; cannot use the assistant until approved. |
 | Hosted model provider | Processes question context and retrieved excerpts subject to its service availability and data-handling terms. |
 
-The same individual currently performs the sponsor, product owner, administrator, evaluator, corpus-owner, support, and release-approver roles.
+The same individual currently performs the sponsor, product owner, administrator, evaluator, corpus-owner, support, and release-approver roles. The administrator also supplies the chapter and section structure file when staging a corpus version.
 
 ## 4. Current state and future state
 
@@ -66,7 +68,7 @@ The sponsor searches the DMBOK PDF manually. Locating relevant passages is time-
 
 ### 4.2 Future state
 
-An approved user signs in, asks a question in English, and receives a complete answer within the target response time. The answer is based only on retrieved DMBOK passages and includes page, chapter or section, and supporting excerpts. The response exposes a request-scoped retrieval trace without saving the conversation. Administrators can approve users, enforce configurable quotas, monitor anonymous aggregate usage, and run a versioned evaluation suite before release.
+An approved user signs in, asks a question in English, and receives a complete answer within the target response time. The answer is based only on retrieved DMBOK passages and includes page, chapter or section, and supporting excerpts. The response exposes a request-scoped retrieval trace without saving the conversation. Administrators can approve users, enforce configurable quotas, monitor anonymous aggregate usage, and run a versioned evaluation suite before release. To stage a corpus version, the administrator downloads an example JSON structure template, supplies it with the PDF, reviews the validated chapter and section structure, and selects “Approve and create chunks.” The system handles the technical artifact locations and hashes and reports progress and the completed corpus version or actionable failure details.
 
 ## 5. Scope and out of scope
 
@@ -81,8 +83,9 @@ An approved user signs in, asks a question in English, and receives a complete a
 - Primary and fallback hosted model support.
 - Configurable per-user and global request caps.
 - Minimal administration for users, limits, aggregate usage, and evaluations.
-- Offline ingestion of one searchable DMBOK PDF through an administrator maintenance procedure.
-- Hierarchical structural ingestion using a curated, human-validated chapter/section/topic map, parent chunks, child chunks, and retained page provenance.
+- Administrator staging of one searchable DMBOK PDF with a separate JSON chapter and section structure file, using a downloadable template and example.
+- Validation and administrator review of the supplied structure before hierarchical chunk creation; the system stops with correction guidance when the file is invalid or its structure cannot be matched to the document.
+- Hierarchical ingestion into parent chunks and child chunks with retained page provenance, with artifact locations and hashes handled by the system.
 - Repeatable pre-release evaluation using approximately 200 questions and a 40–50-item human-reviewed gold subset with at least 20 answerable and 20 unanswerable or out-of-domain items.
 - Administrator import and management of a prepared JSON evaluation dataset, with exploratory evaluation available before gold-subset approval.
 - Daily backup of persistent application data and tested restoration.
@@ -95,7 +98,7 @@ An approved user signs in, asks a question in English, and receives a complete a
 - Saved chat history or persistent interaction traces.
 - User feedback, ratings, or comments.
 - Multifactor authentication.
-- Admin-screen PDF upload, corpus editing, or re-indexing controls.
+- Editing the uploaded structure file inside the administration screen; the administrator corrects the file and uploads it again when validation identifies an issue.
 - Multiple books or non-DMBOK sources.
 - Contractual uptime, paid support, or high-availability infrastructure.
 - Native mobile applications.
@@ -106,7 +109,7 @@ An approved user signs in, asks a question in English, and receives a complete a
 |---|---|---|---|---|
 | BPR-001 | Registration and approval | Administrator | Must | An applicant can submit the required account information; the account cannot ask questions until the administrator approves it. |
 | BPR-002 | Grounded question answering | Product owner | Must | An approved user can submit an English question and receive either a cited corpus-grounded answer or the defined evidence-based refusal. |
-| BPR-003 | Corpus maintenance | Administrator | Must | The source PDF can be ingested into a new versioned hierarchical corpus through a documented administrator-only maintenance procedure without overwriting the active corpus. |
+| BPR-003 | Corpus staging and maintenance | Administrator | Must | The administrator downloads the example structure template, uploads the source PDF and completed structure file, reviews the validated hierarchy, and selects “Approve and create chunks.” Invalid or unmatched structure stops before chunk creation with clear correction guidance. A successful run reports progress, corpus version, and chunk count; a failed run explains what to correct and can be retried. Staging never overwrites the active corpus. |
 | BPR-004 | Pre-release evaluation | Evaluator | Must | A release candidate can be evaluated against the versioned evaluation set, with each release-gate metric reported as pass or fail. |
 | BPR-005 | Release decision | Sponsor | Must | The sponsor can approve release only after reviewing evaluation results, accepted risks, and unresolved exceptions. |
 | BPR-006 | Backup and recovery | Administrator | Must | Persistent data is backed up daily and a documented restore test demonstrates recovery within 24 hours. |
@@ -149,10 +152,16 @@ An approved user signs in, asks a question in English, and receives a complete a
 | FR-031 | The system shall allow an imported non-empty dataset to run immediately for exploratory evaluation. | Evaluator / administrator | Must | A full exploratory run can start before gold-subset approval. |
 | FR-032 | The system shall support review and approval of individual evaluation records as gold annotations. | Evaluator / administrator | Must | An administrator can approve or reject a record and its status is visible in the dataset view. |
 | FR-033 | The system shall block release approval unless 40–50 records in the active dataset have approved gold annotations and meet the required answerable and unanswerable coverage. | Evaluator / release approver | Must | A release decision with fewer than 40 or more than 50 approved gold records, fewer than 20 answerable items, or fewer than 20 unanswerable or out-of-domain items is rejected with an explanatory message. |
-| FR-034 | The system shall ingest the approved PDF into a hierarchical corpus using a curated, human-validated structure map. | Sponsor / evaluator | Must | Each source passage has a deterministic section path, one or more page references, a versioned content identity, and an `Unclassified` fallback when the structure cannot be recovered confidently. |
+| FR-034 | The system shall ingest the PDF into a hierarchical corpus using the administrator-supplied structure after it has passed validation and review. | Sponsor / administrator | Must | Each source passage has a deterministic section path, one or more page references, and a versioned content identity; ingestion stops with correction guidance when a passage cannot be matched to the supplied structure. |
 | FR-035 | The system shall retrieve dense child chunks and expand them to bounded parent chunks for answer generation. | Sponsor | Must | Child chunks target 200–300 tokens and do not cross a parent boundary; parent chunks target 600–1,000 tokens with a provisional 1,500-token maximum; selected parent context is bounded to a provisional 6,000 tokens, ranked by relevance, and covers each named comparison subject when relevant evidence exists. |
 | FR-036 | The system shall preserve structural integrity for lists and tables during hierarchical ingestion. | Sponsor / evaluator | Must | A list is split only between complete items and a table only between rows with its header repeated; short sections are not merged merely to meet a size target, and oversized sections are split at the lowest available semantic boundary. |
 | FR-037 | The system shall create a new corpus version for a changed chunking strategy and rebind release evidence before promotion. | Sponsor / evaluator | Must | The active corpus is not overwritten; ambiguous child-chunk bindings are reviewed; the new corpus completes release evaluation before activation; and the prior corpus remains available for rollback until post-promotion verification completes. |
+| FR-038 | The administrator shall be able to download a structure-file template with an example for the supported DMBOK chapter and section hierarchy. | Sponsor / administrator | Must | The administration workflow provides a usable template and example that identifies the required structure fields and format; the file can be completed and uploaded with the PDF. |
+| FR-039 | The administrator shall be able to submit the source PDF and its separate structure file together for staging a new corpus version. | Sponsor / administrator | Must | An authorized administrator can submit both files in one staging workflow; the system associates them with one staging attempt and does not require the administrator to calculate or enter artifact locations or hashes. |
+| FR-040 | The system shall validate the structure file and its match to the source document before creating chunks. | Sponsor / administrator | Must | Invalid structure data or a section that cannot be matched stops staging before chunk creation and identifies the affected entry and correction needed; no partially staged corpus can become active. |
+| FR-041 | The system shall show the validated, administrator-supplied chapter and section structure for review before creating chunks. | Sponsor / administrator | Must | The administrator can inspect the supplied hierarchy and its document matches, then choose to proceed or correct and resubmit the structure file; chunk creation does not begin before approval. |
+| FR-042 | The administrator shall be able to approve the displayed structure and start chunk creation with the action “Approve and create chunks.” | Sponsor / administrator | Must | Selecting the clearly labeled action starts ingestion for the reviewed files and structure; the new version remains staged and the existing active corpus continues serving until existing evaluation and release requirements are met. |
+| FR-043 | The system shall report ingestion progress and the outcome of each staging attempt. | Sponsor / administrator | Must | A completed attempt reports success, corpus version, and chunk count; a failed attempt gives actionable correction guidance and permits a corrected submission to be retried. |
 
 ## 8. Nonfunctional requirements
 
@@ -175,6 +184,7 @@ An approved user signs in, asks a question in English, and receives a complete a
 | NFR-015 | A failed dataset import shall not change the active dataset or its evaluation history. | Evaluator / administrator | Must | If validation produces no valid records or storage fails, the prior dataset and history remain unchanged. |
 | NFR-016 | Imported datasets, annotations, and evaluation runs shall persist across application restarts. | Product objective | Must | After a restart, the active dataset and eligible evaluation records remain available to the administrator. |
 | NFR-017 | Evaluation reports shall be explicitly labeled as exploratory or release evidence according to gold-subset eligibility. | Evaluator / release approver | Must | An exploratory result cannot be mistaken for release evidence when the gold-subset requirement is not met. |
+| NFR-018 | Corpus staging failures shall preserve the active corpus and provide enough information for the administrator to correct and retry the submission. | Sponsor / administrator | Must | Validation or ingestion failure leaves the active corpus unchanged, does not expose a partially built version for serving, and presents a clear status and next corrective action. |
 
 ## 9. Data, reporting, integration, security, privacy, and compliance
 
@@ -182,8 +192,8 @@ An approved user signs in, asks a question in English, and receives a complete a
 
 | Data category | Treatment |
 |---|---|
-| Source corpus | One searchable PDF of *DAMA-DMBOK, Second Edition*, processed through a documented offline ingestion procedure. |
-| Derived corpus data | A curated, human-validated structure map; versioned logical sections; bounded parent chunks; dense child chunks; deterministic parent-child identities; raw source spans; embedding text with structural breadcrumbs; and retrieval index entries. Page start/end and chapter/section/topic provenance must be preserved. |
+| Source corpus | One searchable PDF of *DAMA-DMBOK, Second Edition*, submitted by the administrator with a separate chapter and section structure JSON file based on the downloadable example template. |
+| Derived corpus data | The validated, administrator-supplied structure map; versioned logical sections; bounded parent chunks; dense child chunks; deterministic parent-child identities; raw source spans; embedding text with structural breadcrumbs; and retrieval index entries. Page start/end and chapter/section provenance must be preserved. |
 | Account data | Email, username, password hash, verification and approval state, role, and quota counters. |
 | Interaction content | Question, retrieved passages, trace, and answer are transient and must not be persisted by the application. |
 | Evaluation data | Administrator-imported JSON records containing questions, one of the approved categories, expected answers or rubrics, supporting passages, generated annotations, 40–50 human-approved gold items for release evidence, corpus-versioned relevant child-chunk bindings, approved answer assessments, and evaluation results. The release subset includes at least 20 answerable and 20 unanswerable or out-of-domain items. A successful import replaces the active dataset and prior evaluation history. |
@@ -196,6 +206,7 @@ An approved user signs in, asks a question in English, and receives a complete a
 - The administration area must show only aggregate operational usage, not historical interaction content.
 - Evaluation reports must show metric definitions, sample counts, denominators, measured values, thresholds, pass/fail outcomes, retrieval strategy, corpus version, and applicable evaluator versions.
 - Reports must distinguish human-reviewed gold-subset evidence from weaker automated evaluation evidence.
+- The administration workflow must show corpus staging progress and outcome; successful completion includes the corpus version and chunk count, while failure includes correction guidance.
 
 ### 9.3 Integration requirements
 
@@ -223,8 +234,8 @@ The sponsor has explicitly decided to proceed without publisher permission and a
 
 - The €5 infrastructure limit is monthly.
 - Free OpenRouter models are preferred for production primary and fallback answers, but are not mandatory. A paid model may be used within the sponsor-approved provider budget if its privacy, availability, quality, and cost gates pass.
-- The source PDF is searchable and contains sufficient structural information to recover pages and chapter/section labels.
-- The corpus owner can validate a curated hierarchy map derived from the table of contents and printed headings; automatic heading detection is only a proposal source.
+- The source PDF is searchable and the administrator can provide a chapter and section structure file that maps to its content; file syntax and matching rules will be defined during solution design.
+- The administrator prepares the structure file from the downloadable template and example. The application validates and displays the supplied structure before chunk creation; it does not infer or silently approve the hierarchy.
 - The sponsor will provide approximately 200 representative evaluation questions.
 - The sponsor can review and approve generated annotations and release evidence for 40–50 representative questions.
 - The initial 1,500-token parent maximum and 6,000-token generation-context budget will be calibrated against real-corpus ingestion, retrieval quality, and latency evidence before they are treated as final operating limits.
@@ -236,7 +247,8 @@ The sponsor has explicitly decided to proceed without publisher permission and a
 - Continued availability and acceptable capacity of at least two hosted model options.
 - A deployment and storage platform that can meet the €5 monthly constraint.
 - Reliable extraction of page and section metadata from the PDF.
-- Sponsor/evaluator validation of the structure map and review of ambiguous child-chunk bindings after re-ingestion.
+- A structure-file format and matching rules that let the application validate the administrator's hierarchy against the PDF and explain correctable errors.
+- Sponsor/evaluator review of child-chunk bindings after re-ingestion.
 - Sponsor availability for user approvals, annotation review, support, risk acceptance, and release decisions.
 - An email-delivery mechanism for verification and password recovery.
 
@@ -253,7 +265,7 @@ The sponsor has explicitly decided to proceed without publisher permission and a
 | RISK-07 | PDF extraction may associate passages with incorrect pages or sections. | High | Validate citation metadata in the gold subset and make citation correctness a release gate. |
 | RISK-08 | A single individual owns all operational and approval roles. | Medium | Document maintenance, recovery, evaluation, and release procedures; keep reproducible configuration and backups. |
 | RISK-09 | Ephemeral interaction data limits retrospective incident diagnosis. | Medium | Expose request-scoped traces, retain non-content aggregate error metrics, and reproduce issues with explicit test questions when possible. |
-| RISK-10 | Incorrect recovered hierarchy or parent-child boundaries may mislead retrieval, citations, and gold bindings. | High | Validate the curated structure map, retain `Unclassified` for uncertain content, use deterministic versioned identities, and review ambiguous bindings before promotion. |
+| RISK-10 | An incorrect or incomplete administrator-supplied hierarchy may mislead retrieval, citations, and gold bindings. | High | Validate the submitted structure against the PDF before chunk creation, show the matches for administrator review, stop with correction guidance when matching is uncertain, use deterministic versioned identities, and review ambiguous child bindings before promotion. |
 | RISK-11 | Provisional token limits or similarity thresholds may degrade recall, false-refusal rate, cost, or latency. | Medium | Calibrate against held-out answerable and unanswerable cases; report 15-second latency and false-refusal rate diagnostically; approve final operating limits only after baseline evidence. |
 
 ## 11. Delivery, rollout, training, and support
@@ -262,7 +274,7 @@ The sponsor has explicitly decided to proceed without publisher permission and a
 
 Delivery has no fixed deadline and should advance through readiness stages:
 
-1. Validate PDF parsing, the curated hierarchy map, page/section provenance, hierarchical chunking, and index reproducibility.
+1. Validate the administrator-provided structure-file format and PDF matching, the reviewed hierarchy, page/section provenance, hierarchical chunking, and index reproducibility.
 2. Validate corpus-only retrieval, answer synthesis, citations, confidence behavior, and refusal.
 3. Add registration, approval, authentication, quotas, minimal administration, and privacy controls.
 4. Build and human-review the 40–50-item evaluation gold subset; establish baseline results, token limits, and false-refusal diagnostic thresholds.
@@ -294,16 +306,19 @@ There is no separate pilot cohort. At launch, all accounts approved by the admin
 | OQ-06 | Which deterministic tokenizer and version will measure child, parent, and generation-context limits? | Solution design | Token counts must be repeatable across ingestion and evaluation. |
 | OQ-07 | How long must the prior corpus version remain available after promotion before its derived data may be removed? | Sponsor | The period balances rollback safety against storage cost. |
 | OQ-08 | What false-refusal rate should become a release threshold after baseline calibration? | Sponsor / evaluator | It prevents a refusal metric from improving by declining answerable questions too often. |
+| OQ-09 | Can an administrator safely cancel ingestion after selecting “Approve and create chunks,” and what should cancellation guarantee? | Sponsor / solution design | Cancellation behavior affects the workflow, recovery expectations, and protection of the active corpus. |
+| OQ-10 | Is there a target completion time or maximum wait for corpus ingestion? | Sponsor | A target would affect progress expectations and acceptance; none is currently set. |
 
 ### 12.2 Objective traceability
 
 | Objective | Supporting requirements | Success measures / acceptance evidence |
 |---|---|---|
-| OBJ-01 | FR-006, FR-008, FR-010, FR-034 through FR-036, NFR-001 | SM-01, SM-04, SM-06; user workflow acceptance test |
+| OBJ-01 | FR-006, FR-008, FR-010, FR-034 through FR-036, FR-038 through FR-043, NFR-001 | SM-01, SM-04, SM-06, SM-09; user workflow acceptance test |
 | OBJ-02 | FR-008, FR-009, FR-010, FR-035 | SM-02, SM-03, SM-04; comparison and scenario gold questions |
 | OBJ-03 | FR-007, FR-009 through FR-013, FR-034 through FR-037 | SM-01, SM-02, SM-03, SM-05; gold-subset evaluation |
 | OBJ-04 | FR-019 through FR-022, FR-033, FR-037, NFR-012 | SM-01 through SM-06; versioned evaluation report and sponsor release decision |
 | OBJ-05 | FR-001 through FR-005, FR-014 through FR-018, NFR-002 through NFR-011, NFR-013, NFR-014 | SM-07, SM-08; security tests, cost review, backup/restore test |
+| OBJ-06 | BPR-003, FR-038 through FR-043, NFR-018 | SM-09; administrator staging acceptance walkthrough |
 
 ### 12.3 Approval record
 
@@ -311,11 +326,12 @@ There is no separate pilot cohort. At launch, all accounts approved by the admin
 |---|---|---|---|
 | Sponsor / product owner / release approver | Sponsor | Approved | 4 October 2026 |
 | Sponsor / product owner / release approver | Sponsor | Version 0.2 draft for review | 1 November 2026 |
+| Sponsor / product owner / release approver | Sponsor | Version 0.3 draft for review, including administrator supplied corpus staging | 3 November 2026 |
 
 ## Next Steps
 
-1. **Sponsor:** review version 0.2 and approve it as the revised requirements baseline or identify corrections.
-2. **Sponsor / evaluator:** validate the curated hierarchy map, approve a deterministic tokenizer, and set the post-promotion rollback-retention period.
+1. **Sponsor:** review version 0.3 and approve it as the revised requirements baseline or identify corrections.
+2. **Sponsor / evaluator:** prepare the structure file from the example template when staging a corpus; validate child-chunk bindings, approve a deterministic tokenizer, and set the post-promotion rollback-retention period.
 3. **Sponsor:** supply the approximately 200 evaluation questions and decide the default global daily cap.
 4. **Sponsor / evaluator:** review and approve generated annotations, child-chunk bindings, and release assessments for a 40–50-item gold subset.
 5. **Sponsor / evaluator:** establish baseline evidence for the provisional parent/context limits and false-refusal release threshold.

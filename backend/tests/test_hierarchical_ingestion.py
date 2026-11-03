@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -180,6 +181,41 @@ def _candidate_args():
         "vector_collection": "document_chunks_v2",
         "extract": _report,
     }
+
+
+def test_source_download_is_pinned_to_reloaded_generation(tmp_path) -> None:
+    payload = b"source generation 42"
+    calls: list[tuple[str, int | None]] = []
+
+    class Blob:
+        generation = None
+
+        def __init__(self, generation: int | None) -> None:
+            self.generation = generation
+
+        def exists(self) -> bool:
+            return True
+
+        def reload(self) -> None:
+            self.generation = 42
+
+        def download_to_filename(self, filename) -> None:
+            assert self.generation == 42
+            Path(filename).write_bytes(payload)
+
+    class Bucket:
+        name = "corpus"
+
+        def blob(self, object_name: str, *, generation: int | None = None) -> Blob:
+            calls.append((object_name, generation))
+            return Blob(generation)
+
+    destination = tmp_path / "source.pdf"
+    generation = entrypoint._download_pinned_source(Bucket(), "source.pdf", destination)
+
+    assert generation == 42
+    assert calls == [("source.pdf", None), ("source.pdf", 42)]
+    assert destination.read_bytes() == payload
 
 
 def test_changed_map_token_counter_or_splitter_creates_new_version_and_ids(monkeypatch) -> None:

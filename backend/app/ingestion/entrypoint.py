@@ -65,20 +65,15 @@ def _run(termination_requested: Callable[[], bool]) -> None:
     bucket_name = _required("CORPUS_BUCKET_NAME")
     object_name = _required("CORPUS_OBJECT_NAME")
     storage_client = storage.Client(project=project)
-    blob = storage_client.bucket(bucket_name).blob(object_name)
-    if not blob.exists():
-        raise RuntimeError(f"Approved corpus object does not exist: gs://{bucket_name}/{object_name}")
-    blob.reload()
-    if blob.generation is None:
-        raise RuntimeError("The corpus object has no immutable generation.")
+    bucket = storage_client.bucket(bucket_name)
     with tempfile.TemporaryDirectory() as temp_dir:
         source_path = Path(temp_dir) / "corpus.pdf"
-        blob.download_to_filename(source_path)
+        source_generation = _download_pinned_source(bucket, object_name, source_path)
         digest = hashlib.sha256(source_path.read_bytes()).hexdigest()
         source_manifest = create_source_manifest(
             bucket=bucket_name,
             object_name=object_name,
-            generation=int(blob.generation),
+            generation=source_generation,
             content_sha256=digest,
         )
         map_bytes, map_uri, map_sha256 = _read_pinned_object(
@@ -249,6 +244,18 @@ def _read_pinned_object(client: Any, uri_name: str, digest_name: str) -> tuple[b
     payload = client.bucket(bucket_name).blob(object_name, generation=generation).download_as_bytes()
     _verify_digest(payload, expected_digest, uri_name)
     return payload, uri, expected_digest
+
+
+def _download_pinned_source(bucket: Any, object_name: str, destination: Path) -> int:
+    metadata_blob = bucket.blob(object_name)
+    if not metadata_blob.exists():
+        raise RuntimeError(f"Approved corpus object does not exist: gs://{bucket.name}/{object_name}")
+    metadata_blob.reload()
+    if metadata_blob.generation is None:
+        raise RuntimeError("The corpus object has no immutable generation.")
+    generation = int(metadata_blob.generation)
+    bucket.blob(object_name, generation=generation).download_to_filename(destination)
+    return generation
 
 
 def _parse_gcs_uri(uri: str) -> tuple[str, str, int]:

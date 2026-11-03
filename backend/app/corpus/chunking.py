@@ -10,7 +10,7 @@ from typing import Iterable
 from langchain_core.documents import Document
 from langchain_text_splitters import CharacterTextSplitter
 
-from app.contracts import ParentChunk, SourceSpan
+from app.contracts import ChildDocumentChunk, ParentChunk, SourceSpan
 from app.corpus.structure_map import LogicalSection
 
 
@@ -21,6 +21,8 @@ SUBDIVISION_ALGORITHM_VERSION = "fixed-character-window-v1"
 PARENT_SEGMENTATION_VERSION = "semantic-parent-v1"
 PARENT_TARGET_TOKENS = 1_000
 PARENT_MAX_TOKENS = 1_500
+CHILD_TARGET_TOKENS = 300
+CHILD_MAX_TOKENS = 1_500
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +66,76 @@ class ParentSegmentation:
     @property
     def ready_for_promotion(self) -> bool:
         return not self.exceptions
+
+
+def segment_children(
+    parents: Iterable[ParentChunk],
+    *,
+    target_tokens: int = CHILD_TARGET_TOKENS,
+    max_tokens: int = CHILD_MAX_TOKENS,
+) -> tuple[ChildDocumentChunk, ...]:
+    """Split each parent into deterministic, non-overlapping embedding children."""
+
+    if target_tokens < 1 or max_tokens < target_tokens:
+        raise ValueError("child token limits must be positive and ordered")
+
+    children: list[ChildDocumentChunk] = []
+    for parent in parents:
+        pending: list[SourceSpan] = []
+        pending_tokens = 0
+        ordinal = 0
+        for span in _child_units(parent.source_spans, max_tokens):
+            tokens = _token_count(span.text)
+            if pending and pending_tokens + tokens > target_tokens:
+                children.append(_child(parent, ordinal, pending))
+                ordinal += 1
+                pending, pending_tokens = [], 0
+            pending.append(span)
+            pending_tokens += tokens
+        if pending:
+            children.append(_child(parent, ordinal, pending))
+    return tuple(children)
+
+
+def _child(parent: ParentChunk, ordinal: int, spans: list[SourceSpan]) -> ChildDocumentChunk:
+    text = "\n".join(span.text for span in spans)
+    identity = "\x1f".join((parent.corpus_version_id, *parent.section_path, str(spans[0].page), str(spans[-1].page), str(ordinal), text))
+    return ChildDocumentChunk(
+        chunk_id=f"{parent.corpus_version_id}:child:{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:24]}",
+        corpus_version_id=parent.corpus_version_id,
+        parent_id=parent.parent_id,
+        section_path=parent.section_path,
+        page_start=spans[0].page,
+        page_end=spans[-1].page,
+        source_spans=spans,
+        child_ordinal=ordinal,
+        content_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+        token_count=_token_count(text),
+        text=text,
+    )
+
+
+def _child_units(spans: Iterable[SourceSpan], max_tokens: int) -> tuple[SourceSpan, ...]:
+    units: list[SourceSpan] = []
+    for span in spans:
+        cursor = 0
+        for line in span.text.splitlines(keepends=True):
+            text = line.rstrip("\r\n")
+            if text.strip():
+                units.extend(_split_child_unit(span.page, span.start_offset + cursor, text, max_tokens))
+            cursor += len(line)
+    return tuple(units)
+
+
+def _split_child_unit(page: int, offset: int, text: str, max_tokens: int) -> tuple[SourceSpan, ...]:
+    """Only prose may be split; Markdown rows/items remain intact."""
+    if _token_count(text) <= max_tokens or text.lstrip().startswith(("|", "- ", "* ", "+ ")):
+        return (SourceSpan(page=page, start_offset=offset, end_offset=offset + len(text), text=text),)
+    matches = tuple(re.finditer(r"\S+\s*", text))
+    return tuple(
+        SourceSpan(page=page, start_offset=offset + group[0].start(), end_offset=offset + group[-1].end(), text=text[group[0].start() : group[-1].end()].rstrip())
+        for group in (matches[index : index + max_tokens] for index in range(0, len(matches), max_tokens))
+    )
 
 
 def segment_parents(

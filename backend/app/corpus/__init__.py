@@ -1,6 +1,6 @@
 """Corpus source and ingestion domain helpers."""
 
-from .chunking import ParentReviewException, ParentSegmentation, SourcePage, TextChunk, chunk_pages, segment_parents
+from .chunking import ParentReviewException, ParentSegmentation, SourcePage, TextChunk, chunk_pages, segment_children, segment_parents
 from .embedding import (
     DOCUMENT_TASK_TYPE,
     EMBEDDING_DIMENSIONS,
@@ -63,6 +63,7 @@ __all__ = [
     "create_vertex_embeddings",
     "chunk_pages",
     "segment_parents",
+    "segment_children",
     "create_source_manifest",
     "CorpusCompletenessError",
     "ConcurrentCorpusActivationError",

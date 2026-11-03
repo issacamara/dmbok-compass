@@ -1,9 +1,21 @@
 import pytest
 
-from app.contracts import SourceSpan
+from app.contracts import ParentChunk, SourceSpan
 from app.corpus.structure_map import LogicalSection
 
-from app.corpus import SourcePage, chunk_pages, segment_parents
+from app.corpus import SourcePage, chunk_pages, segment_children, segment_parents
+
+
+def parent(text: str) -> ParentChunk:
+    return ParentChunk(parent_id="parent-1", corpus_version_id="v-1", section_path=("Data",), page_start=1, page_end=1, source_spans=[SourceSpan(page=1, start_offset=0, end_offset=len(text), text=text)], content_hash="a" * 64, token_count=len(text.split()), text=text)
+
+
+def test_child_segmentation_is_deterministic_and_parent_linked() -> None:
+    source = parent("one two three\nfour five six\nseven")
+    first = segment_children([source], target_tokens=4, max_tokens=10)
+    assert first == segment_children([source], target_tokens=4, max_tokens=10)
+    assert [child.parent_id for child in first] == ["parent-1", "parent-1"]
+    assert first[-1].text.endswith("seven")
 
 
 def section(*spans: tuple[int, str]) -> LogicalSection:

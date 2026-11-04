@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { getConfiguration, listAggregateMetrics, listUsers, updateConfiguration, updateUser } from "./admin";
+import { approveCorpusStagingAttempt, getConfiguration, getCorpusStagingStatus, getCorpusStagingTemplate, listAggregateMetrics, listUsers, submitCorpusStagingAttempt, updateConfiguration, updateUser, validateCorpusStagingAttempt } from "./admin";
 
 describe("administrator API", () => {
   beforeEach(() => vi.restoreAllMocks());
@@ -37,5 +37,29 @@ describe("administrator API", () => {
     expect(fetchMock).toHaveBeenCalledWith("/api/admin/metrics", expect.objectContaining({
       headers: { Authorization: "Bearer firebase-token" },
     }));
+  });
+
+  it("uses the admin staging endpoints with multipart uploads and the reviewed revision", async () => {
+    const response = { attempt_id: "attempt/1", revision: 7, state: "awaiting_review" };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify(response), { status: 200 }));
+    const pdf = new File(["pdf"], "source.pdf", { type: "application/pdf" });
+    const json = new File(["{}"], "structure.json", { type: "application/json" });
+    await getCorpusStagingTemplate("token");
+    await submitCorpusStagingAttempt("token", pdf, json);
+    await validateCorpusStagingAttempt("token", "attempt/1");
+    await approveCorpusStagingAttempt("token", "attempt/1", 7);
+    await getCorpusStagingStatus("token", "attempt/1");
+
+    expect(fetchMock.mock.calls.map(([input]) => input)).toEqual([
+      "/api/admin/corpus-staging/template", "/api/admin/corpus-staging/attempts",
+      "/api/admin/corpus-staging/attempts/attempt%2F1/validate",
+      "/api/admin/corpus-staging/attempts/attempt%2F1/approve?expected_revision=7",
+      "/api/admin/corpus-staging/attempts/attempt%2F1",
+    ]);
+    const upload = fetchMock.mock.calls[1][1];
+    expect(upload?.method).toBe("POST");
+    expect(upload?.headers).toEqual({ Authorization: "Bearer token" });
+    expect(upload?.body).toBeInstanceOf(FormData);
+    expect(fetchMock.mock.calls[3][1]).toEqual(expect.objectContaining({ method: "POST" }));
   });
 });

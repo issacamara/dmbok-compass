@@ -6,6 +6,7 @@ set -euo pipefail
 : "${SOURCE_SHA:?}"
 : "${DEPLOY_SHA:?}"
 : "${CORPUS_VERSION_ID:?}"
+: "${CORPUS_BUCKET_NAME:?}"
 : "${CONFIGURATION_VERSION_ID:?}"
 : "${RUNTIME_SECRET_VERSION:?}"
 [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
@@ -22,7 +23,7 @@ SECRET="OPENROUTER_API_KEY=answer-provider-api-key:${RUNTIME_SECRET_VERSION}"
 
 gcloud run deploy "$API_SERVICE" --project="$PROJECT_ID" --region="$REGION" \
   --image="$API_IMAGE" --update-secrets="$SECRET" \
-  --update-env-vars="${COMMON_ENV},${ANSWER_ENV},EVALUATION_JOB_NAME=${EVALUATION_JOB}" \
+  --update-env-vars="${COMMON_ENV},${ANSWER_ENV},CORPUS_BUCKET_NAME=${CORPUS_BUCKET_NAME},EVALUATION_JOB_NAME=${EVALUATION_JOB}" \
   --quiet
 
 gcloud run jobs deploy "$INGESTION_JOB" --project="$PROJECT_ID" --region="$REGION" \

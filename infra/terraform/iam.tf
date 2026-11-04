@@ -121,6 +121,17 @@ resource "google_storage_bucket_iam_member" "runtime_corpus_reader" {
   member = "serviceAccount:${google_service_account.workload["runtime"].email}"
 }
 
+resource "google_storage_bucket_iam_member" "runtime_corpus_staging_creator" {
+  bucket = google_storage_bucket.corpus.name
+  role   = "roles/storage.objectCreator"
+  member = "serviceAccount:${google_service_account.workload["runtime"].email}"
+  condition {
+    title       = "staging-only-object-create"
+    description = "Allow API uploads only under the isolated staging prefix."
+    expression  = "resource.name.startsWith(\"projects/_/buckets/${var.corpus_bucket_name}/objects/staging/\")"
+  }
+}
+
 resource "google_storage_bucket_iam_member" "worker_corpus_writer" {
   bucket = google_storage_bucket.corpus.name
   role   = "roles/storage.objectAdmin"

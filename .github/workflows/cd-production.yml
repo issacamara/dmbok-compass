@@ -48,6 +48,7 @@ jobs:
       PROJECT_ID: ${{ vars.GCP_PROJECT_PRODUCTION }}
       DEVELOPMENT_PROJECT_ID: dev-dmbok-compass
       RUNTIME_SECRET_VERSION: ${{ vars.RUNTIME_SECRET_VERSION }}
+      CORPUS_BUCKET_NAME: ${{ vars.CORPUS_BUCKET_NAME }}
       SOURCE_SHA: ${{ needs.select-source.outputs.source_sha }}
       DEPLOY_SHA: ${{ github.sha }}
     steps:
@@ -59,7 +60,7 @@ jobs:
           SERVICE_ACCOUNT: ${{ vars.GCP_SA_PRODUCTION }}
         run: |
           test -n "$PROJECT_ID" && test -n "$PROVIDER" && test -n "$SERVICE_ACCOUNT"
-          test -n "$RUNTIME_SECRET_VERSION"
+          test -n "$RUNTIME_SECRET_VERSION" && test -n "$CORPUS_BUCKET_NAME"
           test "$PROJECT_ID" != "$DEVELOPMENT_PROJECT_ID"
       - name: Authenticate to production GCP
         uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2

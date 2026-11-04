@@ -4,12 +4,14 @@ from functools import lru_cache
 import os
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse
 from starlette.concurrency import run_in_threadpool
 
 from app.contracts import ApiError, CorpusStagingAttemptStatus, UserProfile
 from app.corpus.staging import (
+    CloudRunCorpusIngestionDispatcher,
+    CorpusStagingApprovalService,
     CorpusStagingUploadService,
     FirestoreCorpusStagingAttemptStore,
     MAX_STAGING_MAP_BYTES,
@@ -69,6 +71,38 @@ def corpus_staging_upload_service() -> CorpusStagingUploadService:
                 retryable=True,
                 status=503,
             ).model_dump(mode="json"),
+        ) from None
+
+
+@lru_cache(maxsize=1)
+def _configured_staging_approval_service() -> CorpusStagingApprovalService:
+    bucket_name = os.environ.get("CORPUS_BUCKET_NAME", "").strip()
+    project = os.environ.get("GOOGLE_CLOUD_PROJECT", "").strip()
+    location = os.environ.get("GOOGLE_CLOUD_LOCATION", "").strip()
+    job_name = os.environ.get("INGESTION_JOB_NAME", "").strip()
+    if not bucket_name or not project or not location or not job_name:
+        raise RuntimeError("staging dispatch is unavailable")
+    try:
+        from firebase_admin import firestore
+        from google.cloud import storage
+
+        from app.identity import _firebase_app
+
+        store = FirestoreCorpusStagingAttemptStore(firestore.client(app=_firebase_app()))
+        bucket = storage.Client(project=project).bucket(bucket_name)
+        dispatcher = CloudRunCorpusIngestionDispatcher(project=project, location=location, job_name=job_name)
+        return CorpusStagingApprovalService(store, bucket, bucket_name, dispatcher)
+    except Exception:
+        raise RuntimeError("staging dispatch is unavailable") from None
+
+
+def corpus_staging_approval_service() -> CorpusStagingApprovalService:
+    try:
+        return _configured_staging_approval_service()
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=ApiError(code="staging_dispatch_unavailable", message="Corpus ingestion dispatch is temporarily unavailable.", retryable=True, status=503).model_dump(mode="json"),
         ) from None
 
 
@@ -142,6 +176,26 @@ async def validate_corpus_staging_attempt(
                 message="This staging attempt changed. Submit a new attempt.",
                 status=409,
             ).model_dump(mode="json"),
+        ) from None
+    except StagingPersistenceError:
+        raise _staging_unavailable() from None
+
+
+@router.post("/attempts/{attempt_id}/approve", response_model=CorpusStagingAttemptStatus)
+def approve_corpus_staging_attempt(
+    attempt_id: str,
+    expected_revision: int = Query(ge=1),
+    admin: UserProfile = Depends(get_admin_user),
+    service: CorpusStagingApprovalService = Depends(corpus_staging_approval_service),
+) -> CorpusStagingAttemptStatus:
+    try:
+        return service.approve(attempt_id=attempt_id, expected_revision=expected_revision, actor_id=admin.user_id)
+    except StagingAttemptNotFound:
+        raise _staging_attempt_not_found() from None
+    except StagingAttemptConflict:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=ApiError(code="stale_staging_attempt", message="This staging attempt changed or is not eligible for approval.", status=409).model_dump(mode="json"),
         ) from None
     except StagingPersistenceError:
         raise _staging_unavailable() from None

@@ -69,7 +69,13 @@ def _run(termination_requested: Callable[[], bool]) -> None:
     bucket = storage_client.bucket(bucket_name)
     with tempfile.TemporaryDirectory() as temp_dir:
         source_path = Path(temp_dir) / "corpus.pdf"
-        source_generation = _download_pinned_source(bucket, object_name, source_path)
+        expected_generation = os.environ.get("CORPUS_SOURCE_GENERATION", "").strip()
+        if expected_generation and not expected_generation.isdecimal():
+            raise RuntimeError("The pinned corpus source generation is invalid.")
+        source_generation = _download_pinned_source(
+            bucket, object_name, source_path,
+            expected_generation=int(expected_generation) if expected_generation else None,
+        )
         digest = hashlib.sha256(source_path.read_bytes()).hexdigest()
         source_manifest = create_source_manifest(
             bucket=bucket_name,
@@ -268,7 +274,9 @@ def _read_pinned_object(client: Any, uri_name: str, digest_name: str) -> tuple[b
     return payload, uri, expected_digest
 
 
-def _download_pinned_source(bucket: Any, object_name: str, destination: Path) -> int:
+def _download_pinned_source(
+    bucket: Any, object_name: str, destination: Path, *, expected_generation: int | None = None
+) -> int:
     metadata_blob = bucket.blob(object_name)
     if not metadata_blob.exists():
         raise RuntimeError(f"Approved corpus object does not exist: gs://{bucket.name}/{object_name}")
@@ -276,6 +284,8 @@ def _download_pinned_source(bucket: Any, object_name: str, destination: Path) ->
     if metadata_blob.generation is None:
         raise RuntimeError("The corpus object has no immutable generation.")
     generation = int(metadata_blob.generation)
+    if expected_generation is not None and generation != expected_generation:
+        raise RuntimeError("The corpus source generation does not match its approval.")
     bucket.blob(object_name, generation=generation).download_to_filename(destination)
     return generation
 

@@ -8,6 +8,7 @@ from hashlib import sha256
 from pathlib import Path
 import re
 import tempfile
+import json
 from typing import Any, Callable, Literal, Protocol, TypeVar
 from uuid import uuid4
 
@@ -19,6 +20,8 @@ from app.contracts import (
     CorpusStagingAttemptStatus,
     CorpusStagingPreviewEntry,
     StructureTemplate,
+    StructureMap,
+    StructureMapEntry,
 )
 from app.corpus.structure_map import HeadingAnchor, SourceIdentity, propose_structure_map
 from app.ingestion.extract import extract_pdf
@@ -46,6 +49,18 @@ class StagingAttemptNotFound(ValueError):
 
 class StagingAttemptConflict(ValueError):
     """An attempt changed before its validation result could be committed."""
+
+
+class StagingDispatchError(RuntimeError):
+    """A safe dispatch failure; retryable means Cloud Run definitively rejected it."""
+
+    def __init__(self, *, retryable: bool) -> None:
+        self.retryable = retryable
+        super().__init__("Corpus ingestion dispatch failed")
+
+
+class CorpusIngestionDispatcher(Protocol):
+    def dispatch(self, *, attempt_id: str, source: dict[str, Any], map_artifact: dict[str, Any], approval_artifact: dict[str, Any]) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +101,14 @@ class CorpusStagingAttemptStore(Protocol):
         status: CorpusStagingAttemptStatus,
         source_generation: int,
         structure_generation: int,
+    ) -> CorpusStagingAttemptStatus: ...
+
+    def claim_approval(
+        self, *, attempt_id: str, expected_revision: int, approval: dict[str, Any]
+    ) -> tuple[CorpusStagingAttemptStatus, bool]: ...
+
+    def fail_dispatch(
+        self, *, attempt_id: str, expected_revision: int, retryable: bool
     ) -> CorpusStagingAttemptStatus: ...
 
 
@@ -214,6 +237,83 @@ class FirestoreCorpusStagingAttemptStore:
                 }
             transaction.update(reference, payload)
             return result
+
+        return self._transaction_runner(self.client.transaction(), apply)
+
+    def claim_approval(
+        self, *, attempt_id: str, expected_revision: int, approval: dict[str, Any]
+    ) -> tuple[CorpusStagingAttemptStatus, bool]:
+        reference = self.attempts.document(attempt_id)
+
+        def apply(transaction: Any) -> tuple[CorpusStagingAttemptStatus, bool]:
+            snapshot = reference.get(transaction=transaction)
+            if not snapshot.exists:
+                raise StagingAttemptNotFound("staging attempt is unavailable")
+            current = snapshot.to_dict()
+            status = _attempt_status(current)
+            if status.state in {"queued", "running", "staged"}:
+                return status, False
+            retry = status.state == "failed" and bool(current.get("dispatch_retryable"))
+            if status.state != "awaiting_review" and not retry:
+                raise StagingAttemptConflict("staging attempt is not awaiting approval")
+            if status.revision != expected_revision:
+                raise StagingAttemptConflict("staging attempt changed before approval")
+            if retry and current.get("dispatch_claimed"):
+                raise StagingAttemptConflict("staging attempt dispatch is ambiguous")
+            if not retry:
+                source, structure = current.get("source"), current.get("structure")
+                bucket_name = source.get("bucket") if isinstance(source, dict) else ""
+                if not _valid_artifact(source, bucket_name, attempt_id, "source") or not _valid_artifact(
+                    structure, bucket_name, attempt_id, "structure"
+                ):
+                    raise StagingAttemptConflict("staging attempt artifacts are unavailable")
+                if status.preview is None or status.correction_codes or any(
+                    entry.match_status != "matched" or entry.correction_codes for entry in status.preview
+                ):
+                    raise StagingAttemptConflict("staging preview is not fully matched")
+                if current.get("preview_binding", {}).get("preview_revision") != status.revision:
+                    raise StagingAttemptConflict("staging preview is stale")
+                if current.get("source") != approval.get("_source_binding") or current.get("structure") != approval.get("_structure_binding"):
+                    raise StagingAttemptConflict("staging artifact pair changed")
+            revision = status.revision + 1
+            payload = {
+                "state": "queued", "revision": revision, "completed_stage": "approval",
+                "approval": {key: value for key, value in approval.items() if not key.startswith("_")},
+                "approved_map_artifact": approval.get("_map_artifact"),
+                "approval_artifact": approval.get("_approval_artifact"),
+                "dispatch_claimed": True, "dispatch_retryable": False,
+                "error": None, "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            transaction.update(reference, payload)
+            return CorpusStagingAttemptStatus(attempt_id=attempt_id, revision=revision, state="queued", completed_stage="approval"), True
+
+        return self._transaction_runner(self.client.transaction(), apply)
+
+    def fail_dispatch(
+        self, *, attempt_id: str, expected_revision: int, retryable: bool
+    ) -> CorpusStagingAttemptStatus:
+        reference = self.attempts.document(attempt_id)
+
+        def apply(transaction: Any) -> CorpusStagingAttemptStatus:
+            snapshot = reference.get(transaction=transaction)
+            if not snapshot.exists:
+                raise StagingAttemptNotFound("staging attempt is unavailable")
+            current = snapshot.to_dict()
+            status = _attempt_status(current)
+            if status.state != "queued" or status.revision != expected_revision:
+                return status
+            revision = status.revision + 1
+            error = ApiError(
+                code="job_failed", message="The ingestion job could not be dispatched. Retry approval or submit a new attempt.",
+                retryable=retryable, status=503,
+            )
+            transaction.update(reference, {
+                "state": "failed", "revision": revision, "error": error.model_dump(mode="json"),
+                "dispatch_retryable": retryable,
+                # Keep the claim on ambiguous outcomes; the request may have been accepted.
+                "dispatch_claimed": not retryable, "updated_at": datetime.now(timezone.utc).isoformat(),
+            })
+            return CorpusStagingAttemptStatus(attempt_id=attempt_id, revision=revision, state="failed", completed_stage="approval", error=error)
 
         return self._transaction_runner(self.client.transaction(), apply)
 
@@ -660,6 +760,222 @@ class CorpusStagingUploadService:
             raise
         except Exception:
             raise StagingPersistenceError("staging storage is unavailable") from None
+
+
+class CloudRunCorpusIngestionDispatcher:
+    """Dispatch one pinned source/map/approval tuple to the configured job."""
+
+    def __init__(self, *, project: str, location: str, job_name: str, execute: Callable[[dict[str, str]], None] | None = None) -> None:
+        self.project = _required_config(project, "project")
+        self.location = _required_config(location, "location")
+        self.job_name = _required_config(job_name, "job_name")
+        self._execute = execute or self._execute_cloud_run
+
+    def dispatch(self, *, attempt_id: str, source: dict[str, Any], map_artifact: dict[str, Any], approval_artifact: dict[str, Any]) -> None:
+        environment = {
+            "CORPUS_BUCKET_NAME": source["bucket"],
+            "CORPUS_OBJECT_NAME": source["object_name"],
+            "CORPUS_SOURCE_GENERATION": str(source["generation"]),
+            "CORPUS_STRUCTURE_MAP_URI": _pinned_uri(map_artifact),
+            "CORPUS_STRUCTURE_MAP_SHA256": map_artifact["sha256"],
+            "CORPUS_STRUCTURE_MAP_APPROVAL_URI": _pinned_uri(approval_artifact),
+            "CORPUS_STRUCTURE_MAP_APPROVAL_SHA256": approval_artifact["sha256"],
+            "CORPUS_STAGING_ATTEMPT_ID": attempt_id,
+        }
+        try:
+            self._execute(environment)
+        except StagingDispatchError:
+            raise
+        except Exception:
+            # Transport failures can happen after Cloud Run accepted the request.
+            raise StagingDispatchError(retryable=False) from None
+
+    def _execute_cloud_run(self, environment: dict[str, str]) -> None:
+        import google.auth
+        from google.auth.transport.requests import AuthorizedSession
+
+        credentials, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+        response = AuthorizedSession(credentials).post(
+            "https://run.googleapis.com/v2/projects/"
+            f"{self.project}/locations/{self.location}/jobs/{self.job_name}:run",
+            json={"overrides": {"containerOverrides": [{"env": [
+                {"name": name, "value": value} for name, value in environment.items()
+            ]}]}}, timeout=15,
+        )
+        if not response.ok:
+            # A 4xx response is an explicit rejection. Server errors may be
+            # returned after job creation and therefore must not be retried.
+            raise StagingDispatchError(retryable=400 <= int(response.status_code) < 500)
+
+
+class CorpusStagingApprovalService:
+    def __init__(self, store: CorpusStagingAttemptStore, bucket: Any, bucket_name: str, dispatcher: CorpusIngestionDispatcher) -> None:
+        self.store, self.bucket, self.bucket_name, self.dispatcher = store, bucket, bucket_name, dispatcher
+
+    def approve(self, *, attempt_id: str, expected_revision: int, actor_id: str) -> CorpusStagingAttemptStatus:
+        record = self.store.get(attempt_id=attempt_id)
+        if record is None:
+            raise StagingAttemptNotFound("staging attempt is unavailable")
+        current = _attempt_status(record)
+        if current.state in {"queued", "running", "staged"}:
+            return current
+        if current.revision != expected_revision or current.state not in {"awaiting_review", "failed"}:
+            raise StagingAttemptConflict("staging attempt changed before approval")
+        source, template_artifact = record.get("source"), record.get("structure")
+        if not _valid_artifact(source, self.bucket_name, attempt_id, "source") or not _valid_artifact(
+            template_artifact, self.bucket_name, attempt_id, "structure"
+        ):
+            raise StagingAttemptConflict("staging artifact pair is invalid")
+        if current.state == "awaiting_review" and (
+            current.preview is None or current.correction_codes or any(
+                entry.match_status != "matched" or entry.correction_codes for entry in current.preview
+            ) or record.get("preview_binding", {}).get("preview_revision") != current.revision
+        ):
+            raise StagingAttemptConflict("staging preview is not fully matched")
+        if current.state == "failed" and not record.get("dispatch_retryable"):
+            raise StagingAttemptConflict("staging attempt cannot be retried")
+        try:
+            if current.state == "failed":
+                map_artifact = record.get("approved_map_artifact")
+                approval_artifact = record.get("approval_artifact")
+                map_bytes = self._read_derived(attempt_id, map_artifact, "approved-structure-map.json")
+                approval_bytes = self._read_derived(attempt_id, approval_artifact, "approval.json")
+                previous = record.get("approval")
+                if not isinstance(previous, dict):
+                    raise StagingAttemptConflict("the prior approval is unavailable")
+                map_value = json.loads(map_bytes)
+                expected_source = {
+                    "uri": f"gs://{source['bucket']}/{source['object_name']}#{source['generation']}",
+                    "generation": source["generation"], "sha256": source["sha256"],
+                }
+                if previous.get("source") != expected_source or json.loads(approval_bytes) != previous:
+                    raise StagingAttemptConflict("the pinned approval does not match this source")
+                if map_value.get("source_sha256") != source["sha256"] or previous.get("map", {}).get("content_hash") != map_value.get("content_hash"):
+                    raise StagingAttemptConflict("the pinned map does not match this source")
+                approval = {
+                    **previous, "_source_binding": source, "_structure_binding": template_artifact,
+                    "_map_artifact": map_artifact, "_approval_artifact": approval_artifact,
+                }
+            else:
+                map_bytes, map_artifact = self._persist_map(attempt_id, source, template_artifact)
+                _, approval_artifact = self._persist_approval(
+                    attempt_id, source, map_artifact, map_bytes, actor_id=actor_id
+                )
+                map_value = json.loads(map_bytes)
+                approval = {
+                    "schema_version": "corpus-owner-approval-v1", "decision": "approved", "approved_by": actor_id,
+                    "source": {
+                        "uri": f"gs://{source['bucket']}/{source['object_name']}#{source['generation']}",
+                        "generation": source["generation"], "sha256": source["sha256"],
+                    },
+                    "map": {
+                        "artifact_uri": f"gs://{map_artifact['bucket']}/{map_artifact['object_name']}",
+                        "generation": map_artifact["generation"], "file_sha256": map_artifact["sha256"],
+                        "content_hash": map_value["content_hash"], "map_id": map_value["map_id"],
+                        "schema_version": "structure-map-v1",
+                    },
+                    "ingestion_gate": {"oversized_indivisible_list_items_or_table_rows": True},
+                    "_source_binding": source, "_structure_binding": template_artifact,
+                    "_map_artifact": map_artifact, "_approval_artifact": approval_artifact,
+                }
+            queued, should_dispatch = self.store.claim_approval(
+                attempt_id=attempt_id, expected_revision=expected_revision, approval=approval
+            )
+            if not should_dispatch:
+                return queued
+            self.dispatcher.dispatch(
+                attempt_id=attempt_id, source=source, map_artifact=map_artifact, approval_artifact=approval_artifact
+            )
+            return queued
+        except StagingDispatchError as error:
+            try:
+                return self.store.fail_dispatch(
+                    attempt_id=attempt_id, expected_revision=current.revision + 1, retryable=error.retryable
+                )
+            except Exception:
+                raise StagingPersistenceError("staging dispatch status is unavailable") from None
+        except (StagingAttemptNotFound, StagingAttemptConflict):
+            raise
+        except Exception:
+            raise StagingPersistenceError("staging approval is unavailable") from None
+
+    def _persist_map(self, attempt_id: str, source: dict[str, Any], artifact: dict[str, Any]) -> tuple[bytes, dict[str, Any]]:
+        template_bytes = _read_pinned_object(self.bucket, artifact)
+        if sha256(template_bytes).hexdigest() != artifact["sha256"]:
+            raise StagingAttemptConflict("staging structure changed")
+        template = StructureTemplate.model_validate_json(template_bytes)
+        material = [
+            {"section_path": item.section_path, "page_start": item.page_start, "page_end": item.page_end}
+            for item in template.entries
+        ]
+        encoded = json.dumps(material, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
+        content_hash = sha256(encoded).hexdigest()
+        structure_map = StructureMap(
+            map_id=f"staged-{source['sha256'][:12]}-{content_hash[:12]}",
+            source_sha256=source["sha256"], content_hash=content_hash,
+            entries=[StructureMapEntry.model_validate(item) for item in material],
+        )
+        payload = (json.dumps(structure_map.model_dump(mode="json"), sort_keys=True, separators=(",", ":")) + "\n").encode()
+        return payload, self._write_pinned(f"staging/{attempt_id}/approved-structure-map.json", payload, "application/json")
+
+    def _persist_approval(self, attempt_id: str, source: dict[str, Any], map_artifact: dict[str, Any], map_bytes: bytes, *, actor_id: str) -> tuple[bytes, dict[str, Any]]:
+        structure_map = json.loads(map_bytes)
+        value = {
+            "schema_version": "corpus-owner-approval-v1", "decision": "approved", "approved_by": actor_id,
+            "source": {"uri": f"gs://{source['bucket']}/{source['object_name']}#{source['generation']}", "generation": source["generation"], "sha256": source["sha256"]},
+            "map": {"artifact_uri": f"gs://{map_artifact['bucket']}/{map_artifact['object_name']}", "generation": map_artifact["generation"], "file_sha256": map_artifact["sha256"], "content_hash": structure_map["content_hash"], "map_id": structure_map["map_id"], "schema_version": structure_map["schema_version"]},
+            "ingestion_gate": {"oversized_indivisible_list_items_or_table_rows": True},
+        }
+        payload = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        return payload, self._write_pinned(f"staging/{attempt_id}/approval.json", payload, "application/json")
+
+    def _read_derived(self, attempt_id: str, artifact: Any, suffix: str) -> bytes:
+        if not isinstance(artifact, dict) or not _valid_derived_artifact(
+            artifact, self.bucket_name, f"staging/{attempt_id}/{suffix}"
+        ):
+            raise StagingAttemptConflict("the pinned approval artifacts are unavailable")
+        payload = _read_pinned_object(self.bucket, artifact)
+        if sha256(payload).hexdigest() != artifact["sha256"]:
+            raise StagingAttemptConflict("the pinned approval artifacts changed")
+        return payload
+
+    def _write_pinned(self, object_name: str, payload: bytes, content_type: str) -> dict[str, Any]:
+        blob = self.bucket.blob(object_name)
+        try:
+            blob.upload_from_string(payload, content_type=content_type, if_generation_match=0, timeout=60)
+            generation = int(blob.generation)
+        except Exception:
+            # Idempotent duplicate clicks reuse only the exact already-pinned bytes.
+            existing = self.bucket.blob(object_name)
+            existing.reload()
+            generation = int(existing.generation)
+            pinned = self.bucket.blob(object_name, generation=generation).download_as_bytes(timeout=60)
+            if pinned != payload:
+                raise StagingAttemptConflict("pinned approval artifact does not match this attempt") from None
+        return {"bucket": self.bucket_name, "object_name": object_name, "generation": generation,
+                "sha256": sha256(payload).hexdigest(), "content_type": content_type}
+
+
+def _pinned_uri(artifact: dict[str, Any]) -> str:
+    return f"gs://{artifact['bucket']}/{artifact['object_name']}#{artifact['generation']}"
+
+
+def _valid_derived_artifact(artifact: dict[str, Any], bucket_name: str, object_name: str) -> bool:
+    return (
+        artifact.get("bucket") == bucket_name
+        and artifact.get("object_name") == object_name
+        and isinstance(artifact.get("generation"), int) and artifact["generation"] > 0
+        and isinstance(artifact.get("sha256"), str)
+        and re.fullmatch(r"[a-f0-9]{64}", artifact["sha256"]) is not None
+        and artifact.get("content_type") == "application/json"
+    )
+
+
+def _required_config(value: str, name: str) -> str:
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError(f"{name} must be non-empty")
+    return normalized
 
 
 def _valid_artifact(

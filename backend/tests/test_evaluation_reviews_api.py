@@ -12,7 +12,7 @@ from app.api.evaluation_reviews import (
     support_evidence_store,
 )
 from app.contracts import EvaluationDataset, EvaluationItem, GoldAnnotation, UserProfile
-from app.evaluation.batch_reviews import InMemoryBatchReviewRepository
+from app.evaluation.batch_reviews import BatchReviewError, InMemoryBatchReviewRepository
 from app.evaluation.support import InMemorySupportEvidenceStore, prepare_support
 from app.identity import get_admin_user, get_current_profile
 from app.main import app
@@ -171,5 +171,30 @@ def test_partial_attestation_is_safe_conflict_and_does_not_write() -> None:
         assert response.status_code == 409
         assert "batch_attestation_conflict" in response.text
         assert not repository._attestations
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_review_errors_do_not_expose_evaluator_corpus_secret_or_provider_text(caplog) -> None:
+    record, _ = fixture()
+    private_values = (
+        "evaluator-authored-secret",
+        "corpus-private-passage",
+        "service-secret-token",
+        "raw-provider-response-body",
+    )
+
+    class FailingRepository:
+        def create_or_get(self, review):
+            raise BatchReviewError(" ".join(private_values))
+
+    app.dependency_overrides[batch_review_repository] = FailingRepository
+    try:
+        response = TestClient(app).get("/api/admin/evaluations/run-v1/review-summary")
+        assert response.status_code == 409
+        assert "invalid_batch_review" in response.text
+        for private_value in private_values:
+            assert private_value not in response.text
+            assert all(private_value not in record.getMessage() for record in caplog.records)
     finally:
         app.dependency_overrides.clear()

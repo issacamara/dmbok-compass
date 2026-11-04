@@ -14,6 +14,8 @@ from app.corpus.staging import (
     FirestoreCorpusStagingAttemptStore,
     MAX_STAGING_MAP_BYTES,
     MAX_STAGING_PDF_BYTES,
+    StagingAttemptConflict,
+    StagingAttemptNotFound,
     StagingPersistenceError,
     StagingUploadValidationError,
     validate_staging_files,
@@ -108,6 +110,43 @@ async def submit_corpus_staging_attempt(
         raise _staging_unavailable() from None
 
 
+@router.get("/attempts/{attempt_id}", response_model=CorpusStagingAttemptStatus)
+def get_corpus_staging_attempt(
+    attempt_id: str,
+    _: UserProfile = Depends(get_admin_user),
+    service: CorpusStagingUploadService = Depends(corpus_staging_upload_service),
+) -> CorpusStagingAttemptStatus:
+    try:
+        return service.status(attempt_id=attempt_id)
+    except StagingAttemptNotFound:
+        raise _staging_attempt_not_found() from None
+    except StagingPersistenceError:
+        raise _staging_unavailable() from None
+
+
+@router.post("/attempts/{attempt_id}/validate", response_model=CorpusStagingAttemptStatus)
+async def validate_corpus_staging_attempt(
+    attempt_id: str,
+    _: UserProfile = Depends(get_admin_user),
+    service: CorpusStagingUploadService = Depends(corpus_staging_upload_service),
+) -> CorpusStagingAttemptStatus:
+    try:
+        return await run_in_threadpool(service.validate, attempt_id=attempt_id)
+    except StagingAttemptNotFound:
+        raise _staging_attempt_not_found() from None
+    except StagingAttemptConflict:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=ApiError(
+                code="stale_staging_attempt",
+                message="This staging attempt changed. Submit a new attempt.",
+                status=409,
+            ).model_dump(mode="json"),
+        ) from None
+    except StagingPersistenceError:
+        raise _staging_unavailable() from None
+
+
 async def _read_bounded(file: UploadFile, maximum: int) -> bytes:
     if file.size is not None and file.size > maximum:
         raise StagingUploadValidationError(
@@ -129,5 +168,16 @@ def _staging_unavailable() -> HTTPException:
             message="Corpus staging is temporarily unavailable.",
             retryable=True,
             status=503,
+        ).model_dump(mode="json"),
+    )
+
+
+def _staging_attempt_not_found() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=ApiError(
+            code="staging_attempt_not_found",
+            message="The staging attempt is unavailable.",
+            status=404,
         ).model_dump(mode="json"),
     )

@@ -27,7 +27,7 @@ def test_structure_template_download_is_admin_only_and_versioned() -> None:
         assert response.status_code == 200
         assert response.headers["content-type"].startswith("application/json")
         assert "dmbok-structure-template-v1.json" in response.headers["content-disposition"]
-        assert response.json()["schema_version"] == "dmbok-structure-v1"
+        assert response.json()["schema_version"] == "structure-template-v1"
         assert response.json()["entries"][0]["page_start"] == 1
     finally:
         app.dependency_overrides.clear()

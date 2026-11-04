@@ -4,12 +4,12 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from app.contracts import CorpusVersion, StructureMap, StructureMapEntry
 from app.corpus import InMemoryCorpusVersionStore, TextChunk, create_source_manifest
-from app.corpus.staging import StagingAttemptConflict
 from app.ingestion import entrypoint
 from app.ingestion.extract import ExtractionReport, PageProvenance
 
@@ -171,7 +171,6 @@ def test_repeated_derivation_resumes_same_staged_identity_without_activating() -
 
 def test_attempt_progress_is_bound_to_pinned_artifacts_and_persists_safe_counts(monkeypatch) -> None:
     _, _, map_sha256, approval_sha256 = _artifacts()
-    source = _source_manifest()
     source_artifact = {
         "bucket": "corpus", "object_name": "source/dmbok.pdf", "generation": 7,
         "sha256": SOURCE_SHA256, "content_type": "application/pdf",
@@ -203,9 +202,7 @@ def test_attempt_progress_is_bound_to_pinned_artifacts_and_persists_safe_counts(
     store = Store()
     monkeypatch.setattr(entrypoint, "FirestoreCorpusStagingAttemptStore", lambda _client: store)
     progress = entrypoint._staging_progress_callback(
-        client=object(), attempt_id="attempt-326", source=source,
-        map_uri=MAP_URI, map_sha256=map_sha256,
-        approval_uri=APPROVAL_URI, approval_sha256=approval_sha256,
+        client=object(), attempt_id="attempt-326",
     )
     progress("running", 2, 3, "candidate-v1", 3)
     assert store.calls == [{
@@ -216,12 +213,38 @@ def test_attempt_progress_is_bound_to_pinned_artifacts_and_persists_safe_counts(
         "correction_code": "job_failed",
     }]
 
-    with pytest.raises(StagingAttemptConflict):
-        entrypoint._staging_progress_callback(
-            client=object(), attempt_id="attempt-326", source=source,
-            map_uri=MAP_URI, map_sha256="c" * 64,
-            approval_uri=APPROVAL_URI, approval_sha256=approval_sha256,
-        )
+
+def test_job_failure_before_source_setup_persists_safe_terminal_status(monkeypatch) -> None:
+    calls = []
+    configuration = SimpleNamespace(
+        runtime=SimpleNamespace(project="test-project", location="test-location"),
+        vector_collection="document_chunks_v2",
+    )
+    monkeypatch.setattr(
+        entrypoint.RuntimeConfiguration,
+        "from_environment",
+        staticmethod(lambda: configuration),
+    )
+    monkeypatch.setattr(entrypoint.firestore, "Client", lambda project: object())
+    monkeypatch.setattr(entrypoint, "FirestoreCorpusVersionStore", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(
+        entrypoint,
+        "_staging_progress_callback",
+        lambda **_kwargs: lambda state, *_args: calls.append(state),
+    )
+
+    def missing_bucket(name: str) -> str:
+        raise RuntimeError("missing bucket configuration")
+
+    monkeypatch.setattr(entrypoint, "_required", missing_bucket)
+    monkeypatch.setenv("CORPUS_STAGING_ATTEMPT_ID", "attempt-326")
+    monkeypatch.delenv("CORPUS_CLEANUP_VERSION", raising=False)
+
+    with pytest.raises(RuntimeError, match="missing bucket configuration"):
+        entrypoint._run(lambda: False)
+
+    assert calls == ["running", "failed"]
+
 
 
 def _candidate_args():

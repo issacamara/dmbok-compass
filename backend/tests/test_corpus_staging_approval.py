@@ -231,7 +231,8 @@ def test_firestore_approval_claim_is_revision_bound_idempotent_and_retryable_aft
 
     progress = store.record_ingestion_progress(
         attempt_id=ATTEMPT, source=source, map_artifact=map_artifact,
-        approval_artifact=approval_artifact, state="running", parent_count=1, child_count=0,
+        approval_artifact=approval_artifact, state="running", parent_count=1,
+        child_count=0, corpus_version_id="candidate-version",
     )
     assert progress.state == "running"
     assert progress.completed_stage == "ingestion"
@@ -245,10 +246,14 @@ def test_firestore_approval_claim_is_revision_bound_idempotent_and_retryable_aft
     assert interrupted.correction_codes == ["job_interrupted"]
     assert interrupted.error is not None and interrupted.error.code == "job_interrupted"
 
-    retried, should_dispatch = store.claim_approval(
-        attempt_id=ATTEMPT, expected_revision=interrupted.revision, approval=approval
+    execution_retry = store.record_ingestion_progress(
+        attempt_id=ATTEMPT, source=source, map_artifact=map_artifact,
+        approval_artifact=approval_artifact, state="running", parent_count=0,
+        child_count=0,
     )
-    assert retried.state == "queued" and should_dispatch
+    assert execution_retry.state == "running"
+    assert execution_retry.parent_count == 1 and execution_retry.child_count == 1
+    assert execution_retry.error is None and execution_retry.correction_codes == []
     staged = store.record_ingestion_progress(
         attempt_id=ATTEMPT, source=source, map_artifact=map_artifact,
         approval_artifact=approval_artifact, state="staged", parent_count=1,
@@ -257,9 +262,21 @@ def test_firestore_approval_claim_is_revision_bound_idempotent_and_retryable_aft
     assert staged.state == "staged"
     assert staged.staged_corpus_version_id == "candidate-version"
     assert staged.chunk_count == 2
+    repeated = store.record_ingestion_progress(
+        attempt_id=ATTEMPT, source=source, map_artifact=map_artifact,
+        approval_artifact=approval_artifact, state="running", parent_count=0,
+        child_count=0,
+    )
+    assert repeated.state == "staged" and repeated.revision == staged.revision
 
     with pytest.raises(StagingAttemptConflict):
         store.record_ingestion_progress(
             attempt_id=ATTEMPT, source=source, map_artifact={**map_artifact, "generation": 99},
             approval_artifact=approval_artifact, state="running",
+        )
+    with pytest.raises(StagingAttemptConflict):
+        store.record_ingestion_progress(
+            attempt_id=ATTEMPT, source=source, map_artifact=map_artifact,
+            approval_artifact=approval_artifact, state="running",
+            corpus_version_id="different-candidate-version",
         )

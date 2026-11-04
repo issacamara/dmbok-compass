@@ -22,7 +22,7 @@ from app.corpus.chunking import ParentReviewException, segment_children, segment
 from app.corpus.firestore import FirestoreCorpusVersionStore, FirestoreParentChunkStore
 from app.corpus.indexing import HierarchicalCorpusWriter, VECTOR_SCHEMA_VERSION
 from app.corpus.manifest import SourceManifest, create_source_manifest, hierarchical_derivation
-from app.corpus.staging import FirestoreCorpusStagingAttemptStore, StagingAttemptConflict
+from app.corpus.staging import FirestoreCorpusStagingAttemptStore
 from app.ingestion.extract import ExtractionReport, extract_pdf, recover_logical_sections
 from app.ingestion.job import CorpusIngestionJob, IngestionInterrupted
 from app.rag import LangChainRagFactory, LangChainRagSettings
@@ -64,47 +64,55 @@ def _run(termination_requested: Callable[[], bool]) -> None:
         )
         return
 
-    bucket_name = _required("CORPUS_BUCKET_NAME")
-    object_name = _required("CORPUS_OBJECT_NAME")
-    storage_client = storage.Client(project=project)
-    bucket = storage_client.bucket(bucket_name)
+    attempt_id = os.environ.get("CORPUS_STAGING_ATTEMPT_ID", "").strip()
+    progress = _staging_progress_callback(client=client, attempt_id=attempt_id) if attempt_id else None
+    try:
+        if progress is not None:
+            progress("running", 0, 0, None, 0)
+        bucket_name = _required("CORPUS_BUCKET_NAME")
+        object_name = _required("CORPUS_OBJECT_NAME")
+        storage_client = storage.Client(project=project)
+        bucket = storage_client.bucket(bucket_name)
+    except BaseException as error:
+        if progress is not None:
+            progress(
+                "failed", 0, 0, None, 0,
+                "job_interrupted" if isinstance(error, IngestionInterrupted) else "job_failed",
+            )
+        raise
     with tempfile.TemporaryDirectory() as temp_dir:
         source_path = Path(temp_dir) / "corpus.pdf"
         expected_generation = os.environ.get("CORPUS_SOURCE_GENERATION", "").strip()
-        if expected_generation and not expected_generation.isdecimal():
-            raise RuntimeError("The pinned corpus source generation is invalid.")
-        source_generation = _download_pinned_source(
-            bucket, object_name, source_path,
-            expected_generation=int(expected_generation) if expected_generation else None,
-        )
-        digest = hashlib.sha256(source_path.read_bytes()).hexdigest()
-        source_manifest = create_source_manifest(
-            bucket=bucket_name,
-            object_name=object_name,
-            generation=source_generation,
-            content_sha256=digest,
-        )
-        map_bytes, map_uri, map_sha256 = _read_pinned_object(
-            storage_client, "CORPUS_STRUCTURE_MAP_URI", "CORPUS_STRUCTURE_MAP_SHA256"
-        )
-        approval_bytes, approval_uri, approval_sha256 = _read_pinned_object(
-            storage_client,
-            "CORPUS_STRUCTURE_MAP_APPROVAL_URI",
-            "CORPUS_STRUCTURE_MAP_APPROVAL_SHA256",
-        )
-        attempt_id = os.environ.get("CORPUS_STAGING_ATTEMPT_ID", "").strip()
-        progress = _staging_progress_callback(
-            client=client,
-            attempt_id=attempt_id,
-            source=source_manifest,
-            map_uri=map_uri,
-            map_sha256=map_sha256,
-            approval_uri=approval_uri,
-            approval_sha256=approval_sha256,
-        ) if attempt_id else None
         try:
+            if expected_generation and not expected_generation.isdecimal():
+                raise RuntimeError("The pinned corpus source generation is invalid.")
+            source_generation = _download_pinned_source(
+                bucket, object_name, source_path,
+                expected_generation=int(expected_generation) if expected_generation else None,
+            )
+            digest = hashlib.sha256(source_path.read_bytes()).hexdigest()
+            source_manifest = create_source_manifest(
+                bucket=bucket_name,
+                object_name=object_name,
+                generation=source_generation,
+                content_sha256=digest,
+            )
+            map_bytes, map_uri, map_sha256 = _read_pinned_object(
+                storage_client, "CORPUS_STRUCTURE_MAP_URI", "CORPUS_STRUCTURE_MAP_SHA256"
+            )
+            approval_bytes, approval_uri, approval_sha256 = _read_pinned_object(
+                storage_client,
+                "CORPUS_STRUCTURE_MAP_APPROVAL_URI",
+                "CORPUS_STRUCTURE_MAP_APPROVAL_SHA256",
+            )
+        except BaseException as error:
             if progress is not None:
-                progress("running", 0, 0, None, 0)
+                progress(
+                    "failed", 0, 0, None, 0,
+                    "job_interrupted" if isinstance(error, IngestionInterrupted) else "job_failed",
+                )
+            raise
+        try:
             candidate = build_and_stage_hierarchical_candidate(
                 versions=versions,
                 source_manifest=source_manifest,
@@ -126,21 +134,21 @@ def _run(termination_requested: Callable[[], bool]) -> None:
                 )
             raise
         staged = candidate.version
-        settings = LangChainRagSettings(
-            project=project,
-            location=configuration.runtime.location,
-            vector_collection=configuration.vector_collection,
-        )
-        factory = LangChainRagFactory(client, settings)
-        base_writer = factory.ingestion_writer(
-            source_metadata=candidate.manifest.corpus_metadata()
-        )
-        writer = HierarchicalCorpusWriter(
-            base_writer.vector_store,
-            FirestoreParentChunkStore(client),
-            source_metadata=candidate.manifest.corpus_metadata(),
-        )
         try:
+            settings = LangChainRagSettings(
+                project=project,
+                location=configuration.runtime.location,
+                vector_collection=configuration.vector_collection,
+            )
+            factory = LangChainRagFactory(client, settings)
+            base_writer = factory.ingestion_writer(
+                source_metadata=candidate.manifest.corpus_metadata()
+            )
+            writer = HierarchicalCorpusWriter(
+                base_writer.vector_store,
+                FirestoreParentChunkStore(client),
+                source_metadata=candidate.manifest.corpus_metadata(),
+            )
             CorpusIngestionJob(versions, writer).run_hierarchical(
                 staged,
                 candidate.parents,
@@ -181,10 +189,9 @@ def _run(termination_requested: Callable[[], bool]) -> None:
 
 
 def _staging_progress_callback(
-    *, client: Any, attempt_id: str, source: SourceManifest,
-    map_uri: str, map_sha256: str, approval_uri: str, approval_sha256: str,
-) -> Callable[[str, int, int, str | None, int], None]:
-    """Bind status writes to the exact source, approved map and approval used by the job."""
+    *, client: Any, attempt_id: str,
+) -> Callable[..., None]:
+    """Bind status writes to the artifact tuple already approved on this attempt."""
     store = FirestoreCorpusStagingAttemptStore(client)
     record = store.get(attempt_id=attempt_id)
     if record is None:
@@ -192,27 +199,12 @@ def _staging_progress_callback(
     source_artifact = record.get("source")
     map_artifact = record.get("approved_map_artifact")
     approval_artifact = record.get("approval_artifact")
-    source_bucket, source_object = source.bucket, source.object_name
-    map_bucket, map_object, map_generation = _parse_gcs_uri(map_uri)
-    approval_bucket, approval_object, approval_generation = _parse_gcs_uri(approval_uri)
     if (
         not isinstance(source_artifact, dict)
-        or source_artifact.get("bucket") != source_bucket
-        or source_artifact.get("object_name") != source_object
-        or source_artifact.get("generation") != source.generation
-        or source_artifact.get("sha256") != source.content_sha256
         or not isinstance(map_artifact, dict)
-        or map_artifact.get("bucket") != map_bucket
-        or map_artifact.get("object_name") != map_object
-        or map_artifact.get("generation") != map_generation
-        or map_artifact.get("sha256") != map_sha256
         or not isinstance(approval_artifact, dict)
-        or approval_artifact.get("bucket") != approval_bucket
-        or approval_artifact.get("object_name") != approval_object
-        or approval_artifact.get("generation") != approval_generation
-        or approval_artifact.get("sha256") != approval_sha256
     ):
-        raise StagingAttemptConflict("ingestion artifacts do not match the approved attempt")
+        raise RuntimeError("The approved staging attempt artifacts are unavailable.")
 
     last_parent_count = 0
     last_child_count = 0

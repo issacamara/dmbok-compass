@@ -348,10 +348,23 @@ class FirestoreCorpusStagingAttemptStore:
                 or record.get("approval_artifact") != approval_artifact
             ):
                 raise StagingAttemptConflict("ingestion artifacts do not match the approved attempt")
+            persisted_version_id = record.get("staged_corpus_version_id")
+            if (
+                corpus_version_id is not None
+                and persisted_version_id is not None
+                and corpus_version_id != persisted_version_id
+            ):
+                raise StagingAttemptConflict("staging attempt derived a different corpus version")
             # Duplicate Cloud Run delivery must preserve an already staged result.
             if status.state == "staged":
                 return status
-            if status.state not in {"queued", "running"}:
+            retrying_same_execution = (
+                status.state == "failed"
+                and state == "running"
+                and bool(record.get("dispatch_retryable"))
+                and not bool(record.get("dispatch_claimed"))
+            )
+            if status.state not in {"queued", "running"} and not retrying_same_execution:
                 if status.state == state and state in {"staged", "failed"}:
                     return status
                 raise StagingAttemptConflict("staging attempt is not available for ingestion progress")
@@ -363,9 +376,9 @@ class FirestoreCorpusStagingAttemptStore:
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }
             if parent_count is not None:
-                payload["parent_count"] = parent_count
+                payload["parent_count"] = max(parent_count, int(record.get("parent_count") or 0))
             if child_count is not None:
-                payload["child_count"] = child_count
+                payload["child_count"] = max(child_count, int(record.get("child_count") or 0))
             if chunk_count is not None:
                 payload["chunk_count"] = chunk_count
             if corpus_version_id is not None:
@@ -384,6 +397,12 @@ class FirestoreCorpusStagingAttemptStore:
                 })
             else:
                 payload["error"] = None
+                if retrying_same_execution:
+                    payload.update({
+                        "dispatch_retryable": False,
+                        "dispatch_claimed": True,
+                        "correction_codes": [],
+                    })
             transaction.update(reference, payload)
             return CorpusStagingAttemptStatus.model_validate({
                 **{key: value for key, value in record.items() if key in CorpusStagingAttemptStatus.model_fields},

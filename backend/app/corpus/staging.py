@@ -111,6 +111,14 @@ class CorpusStagingAttemptStore(Protocol):
         self, *, attempt_id: str, expected_revision: int, retryable: bool
     ) -> CorpusStagingAttemptStatus: ...
 
+    def record_ingestion_progress(
+        self, *, attempt_id: str, source: dict[str, Any], map_artifact: dict[str, Any],
+        approval_artifact: dict[str, Any], state: Literal["running", "staged", "failed"],
+        parent_count: int | None = None, child_count: int | None = None,
+        chunk_count: int | None = None, corpus_version_id: str | None = None,
+        correction_code: Literal["job_interrupted", "job_failed"] = "job_failed",
+    ) -> CorpusStagingAttemptStatus: ...
+
 
 T = TypeVar("T")
 _TransactionRunner = Callable[[Any, Callable[[Any], T]], T]
@@ -282,7 +290,8 @@ class FirestoreCorpusStagingAttemptStore:
                 "approved_map_artifact": approval.get("_map_artifact"),
                 "approval_artifact": approval.get("_approval_artifact"),
                 "dispatch_claimed": True, "dispatch_retryable": False,
-                "error": None, "updated_at": datetime.now(timezone.utc).isoformat(),
+                "error": None, "correction_codes": [],
+                "updated_at": datetime.now(timezone.utc).isoformat(),
             }
             transaction.update(reference, payload)
             return CorpusStagingAttemptStatus(attempt_id=attempt_id, revision=revision, state="queued", completed_stage="approval"), True
@@ -314,6 +323,92 @@ class FirestoreCorpusStagingAttemptStore:
                 "dispatch_claimed": not retryable, "updated_at": datetime.now(timezone.utc).isoformat(),
             })
             return CorpusStagingAttemptStatus(attempt_id=attempt_id, revision=revision, state="failed", completed_stage="approval", error=error)
+
+        return self._transaction_runner(self.client.transaction(), apply)
+
+    def record_ingestion_progress(
+        self, *, attempt_id: str, source: dict[str, Any], map_artifact: dict[str, Any],
+        approval_artifact: dict[str, Any], state: Literal["running", "staged", "failed"],
+        parent_count: int | None = None, child_count: int | None = None,
+        chunk_count: int | None = None, corpus_version_id: str | None = None,
+        correction_code: Literal["job_interrupted", "job_failed"] = "job_failed",
+    ) -> CorpusStagingAttemptStatus:
+        """Persist safe progress only for the exact approved artifact tuple."""
+        reference = self.attempts.document(attempt_id)
+
+        def apply(transaction: Any) -> CorpusStagingAttemptStatus:
+            snapshot = reference.get(transaction=transaction)
+            if not snapshot.exists:
+                raise StagingAttemptNotFound("staging attempt is unavailable")
+            record = snapshot.to_dict()
+            status = _attempt_status(record)
+            if (
+                record.get("source") != source
+                or record.get("approved_map_artifact") != map_artifact
+                or record.get("approval_artifact") != approval_artifact
+            ):
+                raise StagingAttemptConflict("ingestion artifacts do not match the approved attempt")
+            persisted_version_id = record.get("staged_corpus_version_id")
+            if (
+                corpus_version_id is not None
+                and persisted_version_id is not None
+                and corpus_version_id != persisted_version_id
+            ):
+                raise StagingAttemptConflict("staging attempt derived a different corpus version")
+            # Duplicate Cloud Run delivery must preserve an already staged result.
+            if status.state == "staged":
+                return status
+            retrying_same_execution = (
+                status.state == "failed"
+                and state == "running"
+                and bool(record.get("dispatch_retryable"))
+                and not bool(record.get("dispatch_claimed"))
+            )
+            if status.state not in {"queued", "running"} and not retrying_same_execution:
+                if status.state == state and state in {"staged", "failed"}:
+                    return status
+                raise StagingAttemptConflict("staging attempt is not available for ingestion progress")
+            if state == "staged" and (not corpus_version_id or chunk_count is None):
+                raise ValueError("completed staging requires a corpus version and chunk count")
+            revision = status.revision + 1
+            payload: dict[str, Any] = {
+                "state": state, "revision": revision, "completed_stage": "ingestion",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            if parent_count is not None:
+                payload["parent_count"] = max(parent_count, int(record.get("parent_count") or 0))
+            if child_count is not None:
+                payload["child_count"] = max(child_count, int(record.get("child_count") or 0))
+            if chunk_count is not None:
+                payload["chunk_count"] = chunk_count
+            if corpus_version_id is not None:
+                payload["staged_corpus_version_id"] = corpus_version_id
+            if state == "failed":
+                payload.update({
+                    "correction_codes": [correction_code],
+                    "dispatch_retryable": True,
+                    "dispatch_claimed": False,
+                    "error": ApiError(
+                        code=correction_code,
+                        message="The approved corpus could not be staged. Retry the ingestion attempt or submit a new attempt.",
+                        retryable=True,
+                        status=503,
+                    ).model_dump(mode="json"),
+                })
+            else:
+                payload["error"] = None
+                if retrying_same_execution:
+                    payload.update({
+                        "dispatch_retryable": False,
+                        "dispatch_claimed": True,
+                        "correction_codes": [],
+                    })
+            transaction.update(reference, payload)
+            return CorpusStagingAttemptStatus.model_validate({
+                **{key: value for key, value in record.items() if key in CorpusStagingAttemptStatus.model_fields},
+                **{key: value for key, value in payload.items() if key in CorpusStagingAttemptStatus.model_fields},
+                "attempt_id": attempt_id,
+            })
 
         return self._transaction_runner(self.client.transaction(), apply)
 

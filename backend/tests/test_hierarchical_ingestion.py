@@ -4,6 +4,7 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -166,6 +167,84 @@ def test_repeated_derivation_resumes_same_staged_identity_without_activating() -
     assert versions.active() is None
     assert versions.get(first.version.version_id).status == "staged"  # type: ignore[union-attr]
     assert first.ingestion_gate == INGESTION_GATE
+
+
+def test_attempt_progress_is_bound_to_pinned_artifacts_and_persists_safe_counts(monkeypatch) -> None:
+    _, _, map_sha256, approval_sha256 = _artifacts()
+    source_artifact = {
+        "bucket": "corpus", "object_name": "source/dmbok.pdf", "generation": 7,
+        "sha256": SOURCE_SHA256, "content_type": "application/pdf",
+    }
+    map_artifact = {
+        "bucket": "corpus", "object_name": "maps/reviewed.json", "generation": 12,
+        "sha256": map_sha256, "content_type": "application/json",
+    }
+    approval_artifact = {
+        "bucket": "corpus", "object_name": "approvals/reviewed.json", "generation": 13,
+        "sha256": approval_sha256, "content_type": "application/json",
+    }
+
+    class Store:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def get(self, *, attempt_id: str):
+            assert attempt_id == "attempt-326"
+            return {
+                "source": source_artifact,
+                "approved_map_artifact": map_artifact,
+                "approval_artifact": approval_artifact,
+            }
+
+        def record_ingestion_progress(self, **kwargs):
+            self.calls.append(kwargs)
+
+    store = Store()
+    monkeypatch.setattr(entrypoint, "FirestoreCorpusStagingAttemptStore", lambda _client: store)
+    progress = entrypoint._staging_progress_callback(
+        client=object(), attempt_id="attempt-326",
+    )
+    progress("running", 2, 3, "candidate-v1", 3)
+    assert store.calls == [{
+        "attempt_id": "attempt-326", "source": source_artifact,
+        "map_artifact": map_artifact, "approval_artifact": approval_artifact,
+        "state": "running", "parent_count": 2, "child_count": 3,
+        "chunk_count": None, "corpus_version_id": "candidate-v1",
+        "correction_code": "job_failed",
+    }]
+
+
+def test_job_failure_before_source_setup_persists_safe_terminal_status(monkeypatch) -> None:
+    calls = []
+    configuration = SimpleNamespace(
+        runtime=SimpleNamespace(project="test-project", location="test-location"),
+        vector_collection="document_chunks_v2",
+    )
+    monkeypatch.setattr(
+        entrypoint.RuntimeConfiguration,
+        "from_environment",
+        staticmethod(lambda: configuration),
+    )
+    monkeypatch.setattr(entrypoint.firestore, "Client", lambda project: object())
+    monkeypatch.setattr(entrypoint, "FirestoreCorpusVersionStore", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr(
+        entrypoint,
+        "_staging_progress_callback",
+        lambda **_kwargs: lambda state, *_args: calls.append(state),
+    )
+
+    def missing_bucket(name: str) -> str:
+        raise RuntimeError("missing bucket configuration")
+
+    monkeypatch.setattr(entrypoint, "_required", missing_bucket)
+    monkeypatch.setenv("CORPUS_STAGING_ATTEMPT_ID", "attempt-326")
+    monkeypatch.delenv("CORPUS_CLEANUP_VERSION", raising=False)
+
+    with pytest.raises(RuntimeError, match="missing bucket configuration"):
+        entrypoint._run(lambda: False)
+
+    assert calls == ["running", "failed"]
+
 
 
 def _candidate_args():

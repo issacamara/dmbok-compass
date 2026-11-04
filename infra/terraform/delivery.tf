@@ -366,6 +366,22 @@ resource "google_cloud_run_v2_job" "evaluation" {
   depends_on = [google_project_service.required]
 }
 
+resource "google_cloud_run_v2_job_iam_member" "runtime_ingestion_invoker" {
+  project  = var.project_id
+  location = var.region
+  name     = google_cloud_run_v2_job.ingestion.name
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${google_service_account.workload["runtime"].email}"
+}
+
+resource "google_cloud_run_v2_job_iam_member" "runtime_ingestion_executor_with_overrides" {
+  project  = var.project_id
+  location = var.region
+  name     = google_cloud_run_v2_job.ingestion.name
+  role     = "roles/run.jobsExecutorWithOverrides"
+  member   = "serviceAccount:${google_service_account.workload["runtime"].email}"
+}
+
 resource "google_cloud_run_v2_job_iam_member" "runtime_evaluation_invoker" {
   project  = var.project_id
   location = var.region

@@ -157,3 +157,14 @@ def test_terraform_allows_runtime_to_run_evaluation_job_with_overrides() -> None
     assert 'role     = "roles/run.jobsExecutorWithOverrides"' in delivery
     assert 'role     = "roles/run.invoker"' in delivery
     assert 'google_service_account.workload["runtime"].email' in delivery
+
+
+def test_terraform_allows_runtime_to_run_ingestion_job_with_overrides() -> None:
+    delivery = (ROOT / "infra" / "terraform" / "delivery.tf").read_text(encoding="utf-8")
+
+    assert 'resource "google_cloud_run_v2_job_iam_member" "runtime_ingestion_executor_with_overrides"' in delivery
+    assert 'resource "google_cloud_run_v2_job_iam_member" "runtime_ingestion_invoker"' in delivery
+    assert 'name     = google_cloud_run_v2_job.ingestion.name' in delivery
+    assert 'role     = "roles/run.jobsExecutorWithOverrides"' in delivery
+    assert 'role     = "roles/run.invoker"' in delivery
+    assert 'google_service_account.workload["runtime"].email' in delivery

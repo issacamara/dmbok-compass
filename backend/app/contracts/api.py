@@ -993,6 +993,7 @@ API_ROUTES = {
     "evaluation_review_summary": "/api/admin/evaluations/{run_id}/review-summary",
     "evaluation_batch_attestation": "/api/admin/evaluations/{run_id}/batch-attestation",
     "corpus_staging_template": "/api/admin/corpus-staging/template",
+    "corpus_staging_approve": "/api/admin/corpus-staging/attempts/{attempt_id}/approve",
 }
 
 ADMIN_ROUTES = {
@@ -1001,4 +1002,5 @@ ADMIN_ROUTES = {
     "aggregate_metrics": "/api/admin/metrics",
     "release_decisions": "/api/releases",
     "corpus_staging_template": "/api/admin/corpus-staging/template",
+    "corpus_staging_approve": "/api/admin/corpus-staging/attempts/{attempt_id}/approve",
 }

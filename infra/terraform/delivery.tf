@@ -91,6 +91,10 @@ resource "google_cloud_run_v2_service" "api" {
         value = var.evaluation_job_name
       }
       env {
+        name  = "INGESTION_JOB_NAME"
+        value = var.ingestion_job_name
+      }
+      env {
         name  = "ANSWER_PROVIDER"
         value = "openrouter"
       }

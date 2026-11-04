@@ -228,3 +228,38 @@ def test_firestore_approval_claim_is_revision_bound_idempotent_and_retryable_aft
     retried, should_dispatch = store.claim_approval(attempt_id=ATTEMPT, expected_revision=failed.revision, approval=approval)
     assert retried.state == "queued" and should_dispatch
     assert database.data[f"corpus_staging_attempts/{ATTEMPT}"]["approval_artifact"] == approval_artifact
+
+    progress = store.record_ingestion_progress(
+        attempt_id=ATTEMPT, source=source, map_artifact=map_artifact,
+        approval_artifact=approval_artifact, state="running", parent_count=1, child_count=0,
+    )
+    assert progress.state == "running"
+    assert progress.completed_stage == "ingestion"
+    assert progress.parent_count == 1 and progress.child_count == 0
+    interrupted = store.record_ingestion_progress(
+        attempt_id=ATTEMPT, source=source, map_artifact=map_artifact,
+        approval_artifact=approval_artifact, state="failed", parent_count=1,
+        child_count=1, correction_code="job_interrupted",
+    )
+    assert interrupted.state == "failed"
+    assert interrupted.correction_codes == ["job_interrupted"]
+    assert interrupted.error is not None and interrupted.error.code == "job_interrupted"
+
+    retried, should_dispatch = store.claim_approval(
+        attempt_id=ATTEMPT, expected_revision=interrupted.revision, approval=approval
+    )
+    assert retried.state == "queued" and should_dispatch
+    staged = store.record_ingestion_progress(
+        attempt_id=ATTEMPT, source=source, map_artifact=map_artifact,
+        approval_artifact=approval_artifact, state="staged", parent_count=1,
+        child_count=2, chunk_count=2, corpus_version_id="candidate-version",
+    )
+    assert staged.state == "staged"
+    assert staged.staged_corpus_version_id == "candidate-version"
+    assert staged.chunk_count == 2
+
+    with pytest.raises(StagingAttemptConflict):
+        store.record_ingestion_progress(
+            attempt_id=ATTEMPT, source=source, map_artifact={**map_artifact, "generation": 99},
+            approval_artifact=approval_artifact, state="running",
+        )

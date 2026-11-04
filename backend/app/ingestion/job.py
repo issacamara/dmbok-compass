@@ -117,6 +117,7 @@ class CorpusIngestionJob:
         *,
         unresolved_exceptions: Sequence[Any] = (),
         termination_requested: Callable[[], bool] | None = None,
+        progress: Callable[[str, int, int], None] | None = None,
     ) -> HierarchicalIngestionResult:
         """Persist a complete parent/child candidate without validating or activating it."""
 
@@ -135,12 +136,19 @@ class CorpusIngestionJob:
         finish = getattr(self.versions, "finish_staging", None)
         if callable(begin):
             begin(staged.version_id)
+        if progress is not None:
+            progress("running", 0, 0)
 
         try:
+            parents_written = 0
+            children_written = 0
             for start in range(0, len(parents), self.writer.max_batch_size):
                 if requested():
                     raise IngestionInterrupted("ingestion stopped before the next parent batch")
                 self.writer.write_parent_batch(parents[start : start + self.writer.max_batch_size])
+                parents_written = min(start + self.writer.max_batch_size, len(parents))
+                if progress is not None:
+                    progress("running", parents_written, children_written)
                 if requested():
                     raise IngestionInterrupted("ingestion stopped after a persisted parent batch")
 
@@ -148,6 +156,9 @@ class CorpusIngestionJob:
                 if requested():
                     raise IngestionInterrupted("ingestion stopped before the next child batch")
                 self.writer.write_child_batch(children[start : start + self.writer.max_batch_size])
+                children_written = min(start + self.writer.max_batch_size, len(children))
+                if progress is not None:
+                    progress("running", parents_written, children_written)
                 if requested():
                     raise IngestionInterrupted("ingestion stopped after a persisted child batch")
 
@@ -176,6 +187,8 @@ class CorpusIngestionJob:
                     )
                 if callable(finish):
                     finish(staged.version_id, status="failed")
+                if progress is not None:
+                    progress("failed", len(parents), len(children))
                 return HierarchicalIngestionResult(staged, tuple(parents), tuple(children))
 
             self.versions.validate_hierarchical(staged.version_id, parents, children)
@@ -204,5 +217,7 @@ class CorpusIngestionJob:
         else:
             if callable(finish):
                 finish(staged.version_id, status="completed")
+            if progress is not None:
+                progress("staged", len(parents), len(children))
             validated = self.versions.get(staged.version_id) or staged
             return HierarchicalIngestionResult(validated, tuple(parents), tuple(children))

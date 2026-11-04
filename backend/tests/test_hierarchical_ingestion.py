@@ -9,6 +9,7 @@ import pytest
 
 from app.contracts import CorpusVersion, StructureMap, StructureMapEntry
 from app.corpus import InMemoryCorpusVersionStore, TextChunk, create_source_manifest
+from app.corpus.staging import StagingAttemptConflict
 from app.ingestion import entrypoint
 from app.ingestion.extract import ExtractionReport, PageProvenance
 
@@ -166,6 +167,61 @@ def test_repeated_derivation_resumes_same_staged_identity_without_activating() -
     assert versions.active() is None
     assert versions.get(first.version.version_id).status == "staged"  # type: ignore[union-attr]
     assert first.ingestion_gate == INGESTION_GATE
+
+
+def test_attempt_progress_is_bound_to_pinned_artifacts_and_persists_safe_counts(monkeypatch) -> None:
+    _, _, map_sha256, approval_sha256 = _artifacts()
+    source = _source_manifest()
+    source_artifact = {
+        "bucket": "corpus", "object_name": "source/dmbok.pdf", "generation": 7,
+        "sha256": SOURCE_SHA256, "content_type": "application/pdf",
+    }
+    map_artifact = {
+        "bucket": "corpus", "object_name": "maps/reviewed.json", "generation": 12,
+        "sha256": map_sha256, "content_type": "application/json",
+    }
+    approval_artifact = {
+        "bucket": "corpus", "object_name": "approvals/reviewed.json", "generation": 13,
+        "sha256": approval_sha256, "content_type": "application/json",
+    }
+
+    class Store:
+        def __init__(self) -> None:
+            self.calls = []
+
+        def get(self, *, attempt_id: str):
+            assert attempt_id == "attempt-326"
+            return {
+                "source": source_artifact,
+                "approved_map_artifact": map_artifact,
+                "approval_artifact": approval_artifact,
+            }
+
+        def record_ingestion_progress(self, **kwargs):
+            self.calls.append(kwargs)
+
+    store = Store()
+    monkeypatch.setattr(entrypoint, "FirestoreCorpusStagingAttemptStore", lambda _client: store)
+    progress = entrypoint._staging_progress_callback(
+        client=object(), attempt_id="attempt-326", source=source,
+        map_uri=MAP_URI, map_sha256=map_sha256,
+        approval_uri=APPROVAL_URI, approval_sha256=approval_sha256,
+    )
+    progress("running", 2, 3, "candidate-v1", 3)
+    assert store.calls == [{
+        "attempt_id": "attempt-326", "source": source_artifact,
+        "map_artifact": map_artifact, "approval_artifact": approval_artifact,
+        "state": "running", "parent_count": 2, "child_count": 3,
+        "chunk_count": None, "corpus_version_id": "candidate-v1",
+        "correction_code": "job_failed",
+    }]
+
+    with pytest.raises(StagingAttemptConflict):
+        entrypoint._staging_progress_callback(
+            client=object(), attempt_id="attempt-326", source=source,
+            map_uri=MAP_URI, map_sha256="c" * 64,
+            approval_uri=APPROVAL_URI, approval_sha256=approval_sha256,
+        )
 
 
 def _candidate_args():

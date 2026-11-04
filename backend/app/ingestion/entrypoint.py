@@ -22,6 +22,7 @@ from app.corpus.chunking import ParentReviewException, segment_children, segment
 from app.corpus.firestore import FirestoreCorpusVersionStore, FirestoreParentChunkStore
 from app.corpus.indexing import HierarchicalCorpusWriter, VECTOR_SCHEMA_VERSION
 from app.corpus.manifest import SourceManifest, create_source_manifest, hierarchical_derivation
+from app.corpus.staging import FirestoreCorpusStagingAttemptStore, StagingAttemptConflict
 from app.ingestion.extract import ExtractionReport, extract_pdf, recover_logical_sections
 from app.ingestion.job import CorpusIngestionJob, IngestionInterrupted
 from app.rag import LangChainRagFactory, LangChainRagSettings
@@ -91,19 +92,39 @@ def _run(termination_requested: Callable[[], bool]) -> None:
             "CORPUS_STRUCTURE_MAP_APPROVAL_URI",
             "CORPUS_STRUCTURE_MAP_APPROVAL_SHA256",
         )
-        candidate = build_and_stage_hierarchical_candidate(
-            versions=versions,
-            source_manifest=source_manifest,
-            map_bytes=map_bytes,
+        attempt_id = os.environ.get("CORPUS_STAGING_ATTEMPT_ID", "").strip()
+        progress = _staging_progress_callback(
+            client=client,
+            attempt_id=attempt_id,
+            source=source_manifest,
             map_uri=map_uri,
-            expected_map_sha256=map_sha256,
-            approval_bytes=approval_bytes,
+            map_sha256=map_sha256,
             approval_uri=approval_uri,
-            expected_approval_sha256=approval_sha256,
-            vector_collection=configuration.vector_collection,
-            extract=lambda: extract_pdf(source_path, source_uri=source_manifest.object_uri),
-            termination_requested=termination_requested,
-        )
+            approval_sha256=approval_sha256,
+        ) if attempt_id else None
+        try:
+            if progress is not None:
+                progress("running", 0, 0, None, 0)
+            candidate = build_and_stage_hierarchical_candidate(
+                versions=versions,
+                source_manifest=source_manifest,
+                map_bytes=map_bytes,
+                map_uri=map_uri,
+                expected_map_sha256=map_sha256,
+                approval_bytes=approval_bytes,
+                approval_uri=approval_uri,
+                expected_approval_sha256=approval_sha256,
+                vector_collection=configuration.vector_collection,
+                extract=lambda: extract_pdf(source_path, source_uri=source_manifest.object_uri),
+                termination_requested=termination_requested,
+            )
+        except BaseException as error:
+            if progress is not None:
+                progress(
+                    "failed", 0, 0, None, 0,
+                    "job_interrupted" if isinstance(error, IngestionInterrupted) else "job_failed",
+                )
+            raise
         staged = candidate.version
         settings = LangChainRagSettings(
             project=project,
@@ -119,13 +140,26 @@ def _run(termination_requested: Callable[[], bool]) -> None:
             FirestoreParentChunkStore(client),
             source_metadata=candidate.manifest.corpus_metadata(),
         )
-        CorpusIngestionJob(versions, writer).run_hierarchical(
-            staged,
-            candidate.parents,
-            candidate.children,
-            unresolved_exceptions=candidate.exceptions,
-            termination_requested=termination_requested,
-        )
+        try:
+            CorpusIngestionJob(versions, writer).run_hierarchical(
+                staged,
+                candidate.parents,
+                candidate.children,
+                unresolved_exceptions=candidate.exceptions,
+                termination_requested=termination_requested,
+                progress=(
+                    lambda state, parent_count, child_count: progress(
+                        state, parent_count, child_count, staged.version_id, len(candidate.children)
+                    )
+                ) if progress is not None else None,
+            )
+        except BaseException as error:
+            if progress is not None:
+                progress(
+                    "failed", 0, 0, staged.version_id, len(candidate.children),
+                    "job_interrupted" if isinstance(error, IngestionInterrupted) else "job_failed",
+                )
+            raise
         readiness = (
             "blocked_by_oversized_structures"
             if candidate.exceptions
@@ -144,6 +178,73 @@ def _run(termination_requested: Callable[[], bool]) -> None:
                 }
             )
         )
+
+
+def _staging_progress_callback(
+    *, client: Any, attempt_id: str, source: SourceManifest,
+    map_uri: str, map_sha256: str, approval_uri: str, approval_sha256: str,
+) -> Callable[[str, int, int, str | None, int], None]:
+    """Bind status writes to the exact source, approved map and approval used by the job."""
+    store = FirestoreCorpusStagingAttemptStore(client)
+    record = store.get(attempt_id=attempt_id)
+    if record is None:
+        raise RuntimeError("The approved staging attempt is unavailable.")
+    source_artifact = record.get("source")
+    map_artifact = record.get("approved_map_artifact")
+    approval_artifact = record.get("approval_artifact")
+    source_bucket, source_object = source.bucket, source.object_name
+    map_bucket, map_object, map_generation = _parse_gcs_uri(map_uri)
+    approval_bucket, approval_object, approval_generation = _parse_gcs_uri(approval_uri)
+    if (
+        not isinstance(source_artifact, dict)
+        or source_artifact.get("bucket") != source_bucket
+        or source_artifact.get("object_name") != source_object
+        or source_artifact.get("generation") != source.generation
+        or source_artifact.get("sha256") != source.content_sha256
+        or not isinstance(map_artifact, dict)
+        or map_artifact.get("bucket") != map_bucket
+        or map_artifact.get("object_name") != map_object
+        or map_artifact.get("generation") != map_generation
+        or map_artifact.get("sha256") != map_sha256
+        or not isinstance(approval_artifact, dict)
+        or approval_artifact.get("bucket") != approval_bucket
+        or approval_artifact.get("object_name") != approval_object
+        or approval_artifact.get("generation") != approval_generation
+        or approval_artifact.get("sha256") != approval_sha256
+    ):
+        raise StagingAttemptConflict("ingestion artifacts do not match the approved attempt")
+
+    last_parent_count = 0
+    last_child_count = 0
+
+    def update(
+        state: str, parent_count: int, child_count: int,
+        corpus_version_id: str | None, chunk_count: int,
+        correction_code: str = "job_failed",
+    ) -> None:
+        nonlocal last_parent_count, last_child_count
+        if state not in {"running", "staged", "failed"}:
+            raise ValueError("invalid staging progress state")
+        if state == "failed":
+            parent_count = max(parent_count, last_parent_count)
+            child_count = max(child_count, last_child_count)
+        else:
+            last_parent_count = parent_count
+            last_child_count = child_count
+        store.record_ingestion_progress(
+            attempt_id=attempt_id,
+            source=source_artifact,
+            map_artifact=map_artifact,
+            approval_artifact=approval_artifact,
+            state=state,  # type: ignore[arg-type]
+            parent_count=parent_count,
+            child_count=child_count,
+            chunk_count=chunk_count if state == "staged" else None,
+            corpus_version_id=corpus_version_id,
+            correction_code=correction_code,  # type: ignore[arg-type]
+        )
+
+    return update
 
 
 @dataclass(frozen=True, slots=True)

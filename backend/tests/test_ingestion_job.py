@@ -227,8 +227,14 @@ def test_hierarchical_ingestion_batches_501_children_and_retries_by_explicit_ide
     )
     job = CorpusIngestionJob(versions, writer)
     parents, children = many_hierarchical_records(501)
+    progress = []
 
-    first = job.run_hierarchical(staged_version(), parents, children)
+    first = job.run_hierarchical(
+        staged_version(), parents, children,
+        progress=lambda state, parent_count, child_count: progress.append(
+            (state, parent_count, child_count)
+        ),
+    )
     retry = job.run_hierarchical(staged_version(), parents, children)
 
     assert first.version.status == retry.version.status == "validated"
@@ -253,6 +259,13 @@ def test_hierarchical_ingestion_batches_501_children_and_retries_by_explicit_ide
     )
     assert len(parent_store.documents) == 1
     assert versions.active() is None
+    assert progress == [
+        ("running", 0, 0),
+        ("running", 1, 0),
+        ("running", 1, 500),
+        ("running", 1, 501),
+        ("staged", 1, 501),
+    ]
 
 
 def test_hierarchical_write_failure_leaves_active_corpus_untouched() -> None:

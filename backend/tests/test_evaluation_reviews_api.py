@@ -14,7 +14,7 @@ from app.api.evaluation_reviews import (
 from app.contracts import EvaluationDataset, EvaluationItem, GoldAnnotation, UserProfile
 from app.evaluation.batch_reviews import InMemoryBatchReviewRepository
 from app.evaluation.support import InMemorySupportEvidenceStore, prepare_support
-from app.identity import get_admin_user
+from app.identity import get_admin_user, get_current_profile
 from app.main import app
 from test_evaluation_support import Source, chunk, run
 
@@ -117,5 +117,59 @@ def test_review_write_rejects_technical_selectors_and_stale_run() -> None:
         stale = client.get("/api/admin/evaluations/run-v1/review-summary")
         assert stale.status_code == 409
         assert "stale" not in stale.text.lower() or "not ready" in stale.text.lower()
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_review_routes_require_an_approved_administrator() -> None:
+    try:
+        client = TestClient(app)
+        assert client.get("/api/admin/evaluations/run-v1/review-summary").status_code == 401
+
+        app.dependency_overrides[get_current_profile] = lambda: UserProfile(
+            user_id="member", email="member@example.com", username="member",
+            approval_state="approved", role="user", email_verified=True,
+        )
+        assert client.get("/api/admin/evaluations/run-v1/review-summary").status_code == 403
+        assert client.post(
+            "/api/admin/evaluations/run-v1/batch-attestation",
+            json={"decision": "attested"},
+        ).status_code == 403
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_missing_and_stale_review_snapshots_fail_without_disclosing_bindings() -> None:
+    record, repository = fixture()
+    try:
+        client = TestClient(app)
+        missing = client.get("/api/admin/evaluations/unknown-run/review-summary")
+        assert missing.status_code == 404
+
+        app.dependency_overrides[evaluation_generation_store] = lambda: type(
+            "StaleGenerations", (), {
+                "active": lambda self: type("Active", (), {"generation_id": "dataset-v2"})(),
+                "active_dataset": lambda self: None,
+            }
+        )()
+        stale = client.get("/api/admin/evaluations/run-v1/review-summary")
+        assert stale.status_code == 409
+        assert "dataset-v1" not in stale.text
+        assert not repository._attestations
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_partial_attestation_is_safe_conflict_and_does_not_write() -> None:
+    _, repository = fixture()
+    try:
+        client = TestClient(app)
+        response = client.post(
+            "/api/admin/evaluations/run-v1/batch-attestation",
+            json={"decision": "attested", "exception_decisions": []},
+        )
+        assert response.status_code == 409
+        assert "batch_attestation_conflict" in response.text
+        assert not repository._attestations
     finally:
         app.dependency_overrides.clear()

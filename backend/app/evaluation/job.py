@@ -573,9 +573,11 @@ def select_items(dataset: EvaluationDataset, item_ids: list[str] | None) -> tupl
     available = {item.item_id for item in dataset.items}
     if item_ids is None:
         return tuple(item.item_id for item in dataset.items)
-    selected = tuple(dict.fromkeys(item_ids))
+    selected = tuple(item_ids)
     if not selected:
         raise EvaluationRunError("item_ids must not be empty for a subset run")
+    if len(selected) != len(set(selected)):
+        raise EvaluationRunError("item_ids must not contain duplicates")
     unknown = set(selected) - available
     if unknown:
         raise EvaluationRunError(f"unknown evaluation item IDs: {', '.join(sorted(unknown))}")

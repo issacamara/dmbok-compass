@@ -1,8 +1,16 @@
 """Administrator-only evaluation launch and status endpoints."""
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from google.api_core.exceptions import GoogleAPICallError
+
 from app.contracts import EvaluationRun, EvaluationRunSelection, UserProfile
-from app.evaluation import EvaluationJobService, EvaluationRunError
+from app.evaluation import (
+    EvaluationCorpusReadinessError,
+    EvaluationDispatchError,
+    EvaluationGenerationError,
+    EvaluationJobService,
+    EvaluationRunError,
+)
 from app.identity import get_admin_user
 
 router = APIRouter(prefix="/api/evaluations", tags=["evaluations"])
@@ -29,8 +37,22 @@ def launch_evaluation(
         return service.launch(
             item_ids=request.item_ids,
         )
-    except EvaluationRunError as exc:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail={"code": "invalid_evaluation_run", "message": str(exc)}) from exc
+    except (
+        EvaluationCorpusReadinessError,
+        EvaluationDispatchError,
+        EvaluationGenerationError,
+        GoogleAPICallError,
+        RuntimeError,
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={"code": "evaluation_run_unavailable", "message": "The evaluation run could not be started."},
+        ) from None
+    except EvaluationRunError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "invalid_evaluation_run", "message": "The evaluation request is invalid or stale."},
+        ) from None
 
 
 @router.get("/{run_id}", response_model=EvaluationRun)

@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { approveCorpusStagingAttempt, getCorpusStagingStatus, getCorpusStagingTemplate, submitCorpusStagingAttempt, validateCorpusStagingAttempt } from "../../api/admin";
 import type { CorpusStagingAttemptStatus } from "../../api/contracts";
 
@@ -12,6 +12,9 @@ export function CorpusStagingPanel({ token }: { token: string }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
+  const errorSummary = useRef<HTMLDivElement>(null);
+
+  useEffect(() => { if (error) errorSummary.current?.focus(); }, [error]);
 
   async function refresh(id = attemptId) {
     if (!id) return;
@@ -34,7 +37,8 @@ export function CorpusStagingPanel({ token }: { token: string }) {
     try {
       const template = await getCorpusStagingTemplate(token);
       const href = URL.createObjectURL(new Blob([JSON.stringify(template, null, 2)], { type: "application/json" }));
-      const link = document.createElement("a"); link.href = href; link.download = "dmbok-structure-template-v1.json"; link.click(); URL.revokeObjectURL(href);
+      const link = document.createElement("a"); link.href = href; link.download = "dmbok-structure-template-v1.json"; link.click();
+      window.setTimeout(() => URL.revokeObjectURL(href), 1000);
     } catch { setError("Could not download the structure template. Try again shortly."); }
   }
 
@@ -63,7 +67,9 @@ export function CorpusStagingPanel({ token }: { token: string }) {
   return <section className="admin-card staging-card" aria-labelledby="corpus-staging-title">
     <div className="section-heading"><div><h3 id="corpus-staging-title">Stage a corpus</h3><p>Upload a PDF with its completed structure file. A staged corpus does not become active until separately released.</p></div>
       <button type="button" className="secondary" onClick={() => void downloadTemplate()}>Download structure template</button></div>
-    {error && <div className="error" role="alert" tabIndex={-1}>{error}</div>}
+    {error && <div id="staging-error-summary" className="error" role="alert" tabIndex={-1} ref={errorSummary}>
+      <p>{error}</p><a href={attempt ? "#staging-refresh" : "#staging-pdf"}>Review staging controls</a>
+    </div>}
     {message && <p className="status" role="status">{message}</p>}
     <form className="staging-form" onSubmit={(event) => void submit(event)}>
       <label htmlFor="staging-pdf">Source PDF</label><input id="staging-pdf" type="file" accept="application/pdf,.pdf" onChange={(event) => setPdf(event.target.files?.[0] ?? null)} />
@@ -71,7 +77,7 @@ export function CorpusStagingPanel({ token }: { token: string }) {
       <button type="submit" disabled={busy || !pdf || !structure}>{busy ? "Working…" : "Upload and preview"}</button>
     </form>
     {attempt && <section className="staging-review" aria-labelledby="staging-review-title">
-      <div className="section-heading"><h4 id="staging-review-title">Staging attempt</h4><button className="secondary" type="button" onClick={() => void refresh()} disabled={busy}>Refresh status</button></div>
+      <div className="section-heading"><h4 id="staging-review-title">Staging attempt</h4><button id="staging-refresh" className="secondary" type="button" onClick={() => void refresh()} disabled={busy}>Refresh status</button></div>
       <p role="status">Status: {attempt.state.replaceAll("_", " ")}{attempt.completed_stage ? ` · completed ${attempt.completed_stage}` : ""}</p>
       {attempt.preview && <><h5>Review section matches</h5><ul className="staging-entry-list">{attempt.preview.map((entry) => <li key={entry.entry_index}>
         <strong>{entry.section_path.join(" › ") || `Entry ${entry.entry_index + 1}`}</strong>

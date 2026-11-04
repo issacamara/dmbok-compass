@@ -1,6 +1,6 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CorpusStagingPanel } from "./CorpusStagingPanel";
 
 const api = vi.hoisted(() => ({ getCorpusStagingStatus: vi.fn(), getCorpusStagingTemplate: vi.fn(), submitCorpusStagingAttempt: vi.fn(), validateCorpusStagingAttempt: vi.fn(), approveCorpusStagingAttempt: vi.fn() }));
@@ -10,6 +10,7 @@ const reviewed = { attempt_id: "attempt-1", revision: 3, state: "awaiting_review
 
 describe("CorpusStagingPanel", () => {
   beforeEach(() => { vi.clearAllMocks(); window.localStorage.clear(); api.getCorpusStagingStatus.mockResolvedValue(reviewed); });
+  afterEach(() => vi.restoreAllMocks());
 
   it("uploads paired files, reviews, and approves the exact revision", async () => {
     const user = userEvent.setup();
@@ -47,5 +48,84 @@ describe("CorpusStagingPanel", () => {
     expect(await screen.findByText(/Staged version candidate-1; 2 parents and 4 chunks/)).toBeInTheDocument();
     expect(screen.getByLabelText("Source PDF")).toBeInTheDocument();
     expect(screen.getByLabelText("Structure JSON")).toBeInTheDocument();
+  });
+
+  it("keeps the template download URL available through the click and revokes it later", async () => {
+    api.getCorpusStagingTemplate.mockResolvedValue({ schema_version: "structure-template-v1", document_title: "DMBOK", instructions: [], entries: [] });
+    const createUrl = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:template");
+    const revokeUrl = vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      expect(this.href).toBe("blob:template");
+      expect(revokeUrl).not.toHaveBeenCalled();
+    });
+    vi.useFakeTimers();
+    try {
+      render(<CorpusStagingPanel token="admin-token" />);
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Download structure template" }));
+        await Promise.resolve(); await Promise.resolve();
+      });
+      expect(createUrl).toHaveBeenCalledOnce();
+      expect(revokeUrl).not.toHaveBeenCalled();
+      await act(async () => { vi.advanceTimersByTime(1000); });
+      expect(revokeUrl).toHaveBeenCalledWith("blob:template");
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("focuses an accessible error summary and links back to the upload controls", async () => {
+    const user = userEvent.setup();
+    api.getCorpusStagingTemplate.mockRejectedValue(new Error("offline"));
+    render(<CorpusStagingPanel token="admin-token" />);
+    await user.click(screen.getByRole("button", { name: "Download structure template" }));
+    const summary = await screen.findByRole("alert");
+    await waitFor(() => expect(summary).toHaveFocus());
+    expect(summary).toHaveAttribute("tabindex", "-1");
+    expect(within(summary).getByRole("link", { name: "Review staging controls" })).toHaveAttribute("href", "#staging-pdf");
+  });
+
+  it("shows a stale revision safely and refreshes the reviewed attempt", async () => {
+    const user = userEvent.setup();
+    api.getCorpusStagingStatus.mockResolvedValue({ ...reviewed, revision: 4 });
+    api.approveCorpusStagingAttempt.mockRejectedValue({ status: 409 });
+    api.submitCorpusStagingAttempt.mockResolvedValue({ ...reviewed, state: "validating", preview: null });
+    api.validateCorpusStagingAttempt.mockResolvedValue(reviewed);
+    render(<CorpusStagingPanel token="admin-token" />);
+    await user.upload(screen.getByLabelText("Source PDF"), new File(["pdf"], "source.pdf", { type: "application/pdf" }));
+    await user.upload(screen.getByLabelText("Structure JSON"), new File(["{}"], "structure.json", { type: "application/json" }));
+    await user.click(screen.getByRole("button", { name: "Upload and preview" }));
+    await user.click(await screen.findByRole("button", { name: "Approve and create chunks" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/reviewed attempt changed/i);
+    expect(screen.getByRole("link", { name: "Review staging controls" })).toHaveAttribute("href", "#staging-refresh");
+    await waitFor(() => expect(api.getCorpusStagingStatus).toHaveBeenCalledWith("admin-token", "attempt-1"));
+    expect(await screen.findByText(/Status: awaiting review/)).toBeInTheDocument();
+  });
+
+  it("explains a failed attempt and its correction code", async () => {
+    window.localStorage.setItem("dmbok-compass.corpus-staging-attempt", "failed-id");
+    api.getCorpusStagingStatus.mockResolvedValue({ ...reviewed, attempt_id: "failed-id", state: "failed", completed_stage: "validation", preview: null, correction_codes: ["invalid_structure"], error: { code: "invalid_structure", message: "Correct the structure file and submit a new attempt.", retryable: false, status: 422 } });
+    render(<CorpusStagingPanel token="admin-token" />);
+    expect(await screen.findByText("Correct the structure file and submit a new attempt.")).toBeInTheDocument();
+    expect(screen.getByText(/structure file is invalid/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Approve and create chunks" })).toBeDisabled();
+  });
+
+  it("keeps semantic controls, labels and keyboard focus usable at a narrow viewport", async () => {
+    const user = userEvent.setup();
+    api.getCorpusStagingTemplate.mockResolvedValue({ schema_version: "structure-template-v1", document_title: "DMBOK", instructions: [], entries: [] });
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:keyboard-template");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => undefined);
+    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 390 });
+    render(<CorpusStagingPanel token="admin-token" />);
+    const panel = screen.getByRole("region", { name: "Stage a corpus" });
+    expect(panel.querySelector("form")).toHaveClass("staging-form");
+    expect(screen.getByLabelText("Source PDF")).toHaveAttribute("accept", "application/pdf,.pdf");
+    expect(screen.getByLabelText("Structure JSON")).toHaveAttribute("accept", "application/json,.json");
+    await user.tab();
+    expect(screen.getByRole("button", { name: "Download structure template" })).toHaveFocus();
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(api.getCorpusStagingTemplate).toHaveBeenCalledWith("admin-token"));
+    await user.tab();
+    expect(screen.getByLabelText("Source PDF")).toHaveFocus();
   });
 });

@@ -1,8 +1,11 @@
 import { describe, expect, it } from "vitest";
 import fixture from "../../../documents/contracts/api-contract-fixture.json";
 import architectureFixture from "../../../backend/tests/fixtures/architecture-v21.json";
+import stagingFixture from "../../../documents/contracts/corpus-staging-contract-fixture.json";
+import structureTemplateFixture from "../../../backend/app/templates/dmbok-structure-template-v1.json";
 import {
   API_ROUTES,
+  ADMIN_ROUTES,
   MAX_APPROVED_GOLD_ITEMS,
   MAX_EVALUATION_IMPORT_BYTES,
   MAX_EVALUATION_IMPORT_ITEMS,
@@ -23,6 +26,8 @@ import {
   type ExceptionRecord,
   type RepresentativeSampleEntry,
   type ReviewSummary,
+  type CorpusStagingAttemptStatus,
+  type StructureTemplate,
 } from "./contracts";
 
 describe("frozen API contracts", () => {
@@ -36,6 +41,43 @@ describe("frozen API contracts", () => {
     expect(API_ROUTES.answer).toBe("/api/questions");
     expect(API_ROUTES.registration).toBe("/api/registration");
     expect(API_ROUTES.currentUser).toBe("/api/me");
+  });
+
+  it("freezes versioned, browser-safe corpus staging contracts", () => {
+    const template: StructureTemplate = {
+      schema_version: "structure-template-v1",
+      document_title: "DAMA-DMBOK, Second Edition",
+      instructions: ["Replace the example with the supplied PDF hierarchy."],
+      entries: [{ section_path: ["Chapter 1", "1.1 Introduction"], page_start: 1, page_end: 3 }],
+    };
+    const attempt: CorpusStagingAttemptStatus = {
+      attempt_id: "attempt-valid",
+      revision: 2,
+      state: "awaiting_review",
+      completed_stage: "review",
+      preview: [{
+        entry_index: 0,
+        section_path: ["Chapter 1", "1.1 Introduction"],
+        page_start: 1,
+        page_end: 3,
+        match_status: "matched",
+        correction_codes: [],
+      }],
+      correction_codes: [],
+      parent_count: 0,
+      child_count: 0,
+      chunk_count: 0,
+      staged_corpus_version_id: null,
+      error: null,
+    };
+    expect(ADMIN_ROUTES.corpusStagingTemplate).toBe(API_ROUTES.corpusStagingTemplate);
+    expect(template.schema_version).toBe(structureTemplateFixture.schema_version);
+    expect(attempt.state).toBe(stagingFixture.attempts.valid.state);
+    expect(stagingFixture.attempts.invalid.state).toBe("failed");
+    expect(stagingFixture.attempts.stale.status).toBe(409);
+    expect(stagingFixture.attempts.terminal.state).toBe("staged");
+    expect(Object.keys(template)).not.toEqual(expect.arrayContaining(stagingFixture.forbiddenBrowserFields));
+    expect(Object.keys(attempt)).not.toEqual(expect.arrayContaining(stagingFixture.forbiddenBrowserFields));
   });
 
   it("models the answer response without durable interaction ownership", () => {

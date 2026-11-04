@@ -11,6 +11,7 @@ export const API_ROUTES = {
   evaluationDatasets: "/api/admin/evaluation-datasets",
   evaluationAssessments: "/api/admin/evaluations",
   evaluationSupport: "/api/admin/evaluations",
+  corpusStagingTemplate: "/api/admin/corpus-staging/template",
 } as const;
 
 export const ADMIN_ROUTES = {
@@ -18,6 +19,7 @@ export const ADMIN_ROUTES = {
   configuration: "/api/admin/configuration",
   aggregateMetrics: "/api/admin/metrics",
   releaseDecisions: "/api/releases",
+  corpusStagingTemplate: "/api/admin/corpus-staging/template",
 } as const;
 
 export type Outcome = "answer" | "qualified" | "refusal";
@@ -34,6 +36,53 @@ export type AnswerOutcomeKind = "answer" | "qualified" | "evidence_refusal" | "o
 export type StageStatus = "pending" | "running" | "succeeded" | "failed" | "unavailable";
 export type RetrievalStrategy = "dense" | "hybrid" | "reranked";
 export type RetrievalScoreSemantics = "cosine_similarity" | "distance" | "calibrated";
+export type CorpusStagingState = "validating" | "awaiting_review" | "queued" | "running" | "staged" | "failed";
+export type CorpusStagingMatchStatus = "matched" | "ambiguous" | "unmatched";
+export type CorpusStagingCorrectionCode =
+  | "invalid_structure"
+  | "source_pair_mismatch"
+  | "missing_page_coverage"
+  | "ambiguous_heading"
+  | "unmatched_passage"
+  | "stale_revision"
+  | "job_interrupted"
+  | "job_failed";
+
+export interface StructureTemplateEntry {
+  section_path: string[];
+  page_start: number;
+  page_end: number;
+}
+
+export interface StructureTemplate {
+  schema_version: "structure-template-v1";
+  document_title: string;
+  instructions: string[];
+  entries: StructureTemplateEntry[];
+}
+
+export interface CorpusStagingPreviewEntry {
+  entry_index: number;
+  section_path: string[];
+  page_start: number;
+  page_end: number;
+  match_status: CorpusStagingMatchStatus;
+  correction_codes: CorpusStagingCorrectionCode[];
+}
+
+export interface CorpusStagingAttemptStatus {
+  attempt_id: string;
+  revision: number;
+  state: CorpusStagingState;
+  completed_stage: "validation" | "review" | "approval" | "ingestion" | null;
+  preview: CorpusStagingPreviewEntry[] | null;
+  correction_codes: CorpusStagingCorrectionCode[];
+  parent_count: number | null;
+  child_count: number | null;
+  chunk_count: number | null;
+  staged_corpus_version_id: string | null;
+  error: ApiError | null;
+}
 
 export const OPERATIONAL_ERROR_STATUS = {
   invalid_output: 502,

@@ -19,6 +19,7 @@ jobs:
     env:
       PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
       RUNTIME_SECRET_VERSION: ${{ vars.RUNTIME_SECRET_VERSION }}
+      CORPUS_BUCKET_NAME: ${{ vars.CORPUS_BUCKET_NAME }}
       IMAGE: europe-west1-docker.pkg.dev/${{ vars.GCP_PROJECT_ID }}/dmbok-compass/api:${{ github.sha }}
     steps:
       - name: Check out repository
@@ -29,7 +30,7 @@ jobs:
           SERVICE_ACCOUNT: ${{ vars.GCP_BUILD_SERVICE_ACCOUNT }}
         run: |
           test -n "$PROJECT_ID" && test -n "$PROVIDER" && test -n "$SERVICE_ACCOUNT"
-          test -n "$RUNTIME_SECRET_VERSION"
+          test -n "$RUNTIME_SECRET_VERSION" && test -n "$CORPUS_BUCKET_NAME"
       - name: Authenticate to development GCP
         uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
         with:

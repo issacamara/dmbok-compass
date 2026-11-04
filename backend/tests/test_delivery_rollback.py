@@ -87,6 +87,18 @@ def test_both_deployments_use_one_image_for_api_and_jobs() -> None:
     assert 'test "$copied_digest" = "$DIGEST"' in production
     assert deploy.count('--image="$API_IMAGE"') == 3
     assert "RAG_CORPUS_VERSION_ID=${CORPUS_VERSION_ID}" in deploy
+    assert "CORPUS_BUCKET_NAME=${CORPUS_BUCKET_NAME}" in deploy
+    assert "${{ vars.CORPUS_BUCKET_NAME }}" in development
+    assert "${{ vars.CORPUS_BUCKET_NAME }}" in production
+
+
+def test_runtime_can_only_create_objects_under_the_staging_prefix() -> None:
+    delivery = (ROOT / "infra" / "terraform" / "delivery.tf").read_text(encoding="utf-8")
+    iam = (ROOT / "infra" / "terraform" / "iam.tf").read_text(encoding="utf-8")
+
+    assert 'name  = "CORPUS_BUCKET_NAME"' in delivery
+    assert 'role   = "roles/storage.objectCreator"' in iam
+    assert 'objects/staging/' in iam
 
 
 def test_deployments_resolve_one_ready_corpus_before_mutation() -> None:

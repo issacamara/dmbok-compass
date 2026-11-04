@@ -51,6 +51,10 @@ resource "google_cloud_run_v2_service" "api" {
         value = var.region
       }
       env {
+        name  = "CORPUS_BUCKET_NAME"
+        value = var.corpus_bucket_name
+      }
+      env {
         name  = "RAG_VECTOR_COLLECTION"
         value = "document_chunks_v2"
       }

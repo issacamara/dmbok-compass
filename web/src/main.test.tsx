@@ -63,7 +63,7 @@ describe("Firebase email and password identity", () => {
     expect(screen.getByLabelText("Password")).toHaveAttribute("type", "password");
   });
 
-  it("hides the welcome shell after a verified user signs in", async () => {
+  it("shows only question controls to an approved non-admin user", async () => {
     const signedInUser = {
       email: "reader@example.com",
       emailVerified: true,
@@ -83,6 +83,8 @@ describe("Firebase email and password identity", () => {
     expect(await screen.findByRole("heading", { name: "What are you trying to understand?" })).toBeInTheDocument();
     expect(screen.queryByText("Sign in with your verified email to continue.")).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: /welcome to dmbok compass/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Stage a corpus" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Download structure template" })).not.toBeInTheDocument();
   });
 
   it("creates accounts only through Firebase and requires email verification", async () => {

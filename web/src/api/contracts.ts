@@ -20,6 +20,7 @@ export const ADMIN_ROUTES = {
   aggregateMetrics: "/api/admin/metrics",
   releaseDecisions: "/api/releases",
   corpusStagingTemplate: "/api/admin/corpus-staging/template",
+  corpusStagingAttempts: "/api/admin/corpus-staging/attempts",
 } as const;
 
 export type Outcome = "answer" | "qualified" | "refusal";

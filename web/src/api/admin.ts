@@ -1,4 +1,4 @@
-import { ADMIN_ROUTES, type AggregateMetric, type ApprovalState, type QuotaPolicy, type UserProfile } from "./contracts";
+import { ADMIN_ROUTES, type AggregateMetric, type ApprovalState, type CorpusStagingAttemptStatus, type QuotaPolicy, type StructureTemplate, type UserProfile } from "./contracts";
 
 export class AdminApiError extends Error {
   constructor(readonly status: number, message: string) {
@@ -11,15 +11,40 @@ async function adminRequest<T>(path: string, token: string, init?: RequestInit):
     ...init,
     headers: {
       Authorization: `Bearer ${token}`,
-      ...(init?.body ? { "Content-Type": "application/json" } : {}),
+      ...(init?.body && !(init.body instanceof FormData) ? { "Content-Type": "application/json" } : {}),
       ...init?.headers,
     },
   });
   if (!response.ok) {
-    const body = await response.json().catch(() => null) as { detail?: string } | null;
-    throw new AdminApiError(response.status, body?.detail ?? "The administrator service could not complete the request.");
+    const body = await response.json().catch(() => null) as { detail?: string | { message?: string } } | null;
+    const detail = body?.detail;
+    throw new AdminApiError(response.status, typeof detail === "string" ? detail : detail?.message ?? "The administrator service could not complete the request.");
   }
   return response.json() as Promise<T>;
+}
+
+export function getCorpusStagingTemplate(token: string): Promise<StructureTemplate> {
+  return adminRequest<StructureTemplate>(ADMIN_ROUTES.corpusStagingTemplate, token);
+}
+
+export async function submitCorpusStagingAttempt(token: string, sourcePdf: File, structureJson: File): Promise<CorpusStagingAttemptStatus> {
+  const body = new FormData();
+  body.append("source_pdf", sourcePdf);
+  body.append("structure_json", structureJson);
+  return adminRequest<CorpusStagingAttemptStatus>(ADMIN_ROUTES.corpusStagingAttempts, token, { method: "POST", body });
+}
+
+export function validateCorpusStagingAttempt(token: string, attemptId: string): Promise<CorpusStagingAttemptStatus> {
+  return adminRequest<CorpusStagingAttemptStatus>(`${ADMIN_ROUTES.corpusStagingAttempts}/${encodeURIComponent(attemptId)}/validate`, token, { method: "POST" });
+}
+
+export function approveCorpusStagingAttempt(token: string, attemptId: string, expectedRevision: number): Promise<CorpusStagingAttemptStatus> {
+  const query = new URLSearchParams({ expected_revision: String(expectedRevision) });
+  return adminRequest<CorpusStagingAttemptStatus>(`${ADMIN_ROUTES.corpusStagingAttempts}/${encodeURIComponent(attemptId)}/approve?${query}`, token, { method: "POST" });
+}
+
+export function getCorpusStagingStatus(token: string, attemptId: string): Promise<CorpusStagingAttemptStatus> {
+  return adminRequest<CorpusStagingAttemptStatus>(`${ADMIN_ROUTES.corpusStagingAttempts}/${encodeURIComponent(attemptId)}`, token);
 }
 
 export function listUsers(token: string, approvalState?: ApprovalState): Promise<UserProfile[]> {

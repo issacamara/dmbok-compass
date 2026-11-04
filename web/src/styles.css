@@ -82,6 +82,13 @@ select, .quota-form input { padding: .55rem; border: 1px solid #aaa397; border-r
 .quota-chip, .evidence-chip, .synthesis-chip { display: inline-block; padding: .4rem .65rem; border-radius: 999px; font-size: .82rem; font-weight: 700; }
 .quota-chip { color: #195c45; background: #d9eee3; }
 .question-layout { display: grid; grid-template-columns: minmax(0, 1fr) 300px; gap: 1rem; align-items: start; }
+.staging-card { margin-top: 1rem; }
+.staging-form { display: grid; grid-template-columns: minmax(10rem, .35fr) minmax(0, 1fr); align-items: center; gap: .75rem; margin: 1rem 0; }
+.staging-review { border-top: 1px solid #ebe6dd; padding-top: 1rem; }
+.staging-entry-list { list-style: none; margin: .5rem 0 1rem; padding: 0; }
+.staging-entry-list li { display: grid; gap: .35rem; padding: .75rem 0; border-top: 1px solid #ebe6dd; }
+.staging-entry-list .error { margin: 0; }
+@media (max-width: 520px) { .staging-form { grid-template-columns: 1fr; } }
 .question-card, .trace-card { border: 1px solid #ddd7cc; border-radius: 1rem; background: #fffefa; }
 .question-card-header { display: flex; justify-content: space-between; align-items: center; padding: 1rem 1.25rem; border-bottom: 1px solid #ebe6dd; }
 .question-card-header .link { margin: 0; }

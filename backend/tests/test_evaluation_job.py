@@ -11,7 +11,9 @@ from app.evaluation import (
     InMemoryEvaluationDatasetStore,
     InMemoryEvaluationJobDispatcher,
     InMemoryEvaluationRunStore,
+    EvaluationCorpusReadinessError,
     EvaluationOutcome,
+    EvaluationRunError,
     EvaluationInterrupted,
     EvaluationWorker,
     ResolvedEvaluationCandidate,
@@ -97,13 +99,25 @@ def test_full_and_subset_runs_are_version_bound_and_retry_idempotent() -> None:
         configuration_version_id="config-v3", model_version_id="model-v4", item_ids=["item-2"],
     )
     assert full == retry
+    assert full.dataset_version_id == "dataset-v1"
     assert full.selected_item_ids == ["item-0", "item-1", "item-2"]
+    assert subset.dataset_version_id == "dataset-v1"
     assert subset.selected_item_ids == ["item-2"]
     assert set(dispatcher.dispatched) == {full.run_id, subset.run_id}
     assert full.report_eligibility is not None
     assert full.report_eligibility.eligibility == "exploratory"
     assert full.candidate_snapshot is not None
     assert full.candidate_snapshot.corpus_binding.corpus_version_id == "corpus-v2"
+
+
+def test_subset_selection_rejects_empty_duplicate_and_stale_item_ids_before_dispatch() -> None:
+    job, dispatcher = service()
+
+    for item_ids in ([], ["item-1", "item-1"], ["superseded-item"]):
+        with pytest.raises(EvaluationRunError):
+            job.launch(item_ids=item_ids)
+
+    assert dispatcher.dispatched == {}
 
 
 def test_run_status_reclassifies_a_superseded_generation_as_exploratory() -> None:
@@ -145,8 +159,14 @@ def test_admin_api_launch_and_status_require_admin_and_dispatch_once() -> None:
         retried = client.post("/api/evaluations", json=payload)
         assert created.status_code == 202
         assert retried.json() == created.json()
+        assert created.json()["dataset_version_id"] == "dataset-v1"
+        assert created.json()["selected_item_ids"] == ["item-1"]
         run_id = created.json()["run_id"]
         assert client.get(f"/api/evaluations/{run_id}").json() == created.json()
+        assert len(dispatcher.dispatched) == 1
+        duplicate = client.post("/api/evaluations", json={"item_ids": ["item-1", "item-1"]})
+        assert duplicate.status_code == status.HTTP_409_CONFLICT
+        assert duplicate.json()["detail"]["code"] == "invalid_evaluation_run"
         assert len(dispatcher.dispatched) == 1
         legacy = client.post(
             "/api/evaluations",
@@ -180,6 +200,35 @@ def test_evaluation_api_rejects_non_admin_callers() -> None:
         assert response.status_code == status.HTTP_403_FORBIDDEN
     finally:
         app.dependency_overrides.clear()
+
+
+def test_unavailable_current_corpus_fails_safely_without_dispatch() -> None:
+    datasets = InMemoryEvaluationDatasetStore()
+    datasets.create(dataset())
+    dispatcher = InMemoryEvaluationJobDispatcher()
+
+    class UnavailableSnapshotResolver(SnapshotResolver):
+        def resolve_candidate(self) -> ResolvedEvaluationCandidate:
+            raise EvaluationCorpusReadinessError("private corpus readiness detail")
+
+    job = EvaluationJobService(
+        datasets, InMemoryEvaluationRunStore(), dispatcher, UnavailableSnapshotResolver()
+    )
+    admin = UserProfile(
+        user_id="admin", email="admin@example.com", username="admin",
+        approval_state="approved", role="admin", email_verified=True,
+    )
+    app.dependency_overrides[get_admin_user] = lambda: admin
+    app.dependency_overrides[evaluation_service] = lambda: job
+    try:
+        response = TestClient(app).post("/api/evaluations", json={"item_ids": ["item-1"]})
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
+    assert response.json()["detail"]["code"] == "evaluation_run_unavailable"
+    assert "private corpus readiness detail" not in response.text
+    assert dispatcher.dispatched == {}
 
 
 def test_worker_completes_with_six_aggregate_metrics_and_is_idempotent() -> None:

@@ -1,0 +1,17 @@
+{
+  "schema_version": "structure-template-v1",
+  "document_title": "DAMA-DMBOK, Second Edition",
+  "instructions": [
+    "Keep schema_version as structure-template-v1.",
+    "Each section_path lists the chapter and then its nested section titles.",
+    "Page numbers are one-based and inclusive; cover every supplied passage.",
+    "Replace this worked example with the hierarchy for the paired PDF."
+  ],
+  "entries": [
+    {
+      "section_path": ["Chapter 1: Data Management", "1.1 Introduction"],
+      "page_start": 1,
+      "page_end": 3
+    }
+  ]
+}

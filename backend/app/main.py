@@ -7,6 +7,7 @@ from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.responses import JSONResponse
 
 from app.api.evaluations import evaluation_service, router as evaluations_router
+from app.api.corpus_staging import router as corpus_staging_router
 from app.api.evaluation_datasets import evaluation_generation_store, router as evaluation_datasets_router
 from app.api.evaluation_assessments import (
     assessment_repository,
@@ -100,6 +101,7 @@ app = FastAPI(title="DMBOK Compass API", version="0.1.0", lifespan=lifespan)
 app.state.shutdown_coordinator = ShutdownCoordinator(configured_shutdown_timeout())
 app.middleware("http")(lifecycle_middleware)
 app.include_router(evaluations_router)
+app.include_router(corpus_staging_router)
 app.include_router(evaluation_datasets_router)
 app.include_router(evaluation_assessments_router)
 app.include_router(evaluation_support_router)

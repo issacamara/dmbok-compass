@@ -1,0 +1,64 @@
+{
+  "attempts": {
+    "valid": {
+      "attempt_id": "attempt-valid",
+      "revision": 2,
+      "state": "awaiting_review",
+      "completed_stage": "review",
+      "preview": [
+        {
+          "entry_index": 0,
+          "section_path": ["Chapter 1: Data Management", "1.1 Introduction"],
+          "page_start": 1,
+          "page_end": 3,
+          "match_status": "matched",
+          "correction_codes": []
+        }
+      ],
+      "correction_codes": [],
+      "parent_count": 0,
+      "child_count": 0,
+      "chunk_count": 0,
+      "staged_corpus_version_id": null,
+      "error": null
+    },
+    "invalid": {
+      "attempt_id": "attempt-invalid",
+      "revision": 1,
+      "state": "failed",
+      "completed_stage": "validation",
+      "preview": null,
+      "correction_codes": ["invalid_structure"],
+      "parent_count": 0,
+      "child_count": 0,
+      "chunk_count": null,
+      "staged_corpus_version_id": null,
+      "error": {
+        "code": "invalid_structure",
+        "message": "Correct the structure file and submit a new attempt.",
+        "retryable": false,
+        "status": 422
+      }
+    },
+    "stale": {
+      "code": "stale_revision",
+      "message": "The reviewed attempt changed. Refresh and review the current revision.",
+      "retryable": false,
+      "status": 409
+    },
+    "terminal": {
+      "attempt_id": "attempt-staged",
+      "revision": 4,
+      "state": "staged",
+      "completed_stage": "ingestion",
+      "preview": null,
+      "correction_codes": [],
+      "parent_count": 1,
+      "child_count": 2,
+      "chunk_count": 2,
+      "staged_corpus_version_id": "corpus-candidate-1",
+      "error": null
+    }
+  },
+  "forbiddenBrowserFields": ["object_uri", "generation", "sha256", "service_identity"]
+}

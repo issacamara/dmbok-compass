@@ -23,6 +23,12 @@ SupportMatchStatus = Literal[
     "eligible", "missing", "ambiguous", "invalid", "inapplicable", "review_approved", "review_rejected",
 ]
 SupportReviewState = Literal["review_approved", "review_rejected"]
+CorpusStagingState = Literal["validating", "awaiting_review", "queued", "running", "staged", "failed"]
+CorpusStagingMatchStatus = Literal["matched", "ambiguous", "unmatched"]
+CorpusStagingCorrectionCode = Literal[
+    "invalid_structure", "source_pair_mismatch", "missing_page_coverage", "ambiguous_heading",
+    "unmatched_passage", "stale_revision", "job_interrupted", "job_failed",
+]
 BatchReviewStatus = Literal[
     "pending", "eligible", "exception", "attested", "rejected", "stale", "inapplicable",
 ]
@@ -733,6 +739,62 @@ class StructureMap(ContractModel):
     entries: list[StructureMapEntry] = Field(min_length=1)
 
 
+class StructureTemplate(ContractModel):
+    """Browser-editable structure input, without server-owned artifact identity."""
+
+    schema_version: Literal["structure-template-v1"]
+    document_title: str = Field(min_length=1, max_length=256)
+    instructions: list[str] = Field(min_length=1, max_length=8)
+    entries: list[StructureMapEntry] = Field(min_length=1)
+
+
+class CorpusStagingPreviewEntry(ContractModel):
+    entry_index: int = Field(ge=0)
+    section_path: tuple[str, ...] = Field(min_length=1, max_length=4)
+    page_start: int = Field(ge=1)
+    page_end: int = Field(ge=1)
+    match_status: CorpusStagingMatchStatus
+    correction_codes: list[CorpusStagingCorrectionCode] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_page_range(self) -> "CorpusStagingPreviewEntry":
+        if self.page_end < self.page_start:
+            raise ValueError("page_end must not precede page_start")
+        if self.match_status == "matched" and self.correction_codes:
+            raise ValueError("matched entries cannot have correction codes")
+        if self.match_status != "matched" and not self.correction_codes:
+            raise ValueError("unmatched entries require correction guidance")
+        return self
+
+
+class CorpusStagingAttemptStatus(ContractModel):
+    """Browser-safe view of one durable staging attempt."""
+
+    attempt_id: str = Field(min_length=1, max_length=128)
+    revision: int = Field(ge=1)
+    state: CorpusStagingState
+    completed_stage: Literal["validation", "review", "approval", "ingestion"] | None = None
+    preview: list[CorpusStagingPreviewEntry] | None = None
+    correction_codes: list[CorpusStagingCorrectionCode] = Field(default_factory=list)
+    parent_count: int | None = Field(default=None, ge=0)
+    child_count: int | None = Field(default=None, ge=0)
+    chunk_count: int | None = Field(default=None, ge=0)
+    staged_corpus_version_id: str | None = Field(default=None, min_length=1, max_length=128)
+    error: "ApiError | None" = None
+
+    @model_validator(mode="after")
+    def validate_state_payload(self) -> "CorpusStagingAttemptStatus":
+        if self.state == "awaiting_review" and self.preview is None:
+            raise ValueError("awaiting_review requires a validated preview")
+        if self.state == "failed" and self.error is None:
+            raise ValueError("failed attempts require a safe error")
+        if self.state == "staged" and (
+            self.staged_corpus_version_id is None or self.chunk_count is None
+        ):
+            raise ValueError("staged attempts require a corpus version and chunk count")
+        return self
+
+
 class ParentChunk(ContractModel):
     schema_version: Literal["parent-chunk-v1"] = "parent-chunk-v1"
     parent_id: str = Field(min_length=1, max_length=256)
@@ -930,6 +992,7 @@ API_ROUTES = {
     "evaluation_datasets": "/api/admin/evaluation-datasets",
     "evaluation_review_summary": "/api/admin/evaluations/{run_id}/review-summary",
     "evaluation_batch_attestation": "/api/admin/evaluations/{run_id}/batch-attestation",
+    "corpus_staging_template": "/api/admin/corpus-staging/template",
 }
 
 ADMIN_ROUTES = {
@@ -937,4 +1000,5 @@ ADMIN_ROUTES = {
     "configuration": "/api/admin/configuration",
     "aggregate_metrics": "/api/admin/metrics",
     "release_decisions": "/api/releases",
+    "corpus_staging_template": "/api/admin/corpus-staging/template",
 }

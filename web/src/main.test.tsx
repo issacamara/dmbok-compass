@@ -85,6 +85,7 @@ describe("Firebase email and password identity", () => {
     expect(screen.queryByRole("heading", { name: /welcome to dmbok compass/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Stage a corpus" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Download structure template" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Batch evidence review" })).not.toBeInTheDocument();
   });
 
   it("creates accounts only through Firebase and requires email verification", async () => {

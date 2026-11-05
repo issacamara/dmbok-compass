@@ -353,6 +353,12 @@ export interface BatchAttestationResult {
   decision_metadata: ReviewDecisionMetadata;
 }
 
+export interface EvaluationReviewProjection {
+  summary: ReviewSummary;
+  sample: RepresentativeSampleEntry[];
+  exceptions: ExceptionRecord[];
+}
+
 export interface DurableReviewSummary {
   generation_id: string;
   run_id: string;

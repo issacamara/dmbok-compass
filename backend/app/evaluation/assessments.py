@@ -7,7 +7,7 @@ import json
 from dataclasses import dataclass
 
 from app.contracts import EvaluationRun, GoldAnnotation, ReviewedSemanticAssessment, RunBoundSupportEvidence
-from app.evaluation.support import approved_support_chunk_ids
+from app.evaluation.support import approved_refusal, approved_support_chunk_ids
 
 
 SEMANTIC_METRICS = frozenset({
@@ -58,7 +58,8 @@ def score_assessment(
 
     if run is not None:
         expected_support = approved_support_chunk_ids(support_evidence, run=run)
-        if not expected_support:
+        refusal_approved = approved_refusal(support_evidence, run=run)
+        if not expected_support and not refusal_approved:
             return SemanticScore(False, False, False, False, False, frozenset())
         retrieval_success = bool(retrieved_chunk_ids & expected_support)
     else:

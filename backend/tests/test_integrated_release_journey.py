@@ -28,6 +28,7 @@ from app.release.decision import (
     ReleaseDecisionService,
 )
 from test_evaluation_generations import FakeFirestore, run_fake_transaction
+from test_release_decision import AttestedReviewStore, StageStore, SupportEvidenceStore
 
 
 def _snapshot(corpus_version_id: str) -> EvaluationCandidateSnapshot:
@@ -166,7 +167,12 @@ def test_evaluation_to_release_journey_is_version_bound_and_restart_safe() -> No
     assert completed.status == "completed"
 
     decisions = InMemoryReleaseDecisionStore()
-    release = ReleaseDecisionService(runs, decisions, generations)
+    release = ReleaseDecisionService(
+        runs, decisions, generations,
+        batch_reviews=AttestedReviewStore(completed),
+        support_evidence=SupportEvidenceStore(completed),
+        stages=StageStore(completed),
+    )
     recorded = release.record(_decision_request(completed, release_id="release-v1"))
     assert recorded.decision == "approved"
 

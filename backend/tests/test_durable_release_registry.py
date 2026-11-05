@@ -10,13 +10,16 @@ from app.release import (
     ReleaseDecisionService,
 )
 from test_evaluation_generations import FakeFirestore
-from test_release_decision import EvidenceStore, completed_run, request
+from test_release_decision import (
+    AttestedReviewStore, EvidenceStore, StageStore, SupportEvidenceStore, completed_run, request,
+)
 
 
 def test_manifest_and_decision_survive_repository_restart() -> None:
     client = FakeFirestore()
     runs = InMemoryEvaluationRunStore()
-    runs.create_or_get(completed_run())
+    run = completed_run()
+    runs.create_or_get(run)
     decisions = FirestoreReleaseDecisionStore(client)
     service = ReleaseDecisionService(
         runs,
@@ -25,6 +28,9 @@ def test_manifest_and_decision_survive_repository_restart() -> None:
         FirestoreReleaseManifestStore(client),
         actor_user_id="admin-1",
         clock=lambda: datetime(2026, 10, 21, tzinfo=timezone.utc),
+        batch_reviews=AttestedReviewStore(run),
+        support_evidence=SupportEvidenceStore(run),
+        stages=StageStore(run),
     )
 
     stored = service.record(ReleaseDecisionRequest(**request()))
@@ -43,13 +49,17 @@ def test_manifest_and_decision_survive_repository_restart() -> None:
 def test_decision_is_immutable_and_does_not_store_interaction_content() -> None:
     client = FakeFirestore()
     runs = InMemoryEvaluationRunStore()
-    runs.create_or_get(completed_run())
+    run = completed_run()
+    runs.create_or_get(run)
     service = ReleaseDecisionService(
         runs,
         FirestoreReleaseDecisionStore(client),
         EvidenceStore(),
         FirestoreReleaseManifestStore(client),
         actor_user_id="admin-1",
+        batch_reviews=AttestedReviewStore(run),
+        support_evidence=SupportEvidenceStore(run),
+        stages=StageStore(run),
     )
     service.record(ReleaseDecisionRequest(**request()))
 

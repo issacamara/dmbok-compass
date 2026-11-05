@@ -77,6 +77,7 @@ from app.evaluation import (
     FirestoreBatchReviewRepository,
 )
 from app.evaluation.worker import FirestoreEvaluationCandidateSnapshotResolver
+from app.evaluation.job import FirestoreEvaluationStageStore
 from app.release import (
     FirestoreReleaseDecisionStore,
     FirestoreReleaseManifestStore,
@@ -278,6 +279,8 @@ def get_release_decision_service() -> ReleaseDecisionService:
         configured_evaluation_generation_store(),
         FirestoreReleaseManifestStore(client),
         support_evidence=FirestoreSupportEvidenceStore(client),
+        batch_reviews=configured_batch_review_repository(),
+        stages=FirestoreEvaluationStageStore(client),
     )
 
 

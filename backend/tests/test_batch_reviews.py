@@ -205,3 +205,22 @@ def test_firestore_repository_round_trip_keeps_review_records_immutable() -> Non
     persisted = repr(client.data)
     assert "Question item-1" not in persisted
     assert "Rubric" not in persisted
+
+
+def test_firestore_repository_reads_the_durable_attestation_after_restart() -> None:
+    from test_evaluation_generations import FakeFirestore
+
+    item_ids = ["item-1", "item-2"]
+    review = create_batch_review(run(item_ids), dataset(item_ids), [evidence(item_id) for item_id in item_ids])
+    client = FakeFirestore()
+    repository = FirestoreBatchReviewRepository(client)
+    repository.create_or_get(review)
+    expected = repository.attest(
+        review,
+        BatchAttestationRequest(decision="attested"),
+        actor="admin-1",
+        decided_at=datetime(2026, 11, 5, tzinfo=UTC),
+    )
+
+    restarted = FirestoreBatchReviewRepository(client)
+    assert restarted.attestation(review) == expected

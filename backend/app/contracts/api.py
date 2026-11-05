@@ -23,6 +23,7 @@ SupportMatchStatus = Literal[
     "eligible", "missing", "ambiguous", "invalid", "inapplicable", "review_approved", "review_rejected",
 ]
 SupportReviewState = Literal["review_approved", "review_rejected"]
+IndividualReviewDecision = Literal["approve", "reject"]
 CorpusStagingState = Literal["validating", "awaiting_review", "queued", "running", "staged", "failed"]
 CorpusStagingMatchStatus = Literal["matched", "ambiguous", "unmatched"]
 CorpusStagingCorrectionCode = Literal[
@@ -207,9 +208,11 @@ class RunBoundSupportEvidence(ContractModel):
             if self.reviewer_actor is not None or self.reviewed_at is not None:
                 raise ValueError("eligible support cannot contain reviewer fields")
         if self.match_status == "review_approved":
-            if not selected or not self.reviewer_actor or self.reviewed_at is None:
+            if (not selected and not self.expected_refusal) or not self.reviewer_actor or self.reviewed_at is None:
                 raise ValueError("review approval requires selected chunks and reviewer audit fields")
-            if self.binding_version == "run-bound-support-v2" and (
+            if self.expected_refusal and (selected or self.candidate_chunk_ids or self.verified_chunks):
+                raise ValueError("approved refusal evidence cannot bind support chunks")
+            if selected and self.binding_version == "run-bound-support-v2" and (
                 self.parent_id is None
                 or self.parent_content_hash is None
                 or verified_ids != selected_ids
@@ -350,6 +353,35 @@ class ReviewProjection(ContractModel):
     summary: ReviewSummary
     sample: list[RepresentativeSampleEntry] = Field(default_factory=list, max_length=10)
     exceptions: list[ExceptionRecord] = Field(default_factory=list, max_length=MAX_EVALUATION_IMPORT_ITEMS)
+
+
+class IndividualEvidenceReview(ContractModel):
+    """Browser-safe view of one run-bound support proposal."""
+
+    item_id: str = Field(min_length=1, max_length=128)
+    question: str = Field(min_length=1, max_length=2000)
+    rubric: str = Field(min_length=1, max_length=10000)
+    support_excerpt: str | None = Field(default=None, max_length=5000)
+    page: int | None = Field(default=None, ge=1)
+    section: str | None = Field(default=None, min_length=1, max_length=500)
+    status: SupportMatchStatus
+    expected_refusal: bool
+    reviewer_actor: str | None = Field(default=None, min_length=1, max_length=128)
+    reviewed_at: datetime | None = None
+
+
+class IndividualEvidenceDecisionRequest(ContractModel):
+    """Decision for the server-proposed support set; no chunk selectors."""
+
+    decision: IndividualReviewDecision
+
+
+class IndividualEvidenceDecisionResult(ContractModel):
+    item_id: str = Field(min_length=1, max_length=128)
+    status: SupportReviewState
+    decision: IndividualReviewDecision
+    reviewer_actor: str = Field(min_length=1, max_length=128)
+    reviewed_at: datetime
 
 
 class DurableReviewSummary(ContractModel):

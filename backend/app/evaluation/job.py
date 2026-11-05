@@ -25,7 +25,7 @@ from app.contracts import (
 )
 from app.contracts.api import AnswerOutcomeKind
 from app.evaluation.dataset import EvaluationDatasetStore
-from app.evaluation.support import approved_support_chunk_ids
+from app.evaluation.support import approved_refusal, approved_support_chunk_ids
 
 
 class EvaluationRunError(ValueError):
@@ -687,7 +687,7 @@ class EvaluationJobService:
         approved = 0
         for item_id in run.selected_item_ids:
             evidence = self.support_evidence.get_evidence(run_id=run.run_id, item_id=item_id)
-            if approved_support_chunk_ids(evidence, run=run):
+            if approved_support_chunk_ids(evidence, run=run) or approved_refusal(evidence, run=run):
                 approved += 1
         return eligibility.model_copy(update={
             "approved_gold_count": approved,

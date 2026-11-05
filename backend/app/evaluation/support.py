@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 import re
 from threading import RLock
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from google.api_core.exceptions import AlreadyExists
 from google.cloud import firestore
@@ -69,6 +69,15 @@ class SupportEvidenceStore(Protocol):
         evidence: RunBoundSupportEvidence,
         *,
         selected_chunks: tuple[VerifiedChunkChoice, ...],
+        reviewer_actor: str,
+        reviewed_at: datetime,
+    ) -> RunBoundSupportEvidence: ...
+
+    def decide_evidence(
+        self,
+        evidence: RunBoundSupportEvidence,
+        *,
+        decision: Literal["approve", "reject"],
         reviewer_actor: str,
         reviewed_at: datetime,
     ) -> RunBoundSupportEvidence: ...
@@ -132,6 +141,28 @@ class InMemorySupportEvidenceStore:
             return _review_evidence(
                 current,
                 selected_chunks=selected_chunks,
+                reviewer_actor=reviewer_actor,
+                reviewed_at=reviewed_at,
+                save=lambda updated: self._evidence.__setitem__(
+                    (updated.run_id, updated.item_id), updated.model_copy(deep=True)
+                ),
+            )
+
+    def decide_evidence(
+        self,
+        evidence: RunBoundSupportEvidence,
+        *,
+        decision: Literal["approve", "reject"],
+        reviewer_actor: str,
+        reviewed_at: datetime,
+    ) -> RunBoundSupportEvidence:
+        with self._lock:
+            current = self._evidence.get((evidence.run_id, evidence.item_id))
+            if current is None:
+                raise SupportPreparationError("support evidence was not prepared")
+            return _decide_support(
+                current,
+                decision=decision,
                 reviewer_actor=reviewer_actor,
                 reviewed_at=reviewed_at,
                 save=lambda updated: self._evidence.__setitem__(
@@ -206,6 +237,32 @@ class FirestoreSupportEvidenceStore:
             return _review_evidence(
                 current,
                 selected_chunks=selected_chunks,
+                reviewer_actor=reviewer_actor,
+                reviewed_at=reviewed_at,
+                save=lambda updated: transaction.set(reference, updated.model_dump(mode="json")),
+            )
+
+        return apply(self.client.transaction())
+
+    def decide_evidence(
+        self,
+        evidence: RunBoundSupportEvidence,
+        *,
+        decision: Literal["approve", "reject"],
+        reviewer_actor: str,
+        reviewed_at: datetime,
+    ) -> RunBoundSupportEvidence:
+        reference = self.evidence.document(self._evidence_id(evidence.run_id, evidence.item_id))
+
+        @firestore.transactional
+        def apply(transaction: Any) -> RunBoundSupportEvidence:
+            snapshot = reference.get(transaction=transaction)
+            if not snapshot.exists:
+                raise SupportPreparationError("support evidence was not prepared")
+            current = RunBoundSupportEvidence.model_validate(snapshot.to_dict())
+            return _decide_support(
+                current,
+                decision=decision,
                 reviewer_actor=reviewer_actor,
                 reviewed_at=reviewed_at,
                 save=lambda updated: transaction.set(reference, updated.model_dump(mode="json")),
@@ -429,7 +486,7 @@ def prepare_support(
                         "explicit_unanswerable", expected_refusal=True,
                     )
                 elif remap.remap_status == "matched":
-                    selected = tuple(_choice(records_by_id[chunk_id], source_provenance) for chunk_id in remap.relevant_chunk_ids)
+                    selected = tuple(verified_chunk_choice(records_by_id[chunk_id], source_provenance) for chunk_id in remap.relevant_chunk_ids)
                     evidence = RunBoundSupportEvidence(
                         run_id=run.run_id,
                         item_id=item_id,
@@ -497,8 +554,25 @@ def approved_support_chunk_ids(
         or evidence.match_status != "review_approved"
     ):
         return frozenset()
+    if evidence.expected_refusal and evidence.reviewer_actor and evidence.reviewed_at is not None:
+        return frozenset()
     selected = evidence.selected_chunks or ([evidence.selected_chunk] if evidence.selected_chunk is not None else [])
     return frozenset(choice.chunk_id for choice in selected if choice.corpus_version_id == run.corpus_version_id)
+
+
+def approved_refusal(evidence: RunBoundSupportEvidence | None, *, run: EvaluationRun) -> bool:
+    return bool(
+        evidence is not None
+        and evidence.match_status == "review_approved"
+        and evidence.expected_refusal
+        and not evidence.candidate_chunk_ids
+        and not evidence.verified_chunks
+        and not evidence.selected_chunks
+        and evidence.selected_chunk is None
+        and evidence.run_id == run.run_id
+        and evidence.corpus_version_id == run.corpus_version_id
+        and evidence.candidate_snapshot_sha256 == candidate_snapshot_sha256(run)
+    )
 
 
 def review_support(
@@ -517,7 +591,7 @@ def review_support(
             raise SupportPreparationError("selected chunk failed server verification")
         if candidate.source_provenance_sha256 != evidence.source_provenance_sha256:
             raise SupportPreparationError("selected chunk provenance differs from the run-pinned corpus")
-        selected.append(_choice(candidate, evidence.source_provenance_sha256))
+        selected.append(verified_chunk_choice(candidate, evidence.source_provenance_sha256))
     return store.review_evidence(
         evidence,
         selected_chunks=tuple(selected),
@@ -586,6 +660,44 @@ def _review_evidence(
     return updated
 
 
+def _decide_support(
+    evidence: RunBoundSupportEvidence,
+    *,
+    decision: Literal["approve", "reject"],
+    reviewer_actor: str,
+    reviewed_at: datetime,
+    save: Any,
+) -> RunBoundSupportEvidence:
+    if evidence.match_status in {"review_approved", "review_rejected"}:
+        raise SupportPreparationError("support review was already decided")
+    if decision == "approve" and evidence.match_status == "eligible":
+        selected = tuple(evidence.selected_chunks or ((evidence.selected_chunk,) if evidence.selected_chunk else ()))
+        if not selected:
+            raise SupportPreparationError("support proposal is incomplete")
+        return _review_evidence(
+            evidence,
+            selected_chunks=selected,
+            reviewer_actor=reviewer_actor,
+            reviewed_at=reviewed_at,
+            save=save,
+        )
+    if decision == "approve" and evidence.match_status == "inapplicable" and evidence.expected_refusal:
+        updated = RunBoundSupportEvidence.model_validate(evidence.model_dump() | {
+            "match_status": "review_approved", "reviewer_actor": reviewer_actor, "reviewed_at": reviewed_at,
+        })
+        save(updated)
+        return updated
+    if decision == "reject":
+        return _review_evidence(
+            evidence,
+            selected_chunks=(),
+            reviewer_actor=reviewer_actor,
+            reviewed_at=reviewed_at,
+            save=save,
+        )
+    raise SupportPreparationError("this support proposal cannot be approved")
+
+
 def _prepare_item(
     run: EvaluationRun,
     item_id: str,
@@ -645,7 +757,7 @@ def _prepare_item(
     if len(matches) == 1:
         record = matches[0]
         assert record.chunk is not None
-        choice = _choice(record, source_provenance)
+        choice = verified_chunk_choice(record, source_provenance)
         return RunBoundSupportEvidence(
             run_id=run.run_id,
             item_id=item_id,
@@ -706,7 +818,7 @@ def _unresolved(
     )
 
 
-def _choice(record: StoredSupportChunk, provenance: str) -> VerifiedChunkChoice:
+def verified_chunk_choice(record: StoredSupportChunk, provenance: str) -> VerifiedChunkChoice:
     if record.chunk is None or not record.valid:
         raise SupportPreparationError("cannot verify an invalid chunk")
     if isinstance(record.chunk, ChildDocumentChunk):

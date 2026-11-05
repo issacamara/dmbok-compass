@@ -13,7 +13,11 @@ from app.contracts import (
     EvaluationDataset,
     EvaluationRun,
     ExceptionRecord,
+    IndividualEvidenceDecisionRequest,
+    IndividualEvidenceDecisionResult,
+    IndividualEvidenceReview,
     RepresentativeSampleEntry,
+    RunBoundSupportEvidence,
     ReviewDecisionMetadata,
     ReviewProjection,
     ReviewSummary,
@@ -34,7 +38,11 @@ from app.evaluation.support import (
     FirestoreRunPinnedChunkSource,
     SupportEvidenceStore,
     StoredSupportChunk,
+    SupportPreparationError,
+    candidate_snapshot_sha256,
+    verified_chunk_choice,
 )
+from app.evaluation.dataset import CandidateGoldBinding, remap_gold_annotations
 from app.identity import get_admin_user
 
 
@@ -249,6 +257,164 @@ def _projection(
             )
         )
     return summary, samples, exceptions
+
+
+def _individual_review(
+    run_id: str,
+    item_id: str,
+    runs: EvaluationRunStore,
+    generations: EvaluationGenerationReviewStore,
+    evidence_store: SupportEvidenceStore,
+    source: FirestoreRunPinnedChunkSource,
+) -> tuple[RunBoundSupportEvidence, IndividualEvidenceReview]:
+    run = _run(run_id, runs)
+    if item_id not in run.selected_item_ids:
+        raise HTTPException(status_code=404, detail={"code": "evaluation_item_not_found", "message": "The item was not found in this run."})
+    dataset = _current_dataset(run, generations)
+    item = _item_map(dataset).get(item_id)
+    annotation = _annotation_map(dataset).get(item_id)
+    evidence = evidence_store.get_evidence(run_id=run_id, item_id=item_id)
+    if item is None or annotation is None or evidence is None:
+        raise HTTPException(status_code=409, detail={"code": "incomplete_individual_review", "message": "The item review is incomplete."})
+    try:
+        current_provenance = source.source_provenance_sha256(corpus_version_id=run.corpus_version_id)
+        records = (
+            source.chunks(corpus_version_id=run.corpus_version_id)
+            if evidence.candidate_chunk_ids or evidence.match_status in {"eligible", "ambiguous"}
+            else ()
+        )
+    except (SupportPreparationError, ValueError, TypeError) as exc:
+        raise HTTPException(status_code=409, detail={"code": "stale_individual_review", "message": "The item review could not be verified against the pinned corpus."}) from exc
+    if (
+        evidence.run_id != run.run_id
+        or evidence.item_id != item_id
+        or evidence.corpus_version_id != run.corpus_version_id
+        or evidence.candidate_snapshot_sha256 != candidate_snapshot_sha256(run)
+        or evidence.source_provenance_sha256 != current_provenance
+    ):
+        raise HTTPException(status_code=409, detail={"code": "stale_individual_review", "message": "The item review is stale."})
+    record_by_id = {record.chunk_id: record for record in records}
+    if any(record_by_id.get(chunk_id) is None for chunk_id in evidence.candidate_chunk_ids):
+        raise HTTPException(status_code=409, detail={"code": "stale_individual_review", "message": "The item review no longer matches verified corpus evidence."})
+    if evidence.match_status in {"eligible", "ambiguous", "review_approved", "review_rejected"} and any(
+        not record_by_id[chunk_id].valid for chunk_id in evidence.candidate_chunk_ids
+    ):
+        raise HTTPException(status_code=409, detail={"code": "stale_individual_review", "message": "The item review no longer matches verified corpus evidence."})
+    if evidence.match_status in {"eligible", "review_approved"} and not evidence.expected_refusal:
+        if any(
+            choice != verified_chunk_choice(record_by_id[choice.chunk_id], evidence.source_provenance_sha256)
+            for choice in evidence.verified_chunks
+        ):
+            raise HTTPException(status_code=409, detail={"code": "stale_individual_review", "message": "The item review no longer matches verified corpus evidence."})
+    if evidence.match_status in {"eligible", "ambiguous", "review_approved", "review_rejected"} and not evidence.expected_refusal:
+        try:
+            binding = CandidateGoldBinding(
+                run.corpus_version_id,
+                candidate_snapshot_sha256(run),
+                evidence.source_provenance_sha256,
+            )
+            current = remap_gold_annotations(
+                EvaluationDataset(
+                    dataset_version_id=dataset.dataset_version_id,
+                    items=[item],
+                    gold_annotations=[annotation],
+                ),
+                tuple({
+                    record.parent.parent_id: record.parent
+                    for record in records if record.parent is not None
+                }.values()) + tuple(
+                    record.chunk for record in records if record.valid and record.chunk is not None
+                ),
+                binding,
+            ).remap_for(item_id)
+        except (ValueError, TypeError) as exc:
+            raise HTTPException(status_code=409, detail={"code": "stale_individual_review", "message": "The item review no longer matches verified corpus evidence."}) from exc
+        expected_status = "matched" if evidence.match_status in {"eligible", "review_approved"} else "ambiguous"
+        current_ids = current.candidate_chunk_ids or current.relevant_chunk_ids
+        if not current_ids and expected_status == "ambiguous":
+            normalized_support = " ".join((annotation.supporting_passage or "").casefold().split())
+            current_ids = tuple(
+                record.chunk_id for record in records
+                if record.valid and record.chunk is not None
+                and normalized_support in " ".join(record.chunk.text.casefold().split())
+            )
+        if (
+            (evidence.match_status != "review_rejected" and current.remap_status != expected_status)
+            or tuple(evidence.candidate_chunk_ids) != current_ids
+            or (expected_status == "matched" and (
+                evidence.parent_id != current.parent_id
+                or evidence.parent_content_hash != current.parent_content_hash
+                or evidence.parent_span_sha256 != current.parent_span_sha256
+            ))
+        ):
+            raise HTTPException(status_code=409, detail={"code": "stale_individual_review", "message": "The item review no longer matches verified corpus evidence."})
+    choices = [record_by_id[chunk_id] for chunk_id in evidence.candidate_chunk_ids if record_by_id[chunk_id].valid]
+    first = next((record for record in choices if record.chunk is not None), None)
+    chunk = first.chunk if first is not None else evidence.selected_chunk
+    if first is not None and first.parent is not None and hasattr(chunk, "page_start"):
+        page = chunk.page_start
+        section = " / ".join(chunk.section_path)
+    elif chunk is not None:
+        page = chunk.page if hasattr(chunk, "page") else None
+        section = chunk.section if hasattr(chunk, "section") else None
+    else:
+        page = section = None
+    result = IndividualEvidenceReview(
+        item_id=item.item_id,
+        question=item.question,
+        rubric=annotation.expected_answer_or_rubric,
+        support_excerpt=_safe_excerpt(annotation.supporting_passage),
+        page=page,
+        section=section,
+        status=evidence.match_status,
+        expected_refusal=evidence.expected_refusal,
+        reviewer_actor=evidence.reviewer_actor,
+        reviewed_at=evidence.reviewed_at,
+    )
+    return evidence, result
+
+
+@router.get("/{run_id}/items/{item_id}/review", response_model=IndividualEvidenceReview)
+def get_individual_review(
+    run_id: str,
+    item_id: str,
+    _: UserProfile = Depends(get_admin_user),
+    runs: EvaluationRunStore = Depends(evaluation_run_store),
+    generations: EvaluationGenerationReviewStore = Depends(evaluation_generation_store),
+    evidence_store: SupportEvidenceStore = Depends(support_evidence_store),
+    source: FirestoreRunPinnedChunkSource = Depends(pinned_chunk_source),
+) -> IndividualEvidenceReview:
+    return _individual_review(run_id, item_id, runs, generations, evidence_store, source)[1]
+
+
+@router.put("/{run_id}/items/{item_id}/review", response_model=IndividualEvidenceDecisionResult)
+def decide_individual_review(
+    run_id: str,
+    item_id: str,
+    request: IndividualEvidenceDecisionRequest,
+    admin: UserProfile = Depends(get_admin_user),
+    runs: EvaluationRunStore = Depends(evaluation_run_store),
+    generations: EvaluationGenerationReviewStore = Depends(evaluation_generation_store),
+    evidence_store: SupportEvidenceStore = Depends(support_evidence_store),
+    source: FirestoreRunPinnedChunkSource = Depends(pinned_chunk_source),
+) -> IndividualEvidenceDecisionResult:
+    evidence, _ = _individual_review(run_id, item_id, runs, generations, evidence_store, source)
+    try:
+        updated = evidence_store.decide_evidence(
+            evidence,
+            decision=request.decision,
+            reviewer_actor=admin.user_id,
+            reviewed_at=datetime.now(timezone.utc),
+        )
+    except SupportPreparationError as exc:
+        raise HTTPException(status_code=409, detail={"code": "individual_review_conflict", "message": "The item decision could not be applied to the current review state."}) from exc
+    return IndividualEvidenceDecisionResult(
+        item_id=item_id,
+        status=updated.match_status,
+        decision=request.decision,
+        reviewer_actor=updated.reviewer_actor or admin.user_id,
+        reviewed_at=updated.reviewed_at or datetime.now(timezone.utc),
+    )
 
 
 @router.get("/{run_id}/review-summary", response_model=ReviewProjection)

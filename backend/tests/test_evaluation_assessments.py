@@ -203,3 +203,41 @@ def test_operational_refusal_never_receives_refusal_credit() -> None:
 
     assert score.refusal_correct is False
     assert score.applicable_metrics == frozenset({"refusal_correctness"})
+
+
+def test_approved_run_bound_refusal_requires_the_exact_reviewed_output() -> None:
+    from app.evaluation.support import approved_refusal, candidate_snapshot_sha256
+
+    pinned = run()
+    reviewed = ReviewedSemanticAssessment(
+        response_sha256=response_fingerprint(outcome="refusal", answer_text=None, cited_chunk_ids=set()),
+        scorer_version="evaluation-gates-v1",
+        expected_refusal=True,
+    )
+    refusal_annotation = GoldAnnotation(
+        item_id="item-1", expected_answer_or_rubric="Refuse", relevant_chunk_ids=[],
+        review_status="approved", semantic_assessment=reviewed,
+    )
+    evidence = RunBoundSupportEvidence(
+        run_id=pinned.run_id,
+        item_id="item-1",
+        candidate_snapshot_sha256=candidate_snapshot_sha256(pinned),
+        corpus_version_id=pinned.corpus_version_id,
+        source_provenance_sha256="e" * 64,
+        match_status="review_approved",
+        expected_refusal=True,
+        reviewer_actor="admin",
+        reviewed_at=datetime.now(timezone.utc),
+    )
+    exact = score_assessment(
+        refusal_annotation, outcome="refusal", answer_text=None, retrieved_chunk_ids=set(), cited_chunk_ids=set(),
+        scorer_version="evaluation-gates-v1", run=pinned, support_evidence=evidence,
+    )
+    changed = score_assessment(
+        refusal_annotation, outcome="answer", answer_text="Changed output", retrieved_chunk_ids=set(), cited_chunk_ids=set(),
+        scorer_version="evaluation-gates-v1", run=pinned, support_evidence=evidence,
+    )
+
+    assert approved_refusal(evidence, run=pinned)
+    assert exact.refusal_correct is True
+    assert changed.refusal_correct is False

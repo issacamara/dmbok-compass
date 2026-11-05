@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from hashlib import sha256
 
 from fastapi.testclient import TestClient
 
@@ -11,12 +12,12 @@ from app.api.evaluation_reviews import (
     pinned_chunk_source,
     support_evidence_store,
 )
-from app.contracts import EvaluationDataset, EvaluationItem, GoldAnnotation, UserProfile
+from app.contracts import EvaluationDataset, EvaluationItem, GoldAnnotation, ReviewedSemanticAssessment, UserProfile
 from app.evaluation.batch_reviews import BatchReviewError, InMemoryBatchReviewRepository
-from app.evaluation.support import InMemorySupportEvidenceStore, prepare_support
+from app.evaluation.support import InMemorySupportEvidenceStore, StoredSupportChunk, prepare_support
 from app.identity import get_admin_user, get_current_profile
 from app.main import app
-from test_evaluation_support import Source, chunk, run
+from test_evaluation_support import Source, chunk, hierarchy, run
 
 
 def admin() -> UserProfile:
@@ -115,7 +116,9 @@ def test_review_write_rejects_technical_selectors_and_stale_run() -> None:
 
         record.status = "running"
         stale = client.get("/api/admin/evaluations/run-v1/review-summary")
+        individual_stale = client.get("/api/admin/evaluations/run-v1/items/item-1/review")
         assert stale.status_code == 409
+        assert individual_stale.status_code == 409
         assert "stale" not in stale.text.lower() or "not ready" in stale.text.lower()
     finally:
         app.dependency_overrides.clear()
@@ -125,6 +128,8 @@ def test_review_routes_require_an_approved_administrator() -> None:
     try:
         client = TestClient(app)
         assert client.get("/api/admin/evaluations/run-v1/review-summary").status_code == 401
+        assert client.get("/api/admin/evaluations/run-v1/items/item-1/review").status_code == 401
+        assert client.put("/api/admin/evaluations/run-v1/items/item-1/review", json={"decision": "approve"}).status_code == 401
 
         app.dependency_overrides[get_current_profile] = lambda: UserProfile(
             user_id="member", email="member@example.com", username="member",
@@ -135,6 +140,8 @@ def test_review_routes_require_an_approved_administrator() -> None:
             "/api/admin/evaluations/run-v1/batch-attestation",
             json={"decision": "attested"},
         ).status_code == 403
+        assert client.get("/api/admin/evaluations/run-v1/items/item-1/review").status_code == 403
+        assert client.put("/api/admin/evaluations/run-v1/items/item-1/review", json={"decision": "approve"}).status_code == 403
     finally:
         app.dependency_overrides.clear()
 
@@ -196,5 +203,149 @@ def test_review_errors_do_not_expose_evaluator_corpus_secret_or_provider_text(ca
         for private_value in private_values:
             assert private_value not in response.text
             assert all(private_value not in record.getMessage() for record in caplog.records)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_individual_review_is_browser_safe_server_bound_and_single_decision() -> None:
+    parent, children = hierarchy(("one two three", "four five six"))
+    record = run(["item-1"]).model_copy(update={"status": "completed"})
+    dataset = EvaluationDataset(
+        dataset_version_id="dataset-v1",
+        items=[EvaluationItem(item_id="item-1", question="What is this?", dataset_version_id="dataset-v1")],
+        gold_annotations=[GoldAnnotation(item_id="item-1", expected_answer_or_rubric="Define it.", review_status="candidate", supporting_passage="three four")],
+    )
+    evidence = InMemorySupportEvidenceStore()
+    source = Source(tuple(
+        StoredSupportChunk(child, child.chunk_id, "d" * 64, parent=parent)
+        for child in children
+    ))
+    prepare_support(record, dataset, source, evidence)
+    app.dependency_overrides.update({
+        get_admin_user: admin,
+        evaluation_run_store: lambda: Runs(record),
+        evaluation_generation_store: lambda: Generations(dataset),
+        support_evidence_store: lambda: evidence,
+        pinned_chunk_source: lambda: source,
+    })
+    try:
+        client = TestClient(app)
+        url = "/api/admin/evaluations/run-v1/items/item-1/review"
+        projection = client.get(url)
+        assert projection.status_code == 200, projection.text
+        payload = projection.json()
+        assert payload["support_excerpt"] == "three four"
+        assert payload["status"] == "eligible"
+        assert not {"chunk_id", "candidate_chunk_ids", "content_hash", "corpus_version_id"}.intersection(payload)
+
+        approved = client.put(url, json={"decision": "approve"})
+        assert approved.status_code == 200, approved.text
+        assert approved.json()["status"] == "review_approved"
+        stored = evidence.get_evidence(run_id="run-v1", item_id="item-1")
+        assert stored.match_status == "review_approved"
+        assert [choice.chunk_id for choice in stored.selected_chunks] == stored.candidate_chunk_ids
+        assert client.put(url, json={"decision": "approve"}).status_code == 409
+        assert client.put(url, json={"decision": "approve", "selected_chunk_ids": ["other"]}).status_code == 422
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_ambiguous_support_cannot_be_approved_or_partially_selected() -> None:
+    record = run(["item-1"]).model_copy(update={"status": "completed"})
+    dataset = EvaluationDataset(
+        dataset_version_id="dataset-v1",
+        items=[EvaluationItem(item_id="item-1", question="Q", dataset_version_id="dataset-v1")],
+        gold_annotations=[GoldAnnotation(item_id="item-1", expected_answer_or_rubric="A", review_status="candidate", supporting_passage="same passage")],
+    )
+    source = Source((chunk("first", "same passage"), chunk("second", "same passage", ordinal=1)))
+    evidence = InMemorySupportEvidenceStore()
+    prepare_support(record, dataset, source, evidence)
+    app.dependency_overrides.update({
+        get_admin_user: admin,
+        evaluation_run_store: lambda: Runs(record),
+        evaluation_generation_store: lambda: Generations(dataset),
+        support_evidence_store: lambda: evidence,
+        pinned_chunk_source: lambda: source,
+    })
+    try:
+        client = TestClient(app)
+        url = "/api/admin/evaluations/run-v1/items/item-1/review"
+        assert client.get(url).json()["status"] == "ambiguous"
+        assert client.put(url, json={"decision": "approve"}).status_code == 409
+        assert evidence.get_evidence(run_id=record.run_id, item_id="item-1").match_status == "ambiguous"
+        rejected = client.put(url, json={"decision": "reject"})
+        assert rejected.status_code == 200, rejected.text
+        assert rejected.json()["status"] == "review_rejected"
+        assert client.put(url, json={"decision": "reject"}).status_code == 409
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_explicit_unanswerable_approval_has_no_support_ids_and_stale_output_fails_closed() -> None:
+    record = run(["item-1"]).model_copy(update={"status": "completed"})
+    refusal = ReviewedSemanticAssessment(
+        response_sha256=sha256(b"refusal").hexdigest(), scorer_version="evaluation-gates-v1", expected_refusal=True,
+    )
+    dataset = EvaluationDataset(
+        dataset_version_id="dataset-v1",
+        items=[EvaluationItem(item_id="item-1", question="Q", dataset_version_id="dataset-v1")],
+        gold_annotations=[GoldAnnotation(item_id="item-1", expected_answer_or_rubric="Refuse", review_status="approved", semantic_assessment=refusal)],
+    )
+    source = Source(())
+    evidence = InMemorySupportEvidenceStore()
+    prepare_support(record, dataset, source, evidence)
+    app.dependency_overrides.update({
+        get_admin_user: admin,
+        evaluation_run_store: lambda: Runs(record),
+        evaluation_generation_store: lambda: Generations(dataset),
+        support_evidence_store: lambda: evidence,
+        pinned_chunk_source: lambda: source,
+    })
+    try:
+        client = TestClient(app)
+        url = "/api/admin/evaluations/run-v1/items/item-1/review"
+        assert client.get(url).json()["status"] == "inapplicable"
+        response = client.put(url, json={"decision": "approve"})
+        assert response.status_code == 200, response.text
+        stored = evidence.get_evidence(run_id=record.run_id, item_id="item-1")
+        assert stored.expected_refusal and stored.match_status == "review_approved"
+        assert stored.selected_chunks == [] and stored.selected_chunk is None
+        assert client.put(url, json={"decision": "approve"}).status_code == 409
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_changed_child_hash_invalidates_individual_review_without_a_write() -> None:
+    parent, children = hierarchy(("one two three", "four five six"))
+    record = run(["item-1"]).model_copy(update={"status": "completed"})
+    dataset = EvaluationDataset(
+        dataset_version_id="dataset-v1",
+        items=[EvaluationItem(item_id="item-1", question="Q", dataset_version_id="dataset-v1")],
+        gold_annotations=[GoldAnnotation(item_id="item-1", expected_answer_or_rubric="A", review_status="candidate", supporting_passage="three four")],
+    )
+    evidence = InMemorySupportEvidenceStore()
+    original = Source(tuple(StoredSupportChunk(child, child.chunk_id, "d" * 64, parent=parent) for child in children))
+    prepare_support(record, dataset, original, evidence)
+    changed = Source(tuple(
+        StoredSupportChunk(
+            child.model_copy(update={"text": child.text + " changed"}) if index == 0 else child,
+            child.chunk_id,
+            "d" * 64,
+            parent=parent,
+        )
+        for index, child in enumerate(children)
+    ))
+    app.dependency_overrides.update({
+        get_admin_user: admin,
+        evaluation_run_store: lambda: Runs(record),
+        evaluation_generation_store: lambda: Generations(dataset),
+        support_evidence_store: lambda: evidence,
+        pinned_chunk_source: lambda: changed,
+    })
+    try:
+        client = TestClient(app)
+        url = "/api/admin/evaluations/run-v1/items/item-1/review"
+        assert client.put(url, json={"decision": "approve"}).status_code == 409
+        assert evidence.get_evidence(run_id=record.run_id, item_id="item-1").match_status == "eligible"
     finally:
         app.dependency_overrides.clear()

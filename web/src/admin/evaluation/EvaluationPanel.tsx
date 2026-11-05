@@ -35,6 +35,7 @@ export function EvaluationPanel({ token }: EvaluationPanelProps) {
   const [activeDatasetError, setActiveDatasetError] = useState("");
   const [selectedItems, setSelectedItems] = useState<string[]>([]);
   const [individualReviews, setIndividualReviews] = useState<Record<string, IndividualEvidenceReview>>({});
+  const [individualErrors, setIndividualErrors] = useState<Record<string, string>>({});
   const [individualError, setIndividualError] = useState("");
   const [individualBusy, setIndividualBusy] = useState<string | null>(null);
 
@@ -70,11 +71,21 @@ export function EvaluationPanel({ token }: EvaluationPanelProps) {
   }, [run?.status, runId, token, reviewRefresh]);
 
   useEffect(() => {
-    if (!runId || run?.status !== "completed" || !run.item_results.length) { setIndividualReviews({}); return; }
+    if (!runId || run?.status !== "completed" || !run.item_results.length) { setIndividualReviews({}); setIndividualErrors({}); return; }
     let current = true;
-    void Promise.all(run.item_results.map(async (item) => [item.item_id, await getIndividualReview(token, runId, item.item_id)] as const))
-      .then((results) => { if (current) setIndividualReviews(Object.fromEntries(results)); })
-      .catch((cause: unknown) => { if (current) setIndividualError(safeReviewError(cause)); });
+    setIndividualReviews({}); setIndividualErrors({});
+    void Promise.allSettled(run.item_results.map((item) => getIndividualReview(token, runId, item.item_id)))
+      .then((results) => {
+        if (!current) return;
+        const reviews: Record<string, IndividualEvidenceReview> = {};
+        const errors: Record<string, string> = {};
+        results.forEach((result, index) => {
+          const itemId = run.item_results[index].item_id;
+          if (result.status === "fulfilled") reviews[itemId] = result.value;
+          else errors[itemId] = safeReviewError(result.reason);
+        });
+        setIndividualReviews(reviews); setIndividualErrors(errors);
+      });
     return () => { current = false; };
   }, [run?.status, run?.item_results, runId, token]);
 
@@ -100,7 +111,7 @@ export function EvaluationPanel({ token }: EvaluationPanelProps) {
   }
 
   async function runActiveDataset(itemIds?: string[]) {
-    setBusy(true); setError(""); setMessage(""); setRun(null); setRunId(""); setReview(null); setIndividualReviews({}); setIndividualError("");
+    setBusy(true); setError(""); setMessage(""); setRun(null); setRunId(""); setReview(null); setIndividualReviews({}); setIndividualErrors({}); setIndividualError("");
     try {
       const result = await launchActiveEvaluation(token, itemIds);
       setRunId(result.run_id); setRun(result);
@@ -173,7 +184,7 @@ export function EvaluationPanel({ token }: EvaluationPanelProps) {
     {submittedQuestion && <p role="status">Submitted question: {submittedQuestion}</p>}
     {summary && <dl aria-label="Import counts"><div><dt>Submitted</dt><dd>{summary.submitted_count}</dd></div><div><dt>Accepted</dt><dd>{summary.imported_count}</dd></div><div><dt>Rejected</dt><dd>{summary.skipped_count}</dd></div></dl>}
     {individualError && <p className="error" role="alert">{individualError}</p>}
-    {run && <RunStatus run={run} reviews={individualReviews} busyItem={individualBusy} onReview={reviewItem} />}
+    {run && <RunStatus run={run} reviews={individualReviews} reviewErrors={individualErrors} busyItem={individualBusy} onReview={reviewItem} />}
     {run?.status === "completed" && runId && <section className="batch-review" aria-labelledby="batch-review-title">
       <h4 id="batch-review-title">Batch evidence review</h4>
       {reviewLoading && <p role="status">Loading evidence review…</p>}
@@ -213,17 +224,19 @@ function reviewStatusLabel(status: BatchReviewStatus) { return status.replaceAll
 function safeReviewError(cause: unknown) {
   return cause instanceof EvaluationApiError && [401, 403].includes(cause.status)
     ? "You do not have administrator access to review this item."
-    : cause instanceof EvaluationApiError && cause.status === 409
-      ? "This item review is stale or already decided. Refresh the run before trying again."
+    : cause instanceof EvaluationApiError && cause.status === 404
+      ? "This item's review is unavailable for this run."
+      : cause instanceof EvaluationApiError && cause.status === 409
+        ? "This item review is stale or already decided. Refresh the run before trying again."
       : cause instanceof Error ? cause.message : "The item decision could not be saved.";
 }
 
-function RunStatus({ run, reviews, busyItem, onReview }: { run: EvaluationStatus; reviews: Record<string, IndividualEvidenceReview>; busyItem: string | null; onReview: (itemId: string, decision: "approve" | "reject") => void }) {
+function RunStatus({ run, reviews, reviewErrors, busyItem, onReview }: { run: EvaluationStatus; reviews: Record<string, IndividualEvidenceReview>; reviewErrors: Record<string, string>; busyItem: string | null; onReview: (itemId: string, decision: "approve" | "reject") => void }) {
   if (run.status === "failed") return <p className="error" role="alert">{run.error ?? "The evaluation failed safely. No results are available."}</p>;
   if (run.status !== "completed") return <p role="status">Evaluation is processing…</p>;
-  return <>{run.item_results.length === 0 ? <p role="status">No questions evaluated.</p> : <section aria-labelledby="items-title"><h4 id="items-title">Question results</h4><ul>{run.item_results.map((item) => <ItemResult key={item.item_id} item={item} review={reviews[item.item_id]} busy={busyItem === item.item_id} onReview={onReview} />)}</ul></section>}{run.metrics.length > 0 && <section aria-labelledby="metrics-title"><h4 id="metrics-title">Aggregate results</h4><ul className="gate-list">{run.metrics.map((metric) => <MetricResult key={metric.metric_name} metric={metric} />)}</ul></section>}</>;
+  return <>{run.item_results.length === 0 ? <p role="status">No questions evaluated.</p> : <section aria-labelledby="items-title"><h4 id="items-title">Question results</h4><ul>{run.item_results.map((item) => <ItemResult key={item.item_id} item={item} review={reviews[item.item_id]} reviewError={reviewErrors[item.item_id]} busy={busyItem === item.item_id} onReview={onReview} />)}</ul></section>}{run.metrics.length > 0 && <section aria-labelledby="metrics-title"><h4 id="metrics-title">Aggregate results</h4><ul className="gate-list">{run.metrics.map((metric) => <MetricResult key={metric.metric_name} metric={metric} />)}</ul></section>}</>;
 }
 
-function ItemResult({ item, review, busy, onReview }: { item: EvaluationItemResult; review?: IndividualEvidenceReview; busy: boolean; onReview: (itemId: string, decision: "approve" | "reject") => void }) { const decided = review?.status === "review_approved" || review?.status === "review_rejected"; const canApprove = review?.status === "eligible" || (review?.status === "inapplicable" && review.expected_refusal); return <li><strong>Item review: {review ? review.status.replaceAll("_", " ") : "loading"}</strong><span>Retrieval {item.retrieval_success ? "pass" : "fail"}; grounded claims {item.grounded ? "pass" : "fail"}; citations {item.citation_correct ? "pass" : "fail"}; answer quality {item.answer_quality ? "pass" : "fail"}; refusal {item.refusal_correct ? "pass" : "fail"}; {item.response_time_ms} ms</span>{review && <><p>{review.question}</p>{review.support_excerpt && <blockquote>{review.support_excerpt}</blockquote>}<p>{review.page != null ? `Page ${review.page} · ` : ""}{review.section ?? "Source location unavailable"} · proposal status: {review.status.replaceAll("_", " ")}</p><button type="button" onClick={() => onReview(item.item_id, "approve")} disabled={busy || decided || !canApprove}>Approve proposal</button><button type="button" onClick={() => onReview(item.item_id, "reject")} disabled={busy || decided}>Reject proposal</button></>}</li>; }
+function ItemResult({ item, review, reviewError, busy, onReview }: { item: EvaluationItemResult; review?: IndividualEvidenceReview; reviewError?: string; busy: boolean; onReview: (itemId: string, decision: "approve" | "reject") => void }) { const decided = review?.status === "review_approved" || review?.status === "review_rejected"; const canApprove = review?.status === "eligible" || (review?.status === "inapplicable" && review.expected_refusal); return <li><strong>Item review: {review ? review.status.replaceAll("_", " ") : reviewError ? "unavailable" : "loading"}</strong>{reviewError && <p role="note">{reviewError}</p>}<span>Retrieval {item.retrieval_success ? "pass" : "fail"}; grounded claims {item.grounded ? "pass" : "fail"}; citations {item.citation_correct ? "pass" : "fail"}; answer quality {item.answer_quality ? "pass" : "fail"}; refusal {item.refusal_correct ? "pass" : "fail"}; {item.response_time_ms} ms</span>{review && <><p>{review.question}</p>{review.support_excerpt && <blockquote>{review.support_excerpt}</blockquote>}<p>{review.page != null ? `Page ${review.page} · ` : ""}{review.section ?? "Source location unavailable"} · proposal status: {review.status.replaceAll("_", " ")}</p><button type="button" onClick={() => onReview(item.item_id, "approve")} disabled={busy || decided || !canApprove}>Approve proposal</button><button type="button" onClick={() => onReview(item.item_id, "reject")} disabled={busy || decided}>Reject proposal</button></>}</li>; }
 
 function MetricResult({ metric }: { metric: EvaluationMetric }) { return <li className={metric.passed ? "gate-passed" : "gate-failed"}><strong>{metricLabels[metric.metric_name] ?? metric.metric_name}</strong><span>{metric.numerator} / {metric.denominator} · {metric.percentage}% · {metric.passed ? "Pass" : "Fail"}</span></li>; }

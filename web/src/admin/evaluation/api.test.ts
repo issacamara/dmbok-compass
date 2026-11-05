@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { attestBatchReview, getReviewSummary } from "./api";
+import { attestBatchReview, decideIndividualReview, getActiveDataset, getReviewSummary, launchActiveEvaluation } from "./api";
 
 describe("batch evidence review API", () => {
   beforeEach(() => vi.restoreAllMocks());
@@ -23,5 +23,21 @@ describe("batch evidence review API", () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({ detail: { code: "stale_batch_review", message: "The batch review snapshot is stale." } }), { status: 409 }));
     await expect(getReviewSummary("token", "run-1")).rejects.toMatchObject({ status: 409, message: "The batch review snapshot is stale." });
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("loads the active dataset and launches full or selected server-resolved subsets", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify({}), { status: 200 }));
+    await getActiveDataset("token");
+    await launchActiveEvaluation("token");
+    await launchActiveEvaluation("token", ["selected-id"]);
+    expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/admin/evaluation-datasets/active", expect.anything());
+    expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/evaluations", expect.objectContaining({ method: "POST", body: JSON.stringify({ item_ids: null }) }));
+    expect(fetchMock).toHaveBeenNthCalledWith(3, "/api/evaluations", expect.objectContaining({ method: "POST", body: JSON.stringify({ item_ids: ["selected-id"] }) }));
+  });
+
+  it("sends an individual decision without candidate or chunk selectors", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({}), { status: 200 }));
+    await decideIndividualReview("token", "run-1", "item-1", "reject");
+    expect(fetchMock).toHaveBeenCalledWith("/api/admin/evaluations/run-1/items/item-1/review", expect.objectContaining({ method: "PUT", body: JSON.stringify({ decision: "reject" }) }));
   });
 });

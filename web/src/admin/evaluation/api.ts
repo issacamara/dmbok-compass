@@ -1,4 +1,4 @@
-import { API_ROUTES, type BatchAttestationRequest, type BatchAttestationResult, type EvaluationImportResponse, type EvaluationReviewProjection, type EvaluationRun } from "../../api/contracts";
+import { API_ROUTES, type ActiveEvaluationGeneration, type BatchAttestationRequest, type BatchAttestationResult, type EvaluationImportResponse, type EvaluationReviewProjection, type EvaluationRun, type IndividualEvidenceDecisionResult, type IndividualEvidenceReview } from "../../api/contracts";
 
 export class EvaluationApiError extends Error { constructor(readonly status: number, message: string) { super(message); } }
 
@@ -10,6 +10,10 @@ async function request<T>(path: string, token: string, init?: RequestInit): Prom
 
 export type EvaluationUploadRunResponse = EvaluationImportResponse & { run_id: string | null };
 export function uploadAndRunEvaluation(token: string, source: unknown): Promise<EvaluationUploadRunResponse> { return request<EvaluationUploadRunResponse>(API_ROUTES.evaluationImport, token, { method: "POST", body: JSON.stringify(source) }); }
+export function getActiveDataset(token: string): Promise<ActiveEvaluationGeneration> { return request<ActiveEvaluationGeneration>(API_ROUTES.activeEvaluationGeneration, token); }
+export function launchActiveEvaluation(token: string, itemIds?: string[]): Promise<EvaluationRun> { return request<EvaluationRun>(API_ROUTES.evaluationRuns, token, { method: "POST", body: JSON.stringify({ item_ids: itemIds?.length ? itemIds : null }) }); }
 export function getEvaluationRun(token: string, runId: string): Promise<EvaluationRun> { return request<EvaluationRun>(`${API_ROUTES.evaluationRuns}/${encodeURIComponent(runId)}`, token); }
 export function getReviewSummary(token: string, runId: string): Promise<EvaluationReviewProjection> { return request<EvaluationReviewProjection>(`${API_ROUTES.evaluationSupport}/${encodeURIComponent(runId)}/review-summary`, token); }
 export function attestBatchReview(token: string, runId: string, decision: BatchAttestationRequest): Promise<BatchAttestationResult> { return request<BatchAttestationResult>(`${API_ROUTES.evaluationSupport}/${encodeURIComponent(runId)}/batch-attestation`, token, { method: "POST", body: JSON.stringify(decision) }); }
+export function getIndividualReview(token: string, runId: string, itemId: string): Promise<IndividualEvidenceReview> { return request<IndividualEvidenceReview>(`${API_ROUTES.evaluationSupport}/${encodeURIComponent(runId)}/items/${encodeURIComponent(itemId)}/review`, token); }
+export function decideIndividualReview(token: string, runId: string, itemId: string, decision: "approve" | "reject"): Promise<IndividualEvidenceDecisionResult> { return request<IndividualEvidenceDecisionResult>(`${API_ROUTES.evaluationSupport}/${encodeURIComponent(runId)}/items/${encodeURIComponent(itemId)}/review`, token, { method: "PUT", body: JSON.stringify({ decision }) }); }

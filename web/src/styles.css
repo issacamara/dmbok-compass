@@ -53,6 +53,9 @@ select, .quota-form input { padding: .55rem; border: 1px solid #aaa397; border-r
 .link { padding: .3rem .2rem; border: 0; color: #195c45; background: transparent; font-weight: 650; text-decoration: underline; cursor: pointer; }
 .primary, .question-composer button { min-height: 2.75rem; padding: .65rem .85rem; border: 0; border-radius: .45rem; color: white; background: #195c45; font-weight: 650; cursor: pointer; }
 .evaluation-panel { margin-top: 1rem; }
+.evaluation-panel button { min-height: 2.75rem; }
+.evaluation-panel .review-choice { display: flex; align-items: center; gap: .5rem; margin: .4rem 0; }
+.evaluation-panel .review-choice input { width: auto; }
 .batch-review { margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid #ebe6dd; }
 .review-summary { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: .6rem; }
 .review-summary div { min-width: 0; padding: .65rem; border-radius: .45rem; background: #f3f0e9; }

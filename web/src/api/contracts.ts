@@ -472,6 +472,27 @@ export interface ActiveEvaluationGeneration {
   item_reviews: ItemReview[];
 }
 
+export interface IndividualEvidenceReview {
+  item_id: string;
+  question: string;
+  rubric: string;
+  support_excerpt: string | null;
+  page: number | null;
+  section: string | null;
+  status: SupportMatchStatus;
+  expected_refusal: boolean;
+  reviewer_actor: string | null;
+  reviewed_at: string | null;
+}
+
+export interface IndividualEvidenceDecisionResult {
+  item_id: string;
+  status: "review_approved" | "review_rejected";
+  decision: "approve" | "reject";
+  reviewer_actor: string;
+  reviewed_at: string;
+}
+
 export interface ItemReview {
   generation_id: string;
   item_id: string;

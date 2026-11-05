@@ -128,7 +128,7 @@ export function EvaluationPanel({ token }: EvaluationPanelProps) {
       {reviewMessage && <p className="status" role="status">{reviewMessage}</p>}
       {reviewError && <button type="button" onClick={refreshReview} disabled={reviewLoading}>Refresh review</button>}
       {review && <>
-        <dl aria-label="Review summary" className="review-summary"><div><dt>Status</dt><dd>{reviewStatusLabel(review.summary.status)}</dd></div><div><dt>Eligible</dt><dd>{review.summary.eligible_count}</dd></div><div><dt>Exceptions</dt><dd>{review.summary.exception_count}</dd></div><div><dt>Representative sample</dt><dd>{review.summary.sampled_count}</dd></div></dl>
+        <dl aria-label="Review summary" className="review-summary"><div><dt>Status</dt><dd>{reviewStatusLabel(review.summary.status)}</dd></div><div><dt>Eligible</dt><dd>{review.summary.eligible_count}</dd></div><div><dt>Exceptions</dt><dd>{review.summary.exception_count}</dd></div><div><dt>Representative sample</dt><dd>{review.summary.sampled_count}</dd></div><div><dt>Attested</dt><dd>{review.summary.attested_count}</dd></div></dl>
         {!reviewOpen && <p role="status">This review is stale or already decided and cannot be changed.</p>}
         <h5>Representative sample</h5>
         {review.sample.length === 0 ? <p>No representative samples are available.</p> : <ul className="review-list">{review.sample.map((item, index) => <li key={`${item.page}-${item.section}-${index}`}><p><strong>{item.question}</strong></p><p>{item.rubric}</p><blockquote>{item.support_excerpt}</blockquote><p>Page {item.page} · {item.section} · {reviewStatusLabel(item.status)}</p></li>)}</ul>}

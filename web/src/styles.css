@@ -54,7 +54,7 @@ select, .quota-form input { padding: .55rem; border: 1px solid #aaa397; border-r
 .primary, .question-composer button { min-height: 2.75rem; padding: .65rem .85rem; border: 0; border-radius: .45rem; color: white; background: #195c45; font-weight: 650; cursor: pointer; }
 .evaluation-panel { margin-top: 1rem; }
 .batch-review { margin-top: 1.25rem; padding-top: 1rem; border-top: 1px solid #ebe6dd; }
-.review-summary { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: .6rem; }
+.review-summary { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: .6rem; }
 .review-summary div { min-width: 0; padding: .65rem; border-radius: .45rem; background: #f3f0e9; }
 .review-summary dt { color: #665f55; font-size: .8rem; }
 .review-summary dd { margin: .2rem 0 0; overflow-wrap: anywhere; font-weight: 650; text-transform: capitalize; }

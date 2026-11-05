@@ -74,6 +74,8 @@ class BatchReviewRepository(Protocol):
         decided_at: datetime,
     ) -> DurableBatchAttestation: ...
 
+    def attestation(self, review: BatchReview) -> DurableBatchAttestation | None: ...
+
 
 def review_key(
     generation_id: str,
@@ -365,7 +367,8 @@ class InMemoryBatchReviewRepository:
             return result
 
     def attestation(self, review: BatchReview) -> DurableBatchAttestation | None:
-        return self._attestations.get(review.key)
+        with self._lock:
+            return self._attestations.get(review.key)
 
 
 class FirestoreBatchReviewRepository:
@@ -450,3 +453,9 @@ class FirestoreBatchReviewRepository:
         except AlreadyExists as exc:
             raise BatchReviewConflictError("batch review has already been decided") from exc
         return result
+
+    def attestation(self, review: BatchReview) -> DurableBatchAttestation | None:
+        snapshot = self.attestations.document(review.key).get()
+        if not snapshot.exists:
+            return None
+        return DurableBatchAttestation.model_validate(snapshot.to_dict())

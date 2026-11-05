@@ -93,6 +93,7 @@ class EvaluationItemStage:
     assessment_status: AssessmentStatus = "awaiting_review"
     output_handle: str | None = None
     output_digest: str | None = None
+    reviewed_output_digest: str | None = None
     operational_error: str | None = None
     retrieval_success: bool = False
     grounded: bool = False
@@ -105,6 +106,10 @@ class EvaluationItemStage:
     def ready_for_finalization(self) -> bool:
         return (
             self.assessment_status in {"reviewed", "inapplicable"}
+            and (
+                self.output_handle is None
+                or self.reviewed_output_digest == self.output_digest
+            )
             and self.retrieval_status != "failed"
             and self.generation_status != "failed"
             and self.operational_error is None
@@ -556,6 +561,7 @@ class EvaluationWorker:
         reviewed = dataclasses.replace(
             stage,
             assessment_status="reviewed",
+            reviewed_output_digest=output_digest,
             grounded=assessment.grounded,
             citation_correct=assessment.citation_correct,
             answer_quality=assessment.answer_quality,

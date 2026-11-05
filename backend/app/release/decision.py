@@ -11,7 +11,9 @@ from pydantic import Field
 
 from app.contracts import EvaluationReportEligibility, EvaluationRun, ReleaseDecision, RunBoundSupportEvidence
 from app.evaluation import EvaluationRunStore
-from app.evaluation.support import approved_support_chunk_ids
+from app.evaluation.batch_reviews import BatchReview, BatchReviewRepository
+from app.evaluation.support import approved_refusal, approved_support_chunk_ids
+from app.evaluation.job import EvaluationStageStore
 from app.contracts.api import ContractModel
 from app.release.firestore import (
     ReleaseManifest,
@@ -115,6 +117,8 @@ class ReleaseDecisionService:
         actor_user_id: str = "system",
         clock: Callable[[], datetime] | None = None,
         support_evidence: RunSupportEvidenceStore | None = None,
+        batch_reviews: BatchReviewRepository | None = None,
+        stages: EvaluationStageStore | None = None,
     ) -> None:
         self.runs = runs
         self.decisions = decisions
@@ -123,6 +127,8 @@ class ReleaseDecisionService:
         self.actor_user_id = actor_user_id
         self.clock = clock or (lambda: datetime.now(timezone.utc))
         self.support_evidence = support_evidence
+        self.batch_reviews = batch_reviews
+        self.stages = stages
 
     def record(self, request: ReleaseDecisionRequest, *, actor_user_id: str | None = None) -> ReleaseDecision:
         run = self.runs.get(request.evaluation_run_id)
@@ -191,10 +197,15 @@ class ReleaseDecisionService:
         eligibility = self.evidence.report_eligibility(run.dataset_version_id)
         if (
             eligibility.generation_id != run.dataset_version_id
+            or eligibility.eligibility != "release_evidence"
+            or run.report_eligibility is None
+            or run.report_eligibility.eligibility != "release_evidence"
             or not eligibility.is_current_generation
             or eligibility.is_superseded
         ):
             raise ReleaseDecisionError("release evidence is exploratory, superseded, or lacks 30–50 approved gold items")
+        if self.support_evidence is None:
+            raise ReleaseDecisionError("release evidence is missing run-bound support records")
         if self.support_evidence is not None:
             marker = self.support_evidence.get_marker(run_id=run.run_id)
             if (
@@ -210,17 +221,16 @@ class ReleaseDecisionService:
             approved_count = 0
             for item_id in run.selected_item_ids:
                 evidence = self.support_evidence.get_evidence(run_id=run.run_id, item_id=item_id)
-                if approved_support_chunk_ids(evidence, run=run):
+                if approved_support_chunk_ids(evidence, run=run) or approved_refusal(evidence, run=run):
                     approved_count += 1
             if not 30 <= approved_count <= 50:
                 raise ReleaseDecisionError("release evidence lacks 30–50 approved run-bound support items")
-        elif (
-            run.report_eligibility is not None
-            and run.report_eligibility.eligibility != "release_evidence"
-        ):
-            raise ReleaseDecisionError("release evidence is exploratory and cannot support a release decision")
-        elif not 30 <= eligibility.approved_gold_count <= 50:
-            raise ReleaseDecisionError("release evidence is exploratory, superseded, or lacks 30–50 approved gold items")
+        if self.stages is None:
+            raise ReleaseDecisionError("release evidence is missing exact-output assessment records")
+        for item_id in run.selected_item_ids:
+            stage = self.stages.get(run.run_id, item_id)
+            if stage is None or not stage.ready_for_finalization:
+                raise ReleaseDecisionError("release evidence has incomplete or stale exact-output assessments")
         binding_reader = getattr(self.evidence, "candidate_binding", None)
         if binding_reader is not None:
             binding = binding_reader(run.dataset_version_id)
@@ -232,6 +242,75 @@ class ReleaseDecisionService:
                 or getattr(binding, "candidate_snapshot_sha256", None) != _candidate_snapshot_sha256(snapshot)
             ):
                 raise ReleaseDecisionError("release evidence candidate binding does not match the run snapshot")
+        self._validate_batch_attestation(run)
+
+    def _validate_batch_attestation(self, run: EvaluationRun) -> None:
+        if self.batch_reviews is None or not callable(getattr(self.batch_reviews, "get", None)) or not callable(
+            getattr(self.batch_reviews, "attestation", None)
+        ):
+            raise ReleaseDecisionError("release evidence is missing the batch-attestation repository")
+        review = self.batch_reviews.get(generation_id=run.dataset_version_id, run_id=run.run_id)
+        if review is None:
+            raise ReleaseDecisionError("release evidence is missing the completed batch review")
+        summary = review.summary
+        snapshot = run.candidate_snapshot
+        if (
+            snapshot is None
+            or summary.generation_id != run.dataset_version_id
+            or summary.run_id != run.run_id
+            or summary.corpus_version_id != run.corpus_version_id
+            or summary.candidate_snapshot_sha256 != _candidate_snapshot_sha256(snapshot)
+            or summary.status not in {"eligible", "exception"}
+            or summary.eligible_count + summary.exception_count != len(run.selected_item_ids)
+            or len(run.selected_item_ids) != len(set(run.selected_item_ids))
+            or len(summary.sampled_item_ids) != len(set(summary.sampled_item_ids))
+            or len(review.samples) != len(summary.sampled_item_ids)
+            or len(review.exceptions) != summary.exception_count
+            or set(summary.sampled_item_ids) - set(run.selected_item_ids)
+            or {sample.item_id for sample in review.samples} != set(summary.sampled_item_ids)
+            or {record.item_id for record in review.exceptions} & set(summary.sampled_item_ids)
+            or any(
+                sample.generation_id != summary.generation_id
+                or sample.run_id != summary.run_id
+                or sample.corpus_version_id != summary.corpus_version_id
+                or sample.candidate_snapshot_sha256 != summary.candidate_snapshot_sha256
+                for sample in review.samples
+            )
+            or any(
+                record.generation_id != summary.generation_id
+                or record.run_id != summary.run_id
+                or record.corpus_version_id != summary.corpus_version_id
+                or record.candidate_snapshot_sha256 != summary.candidate_snapshot_sha256
+                for record in review.exceptions
+            )
+        ):
+            raise ReleaseDecisionError("release evidence batch review is stale or incomplete")
+        attestation = self.batch_reviews.attestation(review)
+        if attestation is None or attestation.decision != "attested":
+            raise ReleaseDecisionError("release evidence requires a completed batch attestation")
+        exception_ids = {record.item_id for record in review.exceptions}
+        decisions = {decision.item_id: decision for decision in attestation.exception_decisions}
+        exception_records = {record.item_id: record for record in review.exceptions}
+        if (
+            attestation.generation_id != summary.generation_id
+            or attestation.run_id != summary.run_id
+            or attestation.corpus_version_id != summary.corpus_version_id
+            or attestation.candidate_snapshot_sha256 != summary.candidate_snapshot_sha256
+            or attestation.decision_version != summary.decision_version
+            or attestation.sampled_item_ids != summary.sampled_item_ids
+            or set(decisions) != exception_ids
+            or any(
+                decision.generation_id != summary.generation_id
+                or decision.run_id != summary.run_id
+                or decision.corpus_version_id != summary.corpus_version_id
+                or decision.candidate_snapshot_sha256 != summary.candidate_snapshot_sha256
+                or decision.decision_version != summary.decision_version
+                or decision.decision == "attested"
+                or decision.sample_identity != exception_records[decision.item_id].sample_identity
+                for decision in decisions.values()
+            )
+        ):
+            raise ReleaseDecisionError("release evidence batch attestation is stale or incomplete")
 
     def _validate_gates(self, request: ReleaseDecisionRequest, run: EvaluationRun) -> None:
         metrics = {metric.metric_name: metric for metric in run.metrics}

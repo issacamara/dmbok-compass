@@ -11,7 +11,7 @@ from pydantic import Field
 
 from app.contracts import EvaluationReportEligibility, EvaluationRun, ReleaseDecision, RunBoundSupportEvidence
 from app.evaluation import EvaluationRunStore
-from app.evaluation.batch_reviews import BatchReview, BatchReviewRepository
+from app.evaluation.batch_reviews import BatchReviewRepository
 from app.evaluation.support import approved_refusal, approved_support_chunk_ids
 from app.evaluation.job import EvaluationStageStore
 from app.contracts.api import ContractModel

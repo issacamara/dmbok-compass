@@ -115,6 +115,14 @@ resource "google_project_iam_member" "worker" {
   member  = "serviceAccount:${google_service_account.workload["worker"].email}"
 }
 
+resource "google_project_iam_member" "parser" {
+  for_each = local.worker_roles
+
+  project = var.project_id
+  role    = each.value
+  member  = "serviceAccount:${google_service_account.workload["parser"].email}"
+}
+
 resource "google_storage_bucket_iam_member" "runtime_corpus_reader" {
   bucket = google_storage_bucket.corpus.name
   role   = "roles/storage.objectViewer"
@@ -138,6 +146,12 @@ resource "google_storage_bucket_iam_member" "worker_corpus_writer" {
   member = "serviceAccount:${google_service_account.workload["worker"].email}"
 }
 
+resource "google_storage_bucket_iam_member" "parser_corpus_writer" {
+  bucket = google_storage_bucket.corpus.name
+  role   = "roles/storage.objectAdmin"
+  member = "serviceAccount:${google_service_account.workload["parser"].email}"
+}
+
 resource "google_storage_bucket_iam_member" "build_release_evidence_reader" {
   bucket = google_storage_bucket.release_evidence.name
   role   = "roles/storage.objectViewer"
@@ -157,6 +171,12 @@ resource "google_secret_manager_secret_iam_member" "workload_access" {
   secret_id = google_secret_manager_secret.managed[each.value[1]].id
   role      = "roles/secretmanager.secretAccessor"
   member    = "serviceAccount:${google_service_account.workload[each.value[0]].email}"
+}
+
+resource "google_secret_manager_secret_iam_member" "parser_access" {
+  secret_id = google_secret_manager_secret.parser.id
+  role      = "roles/secretmanager.secretAccessor"
+  member    = "serviceAccount:${google_service_account.workload["parser"].email}"
 }
 
 resource "google_project_iam_member" "build_artifact_writer" {
@@ -195,7 +215,7 @@ resource "google_project_iam_member" "build_hosting_deployer" {
 }
 
 resource "google_service_account_iam_member" "build_runtime_user" {
-  for_each = toset(["runtime", "worker"])
+  for_each = toset(["runtime", "worker", "parser"])
 
   service_account_id = google_service_account.workload[each.value].name
   role               = "roles/iam.serviceAccountUser"

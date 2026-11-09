@@ -138,6 +138,8 @@ jobs:
         run: terraform init -backend=false -input=false
       - name: Validate Terraform configuration
         run: terraform validate
+      - name: Verify parser identity isolation
+        run: terraform test -filter=parser-isolation.tftest.hcl
 
   langchain-compat:
     name: Python 3.11 Linux contract image

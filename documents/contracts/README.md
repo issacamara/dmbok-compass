@@ -128,3 +128,29 @@ snapshot bindings. Candidate bindings include a staging attempt; serving
 bindings include a release and cannot be substituted. Browser projections omit
 server-owned corpus, provider and storage identities. Existing paired staging,
 optional imports, answers, quotas and errors retain their current contracts.
+
+The v2 dataset store stages shape-validated rows under a corpus-scoped revision
+and publishes them with compare-and-set; shape validation does not establish
+source support. A run snapshot freezes selected row contents, scope, binding,
+and the full candidate configuration, and is read by run ID after restart.
+Legacy imports remain on their existing exploratory path and are not v2 rows.
+Issue #377 supplies verified source rebinding; #368 must require the verified
+v2 tuple before granting v2 release eligibility. The v2 execution dispatcher
+must read the pinned snapshot rather than a later corpus head (#362).
+
+`FirestoreEvaluationGenerationStore.create_run_snapshot(run_id=, binding=,
+configuration_version_id=, configuration=, item_ids=)` pins the current
+matching corpus revision; `item_ids=None` selects all rows, while a nonempty
+unique tuple selects a subset. It returns `EvaluationRunSnapshot`.
+`get_run_snapshot(run_id)` returns that snapshot and the pinned
+`EvaluationCandidateSnapshot`; it verifies item count and digest on each read.
+
+`stage_revision(corpus_version_id, revision, rows)` creates an immutable,
+shape-validated provisional revision; `activate_revision(head,
+expected_revision=)` compares and publishes the corpus-scoped head.
+`corpus_head(corpus_version_id)` and `get_revision(head)` retrieve its identity
+and digest-checked rows. Candidate snapshots require the current head. Serving snapshot creation fails
+closed until #362 resolves the release to its authoritative corpus and dataset
+revision. The caller must resolve candidate binding and configuration on the
+server: this storage interface does not authorize a release or prove that a
+binding belongs to an attempt.

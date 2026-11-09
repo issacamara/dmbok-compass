@@ -117,3 +117,14 @@ all metrics passing.  A failed or incomplete gate may be approved only when
 the administrator records an explicit approved exception and rationale;
 otherwise the API fails closed.  Repeating an identical release submission is
 idempotent, while reusing a release ID with different evidence is rejected.
+
+## v2.9 additive contracts
+
+The v2.9 contract models in `backend/app/contracts/v29.py` freeze parsing
+artifacts and physical/printed page provenance, raw source spans, reviewed map
+revisions, bounded generation context, evaluation-row-v2, corpus-scoped dataset
+heads and exclusion tombstones, allowance reservations, and immutable run
+snapshot bindings. Candidate bindings include a staging attempt; serving
+bindings include a release and cannot be substituted. Browser projections omit
+server-owned corpus, provider and storage identities. Existing paired staging,
+optional imports, answers, quotas and errors retain their current contracts.

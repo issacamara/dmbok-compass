@@ -554,3 +554,23 @@ export const TELEMETRY_FIELDS = [
 ] as const;
 
 export type TelemetryField = (typeof TELEMETRY_FIELDS)[number];
+
+// Browser-safe dataset projections: candidate and storage identities stay server-owned.
+export interface EvaluationRowV2Projection {
+  schema_version: "evaluation-row-v2";
+  item_id: string;
+  origin: "generated" | "admin" | "imported";
+  question: string;
+  category: QuestionCategory;
+  expected_outcome: "answer" | "qualified" | "evidence_refusal";
+  expected_answer_or_rubric: string;
+  expected_refusal: boolean;
+  scope_rationale: string | null;
+}
+
+export interface DatasetRevisionConflict {
+  code: "dataset_revision_conflict";
+  expected_revision: number;
+  current_revision: number;
+  message: string;
+}

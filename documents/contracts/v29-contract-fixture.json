@@ -1,0 +1,6 @@
+{
+  "span": {"span_id": "span-1", "block_id": "block-1", "physical_page": 4, "printed_page_label": "ii", "start_offset": 0, "end_offset": 4, "raw_text": "text"},
+  "embedding_text": "Chapter: text",
+  "refusal": {"schema_version": "evaluation-row-v2", "item_id": "item-1", "origin": "generated", "question": "Outside scope?", "category": "study", "expected_outcome": "evidence_refusal", "expected_answer_or_rubric": "Refuse", "expected_refusal": true, "scope_rationale": "Outside corpus", "source_spans": [], "relevant_child_ids": [], "parent_ids": []},
+  "revision_conflict": {"code": "dataset_revision_conflict", "expected_revision": 1, "current_revision": 2, "message": "Refresh the dataset before retrying."}
+}

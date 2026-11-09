@@ -168,3 +168,29 @@ __all__ = [
     "UserProfile",
     "validate_telemetry_payload",
 ]
+
+from .v29 import (
+    AllowanceReservation,
+    CandidateDatasetBinding,
+    CorpusStagingAttemptV2,
+    DatasetExclusion,
+    DatasetHead,
+    DatasetRevisionConflict,
+    EvaluationRowV2,
+    EvaluationRunSnapshot,
+    GenerationContext,
+    GenerationContextParent,
+    ParsedBlock,
+    ParsingArtifact,
+    RawSourceSpan,
+    ServingDatasetBinding,
+    SourceTextMapping,
+    StructureReviewRevision,
+)
+
+__all__ += [
+    "AllowanceReservation", "CandidateDatasetBinding", "CorpusStagingAttemptV2",
+    "DatasetExclusion", "DatasetHead", "DatasetRevisionConflict", "EvaluationRowV2",
+    "EvaluationRunSnapshot", "GenerationContext", "GenerationContextParent", "ParsedBlock",
+    "ParsingArtifact", "RawSourceSpan", "ServingDatasetBinding", "SourceTextMapping", "StructureReviewRevision",
+]

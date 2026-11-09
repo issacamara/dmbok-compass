@@ -2,13 +2,14 @@
 
 from typing import Annotated, Literal
 
-from pydantic import AwareDatetime, ConfigDict, Field, model_validator
+from pydantic import AwareDatetime, ConfigDict, Field, StringConstraints, model_validator
 
 from .api import ContractModel, QuestionCategory
 
 Identifier = Annotated[str, Field(min_length=1, max_length=256)]
 Digest = Annotated[str, Field(pattern=r"^[a-f0-9]{64}$")]
 Revision = Annotated[int, Field(strict=True, ge=1)]
+RawText = Annotated[str, StringConstraints(strip_whitespace=False, min_length=1, max_length=20000)]
 
 
 class FrozenContractModel(ContractModel):
@@ -21,7 +22,7 @@ class ParsedBlock(FrozenContractModel):
     printed_page_label: str | None = Field(default=None, min_length=1, max_length=128)
     reading_order: int = Field(strict=True, ge=0)
     kind: Literal["text", "table", "list"]
-    raw_text: str = Field(min_length=1, max_length=20000)
+    raw_text: RawText
     table_rows: tuple[tuple[str, ...], ...] = ()
     list_items: tuple[str, ...] = ()
 
@@ -61,7 +62,7 @@ class RawSourceSpan(FrozenContractModel):
     printed_page_label: str | None = Field(default=None, min_length=1, max_length=128)
     start_offset: int = Field(strict=True, ge=0)
     end_offset: int = Field(strict=True, gt=0)
-    raw_text: str = Field(min_length=1, max_length=20000)
+    raw_text: RawText
 
     @model_validator(mode="after")
     def validate_offsets(self) -> "RawSourceSpan":

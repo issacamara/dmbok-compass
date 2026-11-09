@@ -92,3 +92,11 @@ def test_structured_blocks_and_synthetic_mapping_keep_source_boundaries():
     GenerationContextParent(parent_id="p", spans=[span()], backing_child_ids=["c"], embedding_text="text!", normalization_mappings=[mapping, synthetic])
     with pytest.raises(ValidationError):
         SourceTextMapping(target_start=0, target_end=1, synthetic=True, source_span_id="s1")
+
+
+def test_raw_source_whitespace_and_offsets_are_preserved():
+    raw = "  source text\n"
+    block = ParsedBlock(block_id="b", physical_page=1, reading_order=0, kind="text", raw_text=raw)
+    source = RawSourceSpan(span_id="s", block_id="b", physical_page=1, start_offset=5, end_offset=5 + len(raw), raw_text=raw)
+    assert block.raw_text == source.raw_text == raw
+    assert source.end_offset - source.start_offset == len(raw)

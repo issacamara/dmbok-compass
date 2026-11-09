@@ -390,12 +390,14 @@ def test_v2_revision_failed_or_conflicting_publication_preserves_head() -> None:
     with pytest.raises(RuntimeError):
         repository.stage_revision("corpus", 2, (row,))
     assert repository.corpus_head("corpus") == head
-    second = repository.stage_revision("corpus", 2, (row,))
+    changed = row.model_copy(update={"question": "Different retry?"})
+    second = repository.stage_revision("corpus", 2, (changed,))
     with pytest.raises(ConcurrentActivationError):
         repository.activate_revision(second, expected_revision=None)
     assert repository.corpus_head("corpus") == head
     repository.activate_revision(second, expected_revision=1)
     assert repository.get_revision(head) == (row,)
+    assert repository.get_revision(second) == (changed,)
 
 
 def test_v2_run_snapshot_survives_revision_change_and_restart() -> None:
@@ -421,7 +423,7 @@ def test_v2_run_snapshot_survives_revision_change_and_restart() -> None:
     snapshot = repository.create_run_snapshot(run_id="run", binding=binding, configuration_version_id="config",
                                                configuration=configuration, item_ids=("one",))
     second = repository.stage_revision("corpus", 2, (row.model_copy(update={"question": "Changed?"}),))
-    with pytest.raises(ValueError, match="published corpus revision"):
+    with pytest.raises(ValueError, match="authoritative release resolution"):
         repository.create_run_snapshot(
             run_id="unpublished", binding=ServingDatasetBinding(release_id="release", corpus_version_id="corpus", dataset_revision=2),
             configuration_version_id="config", configuration=configuration,
@@ -432,11 +434,11 @@ def test_v2_run_snapshot_survives_revision_change_and_restart() -> None:
     assert restored.items[0].question == "Out of scope?"
     assert restored.selection == "subset"
     assert restored_configuration == configuration
-    serving = repository.create_run_snapshot(
-        run_id="serving", binding=ServingDatasetBinding(release_id="release", corpus_version_id="corpus", dataset_revision=1),
-        configuration_version_id="config", configuration=configuration,
-    )
-    assert serving.items[0].question == "Out of scope?"
+    with pytest.raises(ValueError, match="authoritative release resolution"):
+        repository.create_run_snapshot(
+            run_id="serving", binding=ServingDatasetBinding(release_id="release", corpus_version_id="corpus", dataset_revision=1),
+            configuration_version_id="config", configuration=configuration,
+        )
     assert store(client).create_run_snapshot(run_id="run", binding=binding, configuration_version_id="config",
                                             configuration=configuration, item_ids=("one",)) == snapshot
     with pytest.raises(GenerationIntegrityError):
@@ -473,3 +475,44 @@ def test_v2_revision_never_admits_legacy_placeholder_bindings() -> None:
                           source_spans=(span,), relevant_child_ids=("imported-passage-one",), parent_ids=("parent",))
     with pytest.raises(EvaluationGenerationError, match="placeholder"):
         store(FakeFirestore()).stage_revision("corpus", 1, (row,))
+
+
+def test_v2_concurrent_proposals_have_one_winner_and_loser_can_retry() -> None:
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Barrier, Lock
+    from app.contracts import EvaluationRowV2
+
+    client = FakeFirestore()
+    lock = Lock()
+    barrier = Barrier(2)
+
+    def serialized_transaction(transaction, callback):
+        with lock:
+            transaction.data = deepcopy(client.data)
+            result = callback(transaction)
+            client.data = transaction.data
+            return result
+
+    repository = FirestoreEvaluationGenerationStore(client, transaction_runner=serialized_transaction)
+    row = EvaluationRowV2(item_id="one", origin="generated", question="Outside?", category="study",
+                          expected_outcome="evidence_refusal", expected_answer_or_rubric="Refuse",
+                          expected_refusal=True, scope_rationale="Outside corpus")
+    proposals = [repository.stage_revision("corpus", 1, (row.model_copy(update={"question": f"Question {n}?"}),))
+                 for n in range(2)]
+
+    def activate(head):
+        barrier.wait(timeout=5)
+        try:
+            return repository.activate_revision(head, expected_revision=None)
+        except ConcurrentActivationError:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(activate, proposals))
+    winner = repository.corpus_head("corpus")
+    assert results.count(None) == 1
+    assert next(result for result in results if result is not None) == winner
+    loser = next(head for head in proposals if head != winner)
+    assert repository.get_revision(loser)[0].question != repository.get_revision(winner)[0].question
+    retry = repository.stage_revision("corpus", 2, repository.get_revision(loser))
+    assert repository.activate_revision(retry, expected_revision=1) == retry

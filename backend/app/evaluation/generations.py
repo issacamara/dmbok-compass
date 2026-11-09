@@ -98,6 +98,7 @@ class FirestoreEvaluationGenerationStore:
     _staging_batch_size = 400
     revision_collection_id = "evaluation_dataset_revisions_v2"
     corpus_heads_collection_id = "evaluation_dataset_heads_v2"
+    revision_winners_collection_id = "evaluation_dataset_revision_winners_v2"
     run_snapshots_collection_id = "evaluation_run_snapshots_v2"
 
     def __init__(
@@ -111,6 +112,7 @@ class FirestoreEvaluationGenerationStore:
         self.pointer = client.collection(self.active_pointer_collection_id).document(self.active_pointer_id)
         self.revisions = client.collection(self.revision_collection_id)
         self.corpus_heads = client.collection(self.corpus_heads_collection_id)
+        self.revision_winners = client.collection(self.revision_winners_collection_id)
         self.run_snapshots = client.collection(self.run_snapshots_collection_id)
         self._transaction_runner = transaction_runner
 
@@ -129,8 +131,8 @@ class FirestoreEvaluationGenerationStore:
         payloads = [row.model_dump(mode="json") for row in rows]
         head = DatasetHead(corpus_version_id=corpus_version_id, revision=revision,
                            dataset_sha256=_revision_fingerprint(payloads))
-        reference = self.revisions.document(_revision_id(head.corpus_version_id, head.revision))
-        metadata = {**head.model_dump(mode="json"), "status": "staging", "published": False, "item_count": len(rows)}
+        reference = self.revisions.document(_proposal_id(head))
+        metadata = {**head.model_dump(mode="json"), "status": "staging", "item_count": len(rows)}
         try:
             reference.create(metadata)
         except AlreadyExists:
@@ -151,7 +153,7 @@ class FirestoreEvaluationGenerationStore:
         return head
 
     def get_revision(self, head: DatasetHead) -> tuple[EvaluationRowV2, ...]:
-        reference = self.revisions.document(_revision_id(head.corpus_version_id, head.revision))
+        reference = self.revisions.document(_proposal_id(head))
         snapshot = reference.get()
         if not snapshot.exists:
             raise EvaluationGenerationError("revision is unavailable")
@@ -176,16 +178,19 @@ class FirestoreEvaluationGenerationStore:
     def activate_revision(self, head: DatasetHead, *, expected_revision: int | None) -> DatasetHead:
         self.get_revision(head)
         pointer = self.corpus_heads.document(_corpus_id(head.corpus_version_id))
+        winner = self.revision_winners.document(_revision_id(head.corpus_version_id, head.revision))
 
         def apply(transaction: Any) -> DatasetHead:
             snapshot = pointer.get(transaction=transaction)
+            winner_snapshot = winner.get(transaction=transaction)
             current = DatasetHead.model_validate(snapshot.to_dict()) if snapshot.exists else None
             if (current.revision if current else None) != expected_revision:
                 raise ConcurrentActivationError("corpus dataset revision changed before activation")
             if head.revision != (current.revision + 1 if current else 1):
                 raise EvaluationGenerationError("revision must advance the corpus head by one")
-            transaction.update(self.revisions.document(_revision_id(head.corpus_version_id, head.revision)),
-                               {"published": True})
+            if winner_snapshot.exists:
+                raise ConcurrentActivationError("corpus dataset revision is already published")
+            transaction.set(winner, head.model_dump(mode="json"))
             transaction.set(pointer, head.model_dump(mode="json"))
             return head
 
@@ -197,6 +202,8 @@ class FirestoreEvaluationGenerationStore:
         item_ids: tuple[str, ...] | None = None,
     ) -> EvaluationRunSnapshot:
         """Pin selected rows and the complete candidate configuration before dispatch."""
+        if isinstance(binding, ServingDatasetBinding):
+            raise EvaluationGenerationError("serving snapshots require authoritative release resolution")
         reference = self.run_snapshots.document(sha256(run_id.encode()).hexdigest())
         existing = reference.get()
         if existing.exists and existing.to_dict().get("status") == "ready":
@@ -207,13 +214,12 @@ class FirestoreEvaluationGenerationStore:
                     or (item_ids is not None and tuple(row.item_id for row in saved.items) != item_ids)):
                 raise GenerationIntegrityError("run ID is already bound to different inputs")
             return saved
-        revision_ref = self.revisions.document(_revision_id(binding.corpus_version_id, binding.dataset_revision))
-        revision = revision_ref.get()
-        if not revision.exists or revision.to_dict().get("published") is not True:
+        winner = self.revision_winners.document(_revision_id(binding.corpus_version_id, binding.dataset_revision))
+        revision = winner.get()
+        if not revision.exists:
             raise EvaluationGenerationError("run requires a published corpus revision")
-        revision_data = revision.to_dict()
-        head = DatasetHead.model_validate({key: revision_data[key] for key in DatasetHead.model_fields})
-        if isinstance(binding, CandidateDatasetBinding) and self.corpus_head(binding.corpus_version_id) != head:
+        head = DatasetHead.model_validate(revision.to_dict())
+        if self.corpus_head(binding.corpus_version_id) != head:
             raise ConcurrentActivationError("corpus dataset revision is no longer current")
         if configuration.corpus_binding.corpus_version_id != binding.corpus_version_id:
             raise GenerationIntegrityError("run configuration belongs to a different corpus")
@@ -251,14 +257,9 @@ class FirestoreEvaluationGenerationStore:
         pointer = self.corpus_heads.document(_corpus_id(binding.corpus_version_id))
 
         def publish(transaction: Any) -> None:
-            if isinstance(binding, CandidateDatasetBinding):
-                current = pointer.get(transaction=transaction)
-                if not current.exists or DatasetHead.model_validate(current.to_dict()) != head:
-                    raise ConcurrentActivationError("corpus dataset revision changed during run preparation")
-            else:
-                stored_revision = revision_ref.get(transaction=transaction)
-                if not stored_revision.exists or stored_revision.to_dict().get("published") is not True:
-                    raise GenerationIntegrityError("serving revision is not published")
+            current = pointer.get(transaction=transaction)
+            if not current.exists or DatasetHead.model_validate(current.to_dict()) != head:
+                raise ConcurrentActivationError("corpus dataset revision changed during run preparation")
             transaction.update(reference, {"status": "ready"})
 
         self._transaction_runner(self.client.transaction(), publish)
@@ -628,6 +629,10 @@ def _corpus_id(corpus_version_id: str) -> str:
 
 def _revision_id(corpus_version_id: str, revision: int) -> str:
     return f"{_corpus_id(corpus_version_id)}-{revision}"
+
+
+def _proposal_id(head: DatasetHead) -> str:
+    return f"{_revision_id(head.corpus_version_id, head.revision)}-{head.dataset_sha256}"
 
 
 def _revision_fingerprint(payloads: list[dict[str, Any]]) -> str:

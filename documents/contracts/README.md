@@ -149,8 +149,8 @@ unique tuple selects a subset. It returns `EvaluationRunSnapshot`.
 shape-validated provisional revision; `activate_revision(head,
 expected_revision=)` compares and publishes the corpus-scoped head.
 `corpus_head(corpus_version_id)` and `get_revision(head)` retrieve its identity
-and digest-checked rows. Candidate snapshots require the current head; serving
-snapshots can use a previously published revision pinned by the serving release.
-The caller must resolve candidate/serving binding and configuration on the
+and digest-checked rows. Candidate snapshots require the current head. Serving snapshot creation fails
+closed until #362 resolves the release to its authoritative corpus and dataset
+revision. The caller must resolve candidate binding and configuration on the
 server: this storage interface does not authorize a release or prove that a
-binding belongs to an attempt or release.
+binding belongs to an attempt.

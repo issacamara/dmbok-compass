@@ -75,6 +75,11 @@ class _SnapshotResolver:
 
 def test_installed_lock_and_api_job_snapshot(monkeypatch: pytest.MonkeyPatch) -> None:
     import app.rag as rag
+    import llama_cloud
+    import llama_index.core
+    import tiktoken
+
+    assert llama_cloud and llama_index.core and callable(tiktoken.get_encoding)
 
     lock = Path(rag.__file__).resolve().parents[1] / "requirements.lock"
     expected = os.environ.get("EXPECTED_LOCK_SHA256")

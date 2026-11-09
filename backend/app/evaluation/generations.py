@@ -17,6 +17,12 @@ from google.api_core.exceptions import AlreadyExists
 
 from app.contracts import (
     ActiveEvaluationGeneration,
+    CandidateDatasetBinding,
+    DatasetHead,
+    EvaluationCandidateSnapshot,
+    EvaluationRowV2,
+    EvaluationRunSnapshot,
+    ServingDatasetBinding,
     EvaluationDataset,
     EvaluationItem,
     EvaluationReportEligibility,
@@ -90,6 +96,9 @@ class FirestoreEvaluationGenerationStore:
     active_pointer_collection_id = "evaluation_dataset_state"
     active_pointer_id = "active"
     _staging_batch_size = 400
+    revision_collection_id = "evaluation_dataset_revisions_v2"
+    corpus_heads_collection_id = "evaluation_dataset_heads_v2"
+    run_snapshots_collection_id = "evaluation_run_snapshots_v2"
 
     def __init__(
         self,
@@ -100,7 +109,177 @@ class FirestoreEvaluationGenerationStore:
         self.client = client
         self.generations = client.collection(self.generations_collection_id)
         self.pointer = client.collection(self.active_pointer_collection_id).document(self.active_pointer_id)
+        self.revisions = client.collection(self.revision_collection_id)
+        self.corpus_heads = client.collection(self.corpus_heads_collection_id)
+        self.run_snapshots = client.collection(self.run_snapshots_collection_id)
         self._transaction_runner = transaction_runner
+
+    def stage_revision(
+        self, corpus_version_id: str, revision: int, rows: tuple[EvaluationRowV2, ...],
+    ) -> DatasetHead:
+        """Stage shape-validated rows without changing a visible pointer."""
+        if not rows:
+            raise EvaluationGenerationError("a revision requires at least one row")
+        rows = tuple(EvaluationRowV2.model_validate(row.model_dump()) for row in rows)
+        if len({row.item_id for row in rows}) != len(rows):
+            raise EvaluationGenerationError("revision item IDs must be unique")
+        if any(chunk_id.startswith(("imported-passage-", "placeholder-"))
+               for row in rows for chunk_id in row.relevant_child_ids):
+            raise EvaluationGenerationError("revision cannot contain legacy placeholder child IDs")
+        payloads = [row.model_dump(mode="json") for row in rows]
+        head = DatasetHead(corpus_version_id=corpus_version_id, revision=revision,
+                           dataset_sha256=_revision_fingerprint(payloads))
+        reference = self.revisions.document(_revision_id(head.corpus_version_id, head.revision))
+        metadata = {**head.model_dump(mode="json"), "status": "staging", "published": False, "item_count": len(rows)}
+        try:
+            reference.create(metadata)
+        except AlreadyExists:
+            existing = reference.get().to_dict()
+            if any(existing.get(key) != value for key, value in head.model_dump(mode="json").items()):
+                raise GenerationIntegrityError("revision is already bound to different data")
+            if existing.get("status") == "staged":
+                self.get_revision(head)
+                return head
+        writes = [
+            (reference.collection("items").document(sha256(row.item_id.encode()).hexdigest()),
+             {"ordinal": ordinal, "row": payload})
+            for ordinal, (row, payload) in enumerate(zip(rows, payloads, strict=True))
+        ]
+        self._commit_staged_writes(writes)
+        reference.update({"status": "staged"})
+        self.get_revision(head)
+        return head
+
+    def get_revision(self, head: DatasetHead) -> tuple[EvaluationRowV2, ...]:
+        reference = self.revisions.document(_revision_id(head.corpus_version_id, head.revision))
+        snapshot = reference.get()
+        if not snapshot.exists:
+            raise EvaluationGenerationError("revision is unavailable")
+        metadata = snapshot.to_dict()
+        if metadata.get("status") != "staged" or any(
+            metadata.get(key) != value for key, value in head.model_dump(mode="json").items()
+        ):
+            raise GenerationIntegrityError("revision metadata is inconsistent")
+        documents = [item.to_dict() for item in reference.collection("items").stream()]
+        documents.sort(key=lambda item: item["ordinal"])
+        if [item["ordinal"] for item in documents] != list(range(metadata.get("item_count", -1))):
+            raise GenerationIntegrityError("revision items are incomplete")
+        payloads = [item["row"] for item in documents]
+        if _revision_fingerprint(payloads) != head.dataset_sha256:
+            raise GenerationIntegrityError("revision content digest does not match")
+        return tuple(EvaluationRowV2.model_validate(payload) for payload in payloads)
+
+    def corpus_head(self, corpus_version_id: str) -> DatasetHead | None:
+        snapshot = self.corpus_heads.document(_corpus_id(corpus_version_id)).get()
+        return DatasetHead.model_validate(snapshot.to_dict()) if snapshot.exists else None
+
+    def activate_revision(self, head: DatasetHead, *, expected_revision: int | None) -> DatasetHead:
+        self.get_revision(head)
+        pointer = self.corpus_heads.document(_corpus_id(head.corpus_version_id))
+
+        def apply(transaction: Any) -> DatasetHead:
+            snapshot = pointer.get(transaction=transaction)
+            current = DatasetHead.model_validate(snapshot.to_dict()) if snapshot.exists else None
+            if (current.revision if current else None) != expected_revision:
+                raise ConcurrentActivationError("corpus dataset revision changed before activation")
+            if head.revision != (current.revision + 1 if current else 1):
+                raise EvaluationGenerationError("revision must advance the corpus head by one")
+            transaction.update(self.revisions.document(_revision_id(head.corpus_version_id, head.revision)),
+                               {"published": True})
+            transaction.set(pointer, head.model_dump(mode="json"))
+            return head
+
+        return self._transaction_runner(self.client.transaction(), apply)
+
+    def create_run_snapshot(
+        self, *, run_id: str, binding: CandidateDatasetBinding | ServingDatasetBinding,
+        configuration_version_id: str, configuration: EvaluationCandidateSnapshot,
+        item_ids: tuple[str, ...] | None = None,
+    ) -> EvaluationRunSnapshot:
+        """Pin selected rows and the complete candidate configuration before dispatch."""
+        reference = self.run_snapshots.document(sha256(run_id.encode()).hexdigest())
+        existing = reference.get()
+        if existing.exists and existing.to_dict().get("status") == "ready":
+            saved, saved_configuration = self.get_run_snapshot(run_id)
+            selection = "full" if item_ids is None else "subset"
+            if (saved.binding != binding or saved.configuration_version_id != configuration_version_id
+                    or saved_configuration != configuration or saved.selection != selection
+                    or (item_ids is not None and tuple(row.item_id for row in saved.items) != item_ids)):
+                raise GenerationIntegrityError("run ID is already bound to different inputs")
+            return saved
+        revision_ref = self.revisions.document(_revision_id(binding.corpus_version_id, binding.dataset_revision))
+        revision = revision_ref.get()
+        if not revision.exists or revision.to_dict().get("published") is not True:
+            raise EvaluationGenerationError("run requires a published corpus revision")
+        revision_data = revision.to_dict()
+        head = DatasetHead.model_validate({key: revision_data[key] for key in DatasetHead.model_fields})
+        if isinstance(binding, CandidateDatasetBinding) and self.corpus_head(binding.corpus_version_id) != head:
+            raise ConcurrentActivationError("corpus dataset revision is no longer current")
+        if configuration.corpus_binding.corpus_version_id != binding.corpus_version_id:
+            raise GenerationIntegrityError("run configuration belongs to a different corpus")
+        rows = self.get_revision(head)
+        selected = tuple(row.item_id for row in rows) if item_ids is None else item_ids
+        available = {row.item_id: row for row in rows}
+        if not selected or len(set(selected)) != len(selected) or any(item not in available for item in selected):
+            raise EvaluationGenerationError("run selection must contain unique existing item IDs")
+        selected_rows = tuple(available[item] for item in selected)
+        values = {
+            "run_id": run_id, "binding": binding.model_dump(mode="json"),
+            "configuration_version_id": configuration_version_id,
+            "selection": "full" if item_ids is None else "subset",
+            "items": [row.model_dump(mode="json") for row in selected_rows],
+        }
+        configuration_payload = configuration.model_dump(mode="json")
+        digest = _snapshot_fingerprint(values, configuration_payload)
+        result = EvaluationRunSnapshot.model_validate({**values, "snapshot_sha256": digest})
+        metadata = {key: value for key, value in result.model_dump(mode="json").items() if key != "items"}
+        metadata.update({"configuration": configuration_payload, "status": "staging", "item_count": len(selected_rows)})
+        try:
+            reference.create(metadata)
+        except AlreadyExists:
+            existing = reference.get().to_dict()
+            if existing.get("snapshot_sha256") != digest:
+                raise GenerationIntegrityError("run ID is already bound to different inputs")
+            if existing.get("status") == "ready":
+                return self.get_run_snapshot(run_id)[0]
+        writes = [
+            (reference.collection("items").document(sha256(row.item_id.encode()).hexdigest()),
+             {"ordinal": ordinal, "row": row.model_dump(mode="json")})
+            for ordinal, row in enumerate(selected_rows)
+        ]
+        self._commit_staged_writes(writes)
+        pointer = self.corpus_heads.document(_corpus_id(binding.corpus_version_id))
+
+        def publish(transaction: Any) -> None:
+            if isinstance(binding, CandidateDatasetBinding):
+                current = pointer.get(transaction=transaction)
+                if not current.exists or DatasetHead.model_validate(current.to_dict()) != head:
+                    raise ConcurrentActivationError("corpus dataset revision changed during run preparation")
+            else:
+                stored_revision = revision_ref.get(transaction=transaction)
+                if not stored_revision.exists or stored_revision.to_dict().get("published") is not True:
+                    raise GenerationIntegrityError("serving revision is not published")
+            transaction.update(reference, {"status": "ready"})
+
+        self._transaction_runner(self.client.transaction(), publish)
+        return self.get_run_snapshot(run_id)[0]
+
+    def get_run_snapshot(self, run_id: str) -> tuple[EvaluationRunSnapshot, EvaluationCandidateSnapshot]:
+        reference = self.run_snapshots.document(sha256(run_id.encode()).hexdigest())
+        snapshot = reference.get()
+        if not snapshot.exists or snapshot.to_dict().get("status") != "ready":
+            raise EvaluationGenerationError("run snapshot is unavailable")
+        metadata = snapshot.to_dict()
+        documents = [item.to_dict() for item in reference.collection("items").stream()]
+        documents.sort(key=lambda item: item["ordinal"])
+        if [item["ordinal"] for item in documents] != list(range(metadata.get("item_count", -1))):
+            raise GenerationIntegrityError("run snapshot items are incomplete")
+        values = {key: metadata[key] for key in ("run_id", "binding", "configuration_version_id", "selection")}
+        values["items"] = [item["row"] for item in documents]
+        if values["run_id"] != run_id or _snapshot_fingerprint(values, metadata["configuration"]) != metadata["snapshot_sha256"]:
+            raise GenerationIntegrityError("run snapshot digest does not match")
+        result = EvaluationRunSnapshot.model_validate({**values, "snapshot_sha256": metadata["snapshot_sha256"]})
+        return result, EvaluationCandidateSnapshot.model_validate(metadata["configuration"])
 
     def stage(self, dataset: EvaluationDataset, *, candidate_review: CandidateGoldReview | None = None) -> str:
         """Durably write one immutable generation without changing visibility."""
@@ -441,6 +620,23 @@ class FirestoreEvaluationGenerationStore:
             for reference, payload in writes[start : start + self._staging_batch_size]:
                 batch.set(reference, payload)
             batch.commit()
+
+
+def _corpus_id(corpus_version_id: str) -> str:
+    return sha256(corpus_version_id.encode()).hexdigest()
+
+
+def _revision_id(corpus_version_id: str, revision: int) -> str:
+    return f"{_corpus_id(corpus_version_id)}-{revision}"
+
+
+def _revision_fingerprint(payloads: list[dict[str, Any]]) -> str:
+    return sha256(json.dumps(payloads, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+
+
+def _snapshot_fingerprint(values: dict[str, Any], configuration: dict[str, Any]) -> str:
+    payload = {"snapshot": values, "configuration": configuration}
+    return sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
 
 
 def _dataset_fingerprint(dataset: EvaluationDataset, candidate_review: CandidateGoldReview | None = None) -> str:

@@ -78,3 +78,17 @@ def test_shared_contract_fixture():
     assert fixture["span"]["raw_text"] != fixture["embedding_text"]
     assert EvaluationRowV2.model_validate(fixture["refusal"]).expected_refusal
     assert DatasetRevisionConflict.model_validate(fixture["revision_conflict"]).current_revision == 2
+
+
+def test_structured_blocks_and_synthetic_mapping_keep_source_boundaries():
+    from app.contracts.v29 import SourceTextMapping
+
+    table = ParsedBlock(block_id="t", physical_page=1, reading_order=0, kind="table", raw_text="a b", table_rows=(("a", "b"),))
+    assert table.table_rows == (("a", "b"),)
+    with pytest.raises(ValidationError):
+        ParsedBlock(block_id="t", physical_page=1, reading_order=0, kind="table", raw_text="a b")
+    mapping = SourceTextMapping(target_start=0, target_end=4, source_span_id="s1", source_start=0, source_end=4)
+    synthetic = SourceTextMapping(target_start=4, target_end=5, synthetic=True)
+    GenerationContextParent(parent_id="p", spans=[span()], backing_child_ids=["c"], embedding_text="text!", normalization_mappings=[mapping, synthetic])
+    with pytest.raises(ValidationError):
+        SourceTextMapping(target_start=0, target_end=1, synthetic=True, source_span_id="s1")

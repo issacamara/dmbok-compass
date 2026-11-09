@@ -184,6 +184,7 @@ from .v29 import (
     ParsingArtifact,
     RawSourceSpan,
     ServingDatasetBinding,
+    SourceTextMapping,
     StructureReviewRevision,
 )
 
@@ -191,5 +192,5 @@ __all__ += [
     "AllowanceReservation", "CandidateDatasetBinding", "CorpusStagingAttemptV2",
     "DatasetExclusion", "DatasetHead", "DatasetRevisionConflict", "EvaluationRowV2",
     "EvaluationRunSnapshot", "GenerationContext", "GenerationContextParent", "ParsedBlock",
-    "ParsingArtifact", "RawSourceSpan", "ServingDatasetBinding", "StructureReviewRevision",
+    "ParsingArtifact", "RawSourceSpan", "ServingDatasetBinding", "SourceTextMapping", "StructureReviewRevision",
 ]

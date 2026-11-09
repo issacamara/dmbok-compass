@@ -22,6 +22,18 @@ class ParsedBlock(FrozenContractModel):
     reading_order: int = Field(strict=True, ge=0)
     kind: Literal["text", "table", "list"]
     raw_text: str = Field(min_length=1, max_length=20000)
+    table_rows: tuple[tuple[str, ...], ...] = ()
+    list_items: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_structure(self) -> "ParsedBlock":
+        if self.kind == "table" and (not self.table_rows or any(not row for row in self.table_rows)):
+            raise ValueError("table blocks require rows")
+        if self.kind == "list" and not self.list_items:
+            raise ValueError("list blocks require items")
+        if (self.kind != "table" and self.table_rows) or (self.kind != "list" and self.list_items):
+            raise ValueError("block structure must match its kind")
+        return self
 
 
 class ParsingArtifact(FrozenContractModel):
@@ -68,17 +80,51 @@ class StructureReviewRevision(FrozenContractModel):
     reviewed_at: AwareDatetime
 
 
+class SourceTextMapping(FrozenContractModel):
+    target_start: int = Field(strict=True, ge=0)
+    target_end: int = Field(strict=True, gt=0)
+    source_span_id: Identifier | None = None
+    source_start: int | None = Field(default=None, strict=True, ge=0)
+    source_end: int | None = Field(default=None, strict=True, gt=0)
+    synthetic: bool = False
+
+    @model_validator(mode="after")
+    def validate_mapping(self) -> "SourceTextMapping":
+        if self.target_end <= self.target_start:
+            raise ValueError("target offsets must be ordered")
+        if self.synthetic:
+            if self.source_span_id is not None or self.source_start is not None or self.source_end is not None:
+                raise ValueError("synthetic text cannot claim source offsets")
+        elif self.source_span_id is None or self.source_start is None or self.source_end is None or self.source_end <= self.source_start:
+            raise ValueError("source text requires ordered source offsets")
+        return self
+
+
 class GenerationContextParent(FrozenContractModel):
     parent_id: Identifier
     spans: tuple[RawSourceSpan, ...] = Field(min_length=1)
     backing_child_ids: tuple[Identifier, ...] = Field(min_length=1)
     embedding_text: str = Field(min_length=1, max_length=20000)
+    normalization_mappings: tuple[SourceTextMapping, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_mappings(self) -> "GenerationContextParent":
+        span_ids = {span.span_id for span in self.spans}
+        if len(span_ids) != len(self.spans) or [span.physical_page for span in self.spans] != sorted(span.physical_page for span in self.spans):
+            raise ValueError("spans must have unique IDs and follow page order")
+        if any(mapping.source_span_id not in span_ids for mapping in self.normalization_mappings if not mapping.synthetic):
+            raise ValueError("normalization mappings must reference supplied spans")
+        if any(mapping.source_end > len(next(span.raw_text for span in self.spans if span.span_id == mapping.source_span_id)) for mapping in self.normalization_mappings if not mapping.synthetic):
+            raise ValueError("normalization mapping exceeds source span")
+        if any(mapping.target_end > len(self.embedding_text) for mapping in self.normalization_mappings):
+            raise ValueError("normalization mapping exceeds target text")
+        return self
 
 
 class GenerationContext(FrozenContractModel):
     schema_version: Literal["generation-context-v1"] = "generation-context-v1"
     corpus_version_id: Identifier
-    parents: list[GenerationContextParent] = Field(min_length=1)
+    parents: tuple[GenerationContextParent, ...] = Field(min_length=1)
 
 
 class EvaluationRowV2(FrozenContractModel):

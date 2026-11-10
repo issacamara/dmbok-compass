@@ -11,7 +11,6 @@ from app.api.corpus_staging import corpus_staging_approval_service, corpus_stagi
 from app.contracts import UserProfile
 from app.contracts.v29 import ParsedBlock, ParsingArtifact
 from app.corpus.staging import (
-    CloudRunCorpusIngestionDispatcher,
     CorpusStagingApprovalService,
     CorpusStagingUploadService,
     FirestoreCorpusStagingAttemptStore,

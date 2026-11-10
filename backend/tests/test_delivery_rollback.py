@@ -85,7 +85,7 @@ def test_both_deployments_use_one_image_for_api_and_jobs() -> None:
     assert "bash scripts/deploy_cloud_run.sh" in development
     assert "bash scripts/deploy_cloud_run.sh" in production
     assert 'test "$copied_digest" = "$DIGEST"' in production
-    assert deploy.count('--image="$API_IMAGE"') == 3
+    assert deploy.count('--image="$API_IMAGE"') == 5  # API, ingestion, evaluation, both parser paths
     assert "RAG_CORPUS_VERSION_ID=${CORPUS_VERSION_ID}" in deploy
     assert "CORPUS_BUCKET_NAME=${CORPUS_BUCKET_NAME}" in deploy
     assert "${{ vars.CORPUS_BUCKET_NAME }}" in development
@@ -120,7 +120,7 @@ def test_terraform_couples_admin_images_and_retains_both_indexes() -> None:
     delivery = (ROOT / "infra" / "terraform" / "delivery.tf").read_text(encoding="utf-8")
     indexes = (ROOT / "infra" / "terraform" / "firestore_vector.tf").read_text(encoding="utf-8")
 
-    assert delivery.count("var.api_image") == 3  # API, ingestion, and evaluation
+    assert delivery.count("var.api_image") == 4  # API, ingestion, evaluation, and parser
     assert delivery.count('name  = "RAG_CORPUS_VERSION_ID"') == 3
     assert indexes.count("prevent_destroy = true") == 2
 

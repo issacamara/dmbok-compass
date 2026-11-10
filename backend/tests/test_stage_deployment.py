@@ -10,7 +10,13 @@ SCRIPT = Path(__file__).resolve().parents[2] / "scripts/deploy_cloud_run.sh"
 
 def deploy(tmp_path: Path, **settings: str) -> subprocess.CompletedProcess[str]:
     fake = tmp_path / "gcloud"
-    fake.write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALL_LOG"\n')
+    fake.write_text(
+        '#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALL_LOG"\n'
+        'if [ "$1 $2 $3" = "run jobs list" ]; then\n'
+        '  [ "${FAKE_LIST_FAIL:-0}" = 0 ] || exit 1\n'
+        '  [ "${FAKE_PARSER_JOB:-0}" = 0 ] || printf "%s\\n" dmbok-compass-parser\n'
+        'fi\n'
+    )
     fake.chmod(0o755)
     env = {
         "PATH": f"{tmp_path}:{os.environ['PATH']}",
@@ -36,12 +42,14 @@ def test_parser_secret_is_only_delivered_to_isolated_parser(tmp_path: Path) -> N
         PARSER_MODE="parse",
         PARSER_ALLOWANCE_POLICY="observed",
         PARSER_ALLOWANCE_MAX_UNITS="50",
+        FAKE_PARSER_JOB="1",
     )
     assert result.returncode == 0, result.stderr
     preflight, api, ingestion, evaluation, parser = (tmp_path / "calls").read_text().splitlines()
-    assert "run jobs describe dmbok-compass-parser" in preflight
+    assert "run jobs list" in preflight
+    assert all("--image=image" in call for call in (api, ingestion, evaluation, parser))
     assert "LLAMACLOUD_API_KEY=llamacloud-parser-api-key:3" in parser
-    assert "--service-account=dmbok-compass-parser@project.iam.gserviceaccount.com" in parser
+    assert "--service-account=" not in parser
     assert "LLAMACLOUD_API_KEY=" not in api + ingestion + evaluation
     assert "PARSER_ROUTE=" not in api + ingestion + evaluation
 
@@ -65,7 +73,8 @@ def test_missing_or_unpinned_stage_settings_fail_before_deployment(tmp_path: Pat
 
 def test_unconfigured_parser_is_removed_and_serving_still_deploys(tmp_path: Path) -> None:
     assert deploy(tmp_path).returncode == 0
-    api, ingestion, evaluation = (tmp_path / "calls").read_text().splitlines()
+    preflight, api, ingestion, evaluation = (tmp_path / "calls").read_text().splitlines()
+    assert "run jobs list" in preflight
     assert all("--remove-secrets=LLAMACLOUD_API_KEY" in call for call in (api, ingestion, evaluation))
     assert "LLAMACLOUD_API_KEY=llamacloud-parser-api-key:" not in ingestion
 
@@ -84,8 +93,35 @@ def test_generator_and_judge_settings_are_only_sent_to_evaluation(tmp_path: Path
     }
     result = deploy(tmp_path, **settings)
     assert result.returncode == 0, result.stderr
-    api, ingestion, evaluation = (tmp_path / "calls").read_text().splitlines()
+    _, api, ingestion, evaluation = (tmp_path / "calls").read_text().splitlines()
     assert "GENERATOR_MODEL=provider/model" in evaluation
     assert "JUDGE_MODEL=provider/model" in evaluation
     assert "GENERATOR_MODEL=" not in api + ingestion
     assert "JUDGE_MODEL=" not in api + ingestion
+
+
+def test_disabled_parser_clears_credentials_and_updates_image(tmp_path: Path) -> None:
+    configured = dict(FAKE_PARSER_JOB="1", API_IMAGE="old-image", PARSER_SECRET_VERSION="1",
+                      PARSER_ROUTE="llamacloud", PARSER_MODE="parse", PARSER_ALLOWANCE_POLICY="observed",
+                      PARSER_ALLOWANCE_MAX_UNITS="50")
+    assert deploy(tmp_path, **configured).returncode == 0
+    assert deploy(tmp_path, FAKE_PARSER_JOB="1", API_IMAGE="new-image").returncode == 0
+    calls = (tmp_path / "calls").read_text().splitlines()
+    assert "--update-secrets=LLAMACLOUD_API_KEY=llamacloud-parser-api-key:1" in calls[4]
+    preflight, api, ingestion, evaluation, parser = calls[5:]
+    assert "run jobs list" in preflight
+    assert "--image=new-image" in parser
+    assert "--service-account=" not in parser
+    assert "--remove-secrets=LLAMACLOUD_API_KEY" in parser
+    assert "--remove-env-vars=PARSER_SECRET_VERSION,PARSER_ROUTE,PARSER_MODE,PARSER_ALLOWANCE_POLICY,PARSER_ALLOWANCE_MAX_UNITS" in parser
+    assert "--update-secrets=" not in parser
+
+
+def test_missing_parser_and_list_failure_fail_before_deploying_when_configured(tmp_path: Path) -> None:
+    settings = dict(PARSER_SECRET_VERSION="1", PARSER_ROUTE="llamacloud", PARSER_MODE="parse",
+                    PARSER_ALLOWANCE_POLICY="observed", PARSER_ALLOWANCE_MAX_UNITS="50")
+    assert deploy(tmp_path, **settings).returncode != 0
+    assert len((tmp_path / "calls").read_text().splitlines()) == 1
+    (tmp_path / "calls").unlink()
+    assert deploy(tmp_path, FAKE_LIST_FAIL="1").returncode != 0
+    assert len((tmp_path / "calls").read_text().splitlines()) == 1

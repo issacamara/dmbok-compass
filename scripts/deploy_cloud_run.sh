@@ -50,9 +50,11 @@ for stage in GENERATOR JUDGE; do
   fi
 done
 
-if [[ -n "${PARSER_SECRET_VERSION:-}" ]]; then
-  # Terraform must provision the restricted job and identity before credentials are attached.
-  gcloud run jobs describe "$PARSER_JOB" --project="$PROJECT_ID" --region="$REGION" --quiet > /dev/null
+PARSER_JOB_PRESENT=$(gcloud run jobs list --project="$PROJECT_ID" --region="$REGION" \
+  --filter="metadata.name=${PARSER_JOB}" --format="value(metadata.name)" --limit=1 --quiet)
+if [[ -n "${PARSER_SECRET_VERSION:-}" && "$PARSER_JOB_PRESENT" != "$PARSER_JOB" ]]; then
+  echo "Parser job must be provisioned before enabling parsing" >&2
+  exit 1
 fi
 
 gcloud run deploy "$API_SERVICE" --project="$PROJECT_ID" --region="$REGION" \
@@ -71,7 +73,11 @@ gcloud run jobs deploy "$EVALUATION_JOB" --project="$PROJECT_ID" --region="$REGI
 
 if [[ -n "${PARSER_SECRET_VERSION:-}" ]]; then
   gcloud run jobs deploy "$PARSER_JOB" --project="$PROJECT_ID" --region="$REGION" \
-    --service-account="dmbok-compass-parser@${PROJECT_ID}.iam.gserviceaccount.com" \
     --image="$API_IMAGE" --update-secrets="LLAMACLOUD_API_KEY=llamacloud-parser-api-key:${PARSER_SECRET_VERSION}" \
+    --update-env-vars="$PARSER_ENV" --quiet
+elif [[ "$PARSER_JOB_PRESENT" == "$PARSER_JOB" ]]; then
+  gcloud run jobs deploy "$PARSER_JOB" --project="$PROJECT_ID" --region="$REGION" \
+    --image="$API_IMAGE" --remove-secrets=LLAMACLOUD_API_KEY \
+    --remove-env-vars=PARSER_SECRET_VERSION,PARSER_ROUTE,PARSER_MODE,PARSER_ALLOWANCE_POLICY,PARSER_ALLOWANCE_MAX_UNITS \
     --update-env-vars="$PARSER_ENV" --quiet
 fi

@@ -179,6 +179,10 @@ jobs:
         run: |
           terraform plan -input=false -out="$RUNNER_TEMP/development.tfplan"
           terraform apply -input=false -auto-approve "$RUNNER_TEMP/development.tfplan"
+      - name: Reconcile parser with deployed API image
+        env:
+          PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+        run: python scripts/reconcile_parser_image.py
 
   apply-production:
     name: Apply production

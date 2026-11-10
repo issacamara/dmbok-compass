@@ -71,6 +71,11 @@ gcloud run jobs deploy "$EVALUATION_JOB" --project="$PROJECT_ID" --region="$REGI
   --remove-env-vars=GENERATOR_ROUTE,GENERATOR_MODEL,GENERATOR_CONFIGURATION_VERSION,GENERATOR_ALLOWANCE_POLICY,GENERATOR_ALLOWANCE_MAX_UNITS,JUDGE_ROUTE,JUDGE_MODEL,JUDGE_CONFIGURATION_VERSION,JUDGE_ALLOWANCE_POLICY,JUDGE_ALLOWANCE_MAX_UNITS \
   --update-env-vars="$EVALUATION_ENV" --quiet
 
+if [[ "$PARSER_JOB_PRESENT" != "$PARSER_JOB" ]]; then
+  PARSER_JOB_PRESENT=$(gcloud run jobs list --project="$PROJECT_ID" --region="$REGION" \
+    --filter="metadata.name=${PARSER_JOB}" --format="value(metadata.name)" --limit=1 --quiet)
+fi
+
 if [[ -n "${PARSER_SECRET_VERSION:-}" ]]; then
   gcloud run jobs deploy "$PARSER_JOB" --project="$PROJECT_ID" --region="$REGION" \
     --image="$API_IMAGE" --update-secrets="LLAMACLOUD_API_KEY=llamacloud-parser-api-key:${PARSER_SECRET_VERSION}" \

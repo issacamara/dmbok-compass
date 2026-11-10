@@ -14,6 +14,10 @@ def deploy(tmp_path: Path, **settings: str) -> subprocess.CompletedProcess[str]:
         '#!/bin/sh\nprintf "%s\\n" "$*" >> "$CALL_LOG"\n'
         'if [ "$1 $2 $3" = "run jobs list" ]; then\n'
         '  [ "${FAKE_LIST_FAIL:-0}" = 0 ] || exit 1\n'
+        '  if [ "${FAKE_DELAYED_JOB:-0}" = 1 ]; then\n'
+        '    if [ -e "$CALL_LOG.listed" ]; then printf "%s\\n" dmbok-compass-parser; fi\n'
+        '    touch "$CALL_LOG.listed"; exit 0\n'
+        '  fi\n'
         '  [ "${FAKE_PARSER_JOB:-0}" = 0 ] || printf "%s\\n" dmbok-compass-parser\n'
         'fi\n'
     )
@@ -73,8 +77,9 @@ def test_missing_or_unpinned_stage_settings_fail_before_deployment(tmp_path: Pat
 
 def test_unconfigured_parser_is_removed_and_serving_still_deploys(tmp_path: Path) -> None:
     assert deploy(tmp_path).returncode == 0
-    preflight, api, ingestion, evaluation = (tmp_path / "calls").read_text().splitlines()
+    preflight, api, ingestion, evaluation, second_check = (tmp_path / "calls").read_text().splitlines()
     assert "run jobs list" in preflight
+    assert "run jobs list" in second_check
     assert all("--remove-secrets=LLAMACLOUD_API_KEY" in call for call in (api, ingestion, evaluation))
     assert "LLAMACLOUD_API_KEY=llamacloud-parser-api-key:" not in ingestion
 
@@ -93,7 +98,7 @@ def test_generator_and_judge_settings_are_only_sent_to_evaluation(tmp_path: Path
     }
     result = deploy(tmp_path, **settings)
     assert result.returncode == 0, result.stderr
-    _, api, ingestion, evaluation = (tmp_path / "calls").read_text().splitlines()
+    _, api, ingestion, evaluation, _ = (tmp_path / "calls").read_text().splitlines()
     assert "GENERATOR_MODEL=provider/model" in evaluation
     assert "JUDGE_MODEL=provider/model" in evaluation
     assert "GENERATOR_MODEL=" not in api + ingestion
@@ -125,3 +130,13 @@ def test_missing_parser_and_list_failure_fail_before_deploying_when_configured(t
     (tmp_path / "calls").unlink()
     assert deploy(tmp_path, FAKE_LIST_FAIL="1").returncode != 0
     assert len((tmp_path / "calls").read_text().splitlines()) == 1
+
+
+def test_job_created_during_delivery_receives_exact_image(tmp_path: Path) -> None:
+    image = "registry.example/app@sha256:" + "a" * 64
+    result = deploy(tmp_path, FAKE_DELAYED_JOB="1", API_IMAGE=image)
+    assert result.returncode == 0, result.stderr
+    calls = (tmp_path / "calls").read_text().splitlines()
+    assert "run jobs list" in calls[0] and "run jobs list" in calls[4]
+    assert "run jobs deploy dmbok-compass-parser" in calls[5]
+    assert f"--image={image}" in calls[5]

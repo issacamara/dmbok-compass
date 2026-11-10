@@ -82,7 +82,7 @@ class StagingArtifact:
 
 class CorpusStagingAttemptStore(Protocol):
     def begin(
-        self, *, attempt_id: str, actor_id: str, source_object_name: str, map_object_name: str
+        self, *, attempt_id: str, actor_id: str, source_object_name: str, map_object_name: str | None
     ) -> int: ...
 
     def attach_artifact(
@@ -148,7 +148,7 @@ class FirestoreCorpusStagingAttemptStore:
         self._transaction_runner = transaction_runner
 
     def begin(
-        self, *, attempt_id: str, actor_id: str, source_object_name: str, map_object_name: str
+        self, *, attempt_id: str, actor_id: str, source_object_name: str, map_object_name: str | None
     ) -> int:
         now = datetime.now(timezone.utc).isoformat()
         self.attempts.document(attempt_id).create(
@@ -175,7 +175,10 @@ class FirestoreCorpusStagingAttemptStore:
         if not snapshot.exists:
             raise ValueError("staging attempt is unavailable")
         record = snapshot.to_dict()
-        if record.get("state") != "validating" or record.get(artifact_kind) is not None:
+        existing = record.get(artifact_kind)
+        if existing == artifact:
+            return int(record.get("revision", 0))
+        if record.get("state") != "validating" or existing is not None:
             raise ValueError("staging attempt cannot accept this artifact")
         revision = int(record.get("revision", 0)) + 1
         reference.update(
@@ -429,10 +432,12 @@ def _attempt_status(record: dict[str, Any]) -> CorpusStagingAttemptStatus:
                     "child_count",
                     "chunk_count",
                     "staged_corpus_version_id",
+                    "parsing_output_sha256",
                     "error",
                 )
                 if key in record
             }
+            | ({"hosted_parsing_state": record["parsing_state"]} if "parsing_state" in record else {})
         )
     except Exception:
         raise StagingPersistenceError("staging attempt is unavailable") from None
@@ -587,6 +592,21 @@ def validate_staging_files(
         ) from None
 
 
+def validate_staging_pdf(*, pdf_filename: str | None, pdf_content_type: str | None, pdf_bytes: bytes) -> None:
+    if len(pdf_bytes) > MAX_STAGING_PDF_BYTES:
+        raise StagingUploadValidationError(
+            "staging_file_too_large", "The PDF exceeds the allowed size.", 413
+        )
+    if not pdf_filename or not pdf_filename.lower().endswith(".pdf") or _media_type(pdf_content_type) != "application/pdf":
+        raise StagingUploadValidationError(
+            "invalid_staging_pdf", "Upload one PDF file.", 415
+        )
+    if not pdf_bytes.startswith(b"%PDF-"):
+        raise StagingUploadValidationError(
+            "invalid_staging_pdf", "The PDF file signature is invalid.", 422
+        )
+
+
 class CorpusStagingUploadService:
     def __init__(self, store: CorpusStagingAttemptStore, bucket: Any, bucket_name: str) -> None:
         self.store = store
@@ -642,6 +662,92 @@ class CorpusStagingUploadService:
                 except Exception:
                     raise StagingPersistenceError("staging storage is unavailable") from None
 
+        return CorpusStagingAttemptStatus(
+            attempt_id=attempt_id, revision=revision, state="validating"
+        )
+
+    def submit_pdf(self, *, actor_id: str, pdf_bytes: bytes) -> CorpusStagingAttemptStatus:
+        """Create a source-only attempt; parsing and structure generation are later stages."""
+        if len(pdf_bytes) > MAX_STAGING_PDF_BYTES or not pdf_bytes.startswith(b"%PDF-"):
+            raise StagingUploadValidationError(
+                "invalid_staging_pdf", "The PDF file is invalid or exceeds the allowed size.", 422
+            )
+        source_digest = sha256(pdf_bytes).hexdigest()
+        attempt_id = sha256(f"{actor_id}\0{source_digest}".encode("utf-8")).hexdigest()[:32]
+        try:
+            existing = self.store.get(attempt_id=attempt_id)
+            if existing is not None:
+                source = existing.get("source")
+                if existing.get("actor_id") != actor_id or existing.get("source_object_name") != f"staging/{attempt_id}/source.pdf":
+                    raise StagingAttemptConflict("source-only attempt identity conflicts")
+                if source is not None:
+                    if not isinstance(source, dict) or source.get("sha256") != source_digest:
+                        raise StagingAttemptConflict("source-only attempt identity conflicts")
+                    return _attempt_status(existing)
+        except (StagingAttemptConflict, StagingPersistenceError):
+            raise
+        except Exception:
+            raise StagingPersistenceError("staging storage is unavailable") from None
+        source_name = f"staging/{attempt_id}/source.pdf"
+        try:
+            try:
+                revision = self.store.begin(
+                    attempt_id=attempt_id,
+                    actor_id=actor_id,
+                    source_object_name=source_name,
+                    map_object_name=None,
+                )
+            except Exception:
+                concurrent = self.store.get(attempt_id=attempt_id)
+                if (
+                    concurrent is None
+                    or concurrent.get("actor_id") != actor_id
+                    or concurrent.get("source_object_name") != source_name
+                ):
+                    raise
+                attached = concurrent.get("source")
+                if isinstance(attached, dict) and attached.get("sha256") == source_digest:
+                    return _attempt_status(concurrent)
+                revision = int(concurrent.get("revision", 1))
+            blob = self.bucket.blob(source_name)
+            try:
+                blob.upload_from_string(
+                    pdf_bytes, content_type="application/pdf", if_generation_match=0, timeout=60
+                )
+                generation = int(blob.generation)
+            except PreconditionFailed:
+                existing_blob = self.bucket.blob(source_name)
+                existing_blob.reload(timeout=30)
+                generation = int(existing_blob.generation)
+                existing_bytes = self.bucket.blob(source_name, generation=generation).download_as_bytes(timeout=60)
+                if sha256(existing_bytes).hexdigest() != source_digest:
+                    raise StagingAttemptConflict("source-only object content conflicts") from None
+            if generation < 1:
+                raise ValueError("invalid source generation")
+            revision = self.store.attach_artifact(
+                attempt_id=attempt_id,
+                artifact_kind="source",
+                artifact=StagingArtifact(
+                    object_name=source_name,
+                    generation=generation,
+                    sha256=source_digest,
+                    content_type="application/pdf",
+                ).to_dict(bucket_name=self.bucket_name),
+            )
+        except Exception:
+            try:
+                self.store.fail(
+                    attempt_id=attempt_id,
+                    error=ApiError(
+                        code="staging_storage_failed",
+                        message="The PDF could not be staged. Please submit a new attempt.",
+                        retryable=True,
+                        status=503,
+                    ),
+                )
+            except Exception:
+                pass
+            raise StagingPersistenceError("staging storage is unavailable") from None
         return CorpusStagingAttemptStatus(
             attempt_id=attempt_id, revision=revision, state="validating"
         )

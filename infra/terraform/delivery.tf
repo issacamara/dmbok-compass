@@ -291,7 +291,7 @@ resource "google_cloud_run_v2_job" "parser" {
       containers {
         image   = var.api_image
         command = ["python"]
-        args    = ["-c", "raise SystemExit('Hosted parsing is not configured')"]
+        args    = ["-m", "app.ingestion.parsing_entrypoint"]
       }
     }
   }
@@ -426,5 +426,21 @@ resource "google_cloud_run_v2_job_iam_member" "runtime_evaluation_executor_with_
   location = var.region
   name     = google_cloud_run_v2_job.evaluation.name
   role     = "roles/run.jobsExecutorWithOverrides"
+  member   = "serviceAccount:${google_service_account.workload["runtime"].email}"
+}
+
+resource "google_cloud_run_v2_job_iam_member" "runtime_parser_invoker" {
+  project  = var.project_id
+  location = var.region
+  name     = google_cloud_run_v2_job.parser.name
+  role     = "roles/run.invoker"
+  member   = "serviceAccount:${google_service_account.workload["runtime"].email}"
+}
+
+resource "google_cloud_run_v2_job_iam_member" "runtime_parser_executor" {
+  project  = var.project_id
+  location = var.region
+  name     = google_cloud_run_v2_job.parser.name
+  role     = "roles/run.jobsExecutor"
   member   = "serviceAccount:${google_service_account.workload["runtime"].email}"
 }

@@ -10,8 +10,12 @@ import logging
 import pytest
 from fastapi.testclient import TestClient
 
-from app.contracts import ApiError, UserProfile
-from app.api.corpus_staging import corpus_staging_upload_service
+from app.contracts import ApiError, CorpusStagingAttemptStatus, UserProfile
+from app.api.corpus_staging import (
+    _configured_hosted_parsing_dispatch,
+    corpus_staging_upload_service,
+    hosted_parsing_dispatch,
+)
 from app.corpus.staging import (
     CorpusStagingUploadService,
     FirestoreCorpusStagingAttemptStore,
@@ -21,6 +25,7 @@ from app.corpus.staging import (
     validate_staging_files,
 )
 from app.identity import get_admin_user, get_current_profile
+from app.ingestion.hosted_parsing import ParsingAttemptNotFound, ParsingOutcomeUnknown
 from app.main import app
 from test_evaluation_generations import FakeFirestore
 
@@ -41,7 +46,7 @@ class MemoryStore:
         self.attempts: dict[str, dict[str, object]] = {}
         self.active_pointer = "active-corpus-v1"
 
-    def begin(self, *, attempt_id: str, actor_id: str, source_object_name: str, map_object_name: str) -> int:
+    def begin(self, *, attempt_id: str, actor_id: str, source_object_name: str, map_object_name: str | None) -> int:
         self.attempts[attempt_id] = {
             "attempt_id": attempt_id,
             "actor_id": actor_id,
@@ -54,8 +59,13 @@ class MemoryStore:
         }
         return 1
 
+    def get(self, *, attempt_id: str):
+        return deepcopy(self.attempts[attempt_id]) if attempt_id in self.attempts else None
+
     def attach_artifact(self, *, attempt_id: str, artifact_kind: str, artifact: dict[str, object]) -> int:
         attempt = self.attempts[attempt_id]
+        if attempt.get(artifact_kind) == artifact:
+            return int(attempt["revision"])
         revision = int(attempt["revision"]) + 1
         attempt[artifact_kind] = deepcopy(artifact)
         attempt["revision"] = revision
@@ -86,11 +96,21 @@ class FakeBlob:
     ) -> None:
         assert timeout == 60
         if if_generation_match != 0 or self.name in self.bucket.objects:
-            raise RuntimeError("object is not create-only")
+            from google.api_core.exceptions import PreconditionFailed
+
+            raise PreconditionFailed("object already exists")
         if self.bucket.fail_name and self.name.endswith(self.bucket.fail_name):
             raise RuntimeError(f"failed to write {self.name}")
         self.bucket.objects[self.name] = {"content": content, "content_type": content_type}
         self.generation = 71
+
+    def reload(self, *, timeout: int) -> None:
+        assert timeout == 30
+        self.generation = 71
+
+    def download_as_bytes(self, *, timeout: int) -> bytes:
+        assert timeout == 60
+        return self.bucket.objects[self.name]["content"]
 
 
 class FakeBucket:
@@ -98,7 +118,7 @@ class FakeBucket:
         self.objects: dict[str, dict[str, object]] = {}
         self.fail_name = fail_name
 
-    def blob(self, name: str) -> FakeBlob:
+    def blob(self, name: str, generation: int | None = None) -> FakeBlob:
         return FakeBlob(self, name)
 
 
@@ -150,9 +170,10 @@ def test_paired_upload_persists_one_attempt_with_immutable_generations_and_hashe
         assert set(body) == {
             "attempt_id", "revision", "state", "completed_stage", "preview",
             "correction_codes", "parent_count", "child_count", "chunk_count",
-            "staged_corpus_version_id", "error",
+            "staged_corpus_version_id", "hosted_parsing_state", "parsing_output_sha256", "error",
         }
-        assert not any("sha" in key or "uri" in key for key in body)
+        assert body["parsing_output_sha256"] is None
+        assert not any("uri" in key for key in body)
 
         records = {
             path: value
@@ -169,6 +190,159 @@ def test_paired_upload_persists_one_attempt_with_immutable_generations_and_hashe
         assert record["structure"]["generation"] == 71
         assert record["structure"]["sha256"] == sha256(STRUCTURE).hexdigest()
         assert all(name.startswith("staging/" + body["attempt_id"] + "/") for name in bucket.objects)
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_pdf_only_upload_is_idempotent_and_keeps_paired_path_compatible() -> None:
+    database = FakeFirestore()
+    store = FirestoreCorpusStagingAttemptStore(database)
+    bucket = FakeBucket()
+    service = CorpusStagingUploadService(store, bucket, "private-corpus-bucket")
+    client = setup_client(service)
+    try:
+        first = client.post(
+            "/api/admin/corpus-staging/attempts/pdf",
+            files={"source_pdf": ("dmbok.pdf", PDF, "application/pdf")},
+        )
+        second = client.post(
+            "/api/admin/corpus-staging/attempts/pdf",
+            files={"source_pdf": ("dmbok.pdf", PDF, "application/pdf")},
+        )
+        assert first.status_code == second.status_code == 201
+        assert first.json()["attempt_id"] == second.json()["attempt_id"]
+        records = [value for path, value in database.data.items() if path.startswith("corpus_staging_attempts/")]
+        assert len(records) == 1
+        assert records[0]["source"]["sha256"] == sha256(PDF).hexdigest()
+        assert records[0]["structure"] is None
+        assert len(bucket.objects) == 1
+
+        paired = client.post("/api/admin/corpus-staging/attempts", files=files())
+        assert paired.status_code == 201
+        assert paired.json()["attempt_id"] != first.json()["attempt_id"]
+        assert len([path for path in database.data if path.startswith("corpus_staging_attempts/")]) == 2
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_concurrent_source_create_and_object_collision_do_not_fail_attempt() -> None:
+    class ConcurrentStore(MemoryStore):
+        def begin(self, **kwargs):
+            revision = super().begin(**kwargs)
+            if not getattr(self, "raced", False):
+                self.raced = True
+                raise RuntimeError("document was created by a concurrent request")
+            return revision
+
+    store = ConcurrentStore()
+    bucket = FakeBucket()
+    actor_id = "admin-id"
+    attempt_id = sha256(f"{actor_id}\0{sha256(PDF).hexdigest()}".encode()).hexdigest()[:32]
+    object_name = f"staging/{attempt_id}/source.pdf"
+    bucket.objects[object_name] = {"content": PDF, "content_type": "application/pdf"}
+
+    result = CorpusStagingUploadService(store, bucket, "private-corpus-bucket").submit_pdf(
+        actor_id=actor_id, pdf_bytes=PDF
+    )
+
+    assert result.attempt_id == attempt_id
+    assert result.state == "validating"
+    assert store.attempts[attempt_id]["source"]["sha256"] == sha256(PDF).hexdigest()
+    assert store.attempts[attempt_id]["state"] == "validating"
+
+
+def test_parse_route_dispatches_queued_work_and_rejects_unresolved_retry():
+    class Checkpoints:
+        calls = 0
+
+        def enqueue(self, attempt_id):
+            self.calls += 1
+            if self.calls == 1:
+                return {"parsing_state": "queued"}
+            raise ParsingOutcomeUnknown("submission requires reconciliation")
+
+    class Dispatcher:
+        calls = 0
+
+        def dispatch(self):
+            self.calls += 1
+
+    class StatusService:
+        def status(self, *, attempt_id):
+            return CorpusStagingAttemptStatus(
+                attempt_id=attempt_id, revision=1, state="validating", hosted_parsing_state="queued"
+            )
+
+    checkpoints, dispatcher = Checkpoints(), Dispatcher()
+    app.dependency_overrides.clear()
+    app.dependency_overrides[get_admin_user] = lambda: profile("admin")
+    app.dependency_overrides[hosted_parsing_dispatch] = lambda: (checkpoints, dispatcher)
+    app.dependency_overrides[corpus_staging_upload_service] = StatusService
+    try:
+        client = TestClient(app)
+        first = client.post("/api/admin/corpus-staging/attempts/attempt-1/parse")
+        retry = client.post("/api/admin/corpus-staging/attempts/attempt-1/parse")
+        assert first.status_code == 200
+        assert first.json()["hosted_parsing_state"] == "queued"
+        assert retry.status_code == 409
+        assert retry.json()["detail"]["code"] == "parsing_outcome_unresolved"
+        assert dispatcher.calls == 1
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_parse_route_returns_not_found_for_missing_attempt():
+    class Checkpoints:
+        def enqueue(self, attempt_id):
+            raise ParsingAttemptNotFound("staging attempt is unavailable")
+
+    class Dispatcher:
+        def dispatch(self):
+            raise AssertionError("missing attempts must not be dispatched")
+
+    app.dependency_overrides.clear()
+    app.dependency_overrides[get_admin_user] = lambda: profile("admin")
+    app.dependency_overrides[hosted_parsing_dispatch] = lambda: (Checkpoints(), Dispatcher())
+    app.dependency_overrides[corpus_staging_upload_service] = lambda: object()
+    try:
+        client = TestClient(app)
+        response = client.post("/api/admin/corpus-staging/attempts/missing/parse")
+        assert response.status_code == 404
+        assert response.json()["detail"]["code"] == "staging_attempt_not_found"
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_parse_route_returns_503_when_parser_job_configuration_is_missing(monkeypatch):
+    monkeypatch.delenv("GOOGLE_CLOUD_PROJECT", raising=False)
+    monkeypatch.delenv("GOOGLE_CLOUD_LOCATION", raising=False)
+    monkeypatch.delenv("PARSER_JOB_NAME", raising=False)
+    _configured_hosted_parsing_dispatch.cache_clear()
+    app.dependency_overrides.clear()
+    app.dependency_overrides[get_admin_user] = lambda: profile("admin")
+    app.dependency_overrides[corpus_staging_upload_service] = lambda: object()
+    try:
+        client = TestClient(app)
+        response = client.post("/api/admin/corpus-staging/attempts/attempt-1/parse")
+        assert response.status_code == 503
+        assert response.json()["detail"]["code"] == "parsing_dispatch_unavailable"
+    finally:
+        app.dependency_overrides.clear()
+        _configured_hosted_parsing_dispatch.cache_clear()
+
+
+@pytest.mark.parametrize(
+    ("name", "content_type", "content", "expected"),
+    [("book.txt", "application/pdf", PDF, 415), ("book.pdf", "application/pdf", b"bad", 422)],
+)
+def test_pdf_only_upload_rejects_invalid_file_metadata_or_signature(name, content_type, content, expected):
+    client = setup_client(CorpusStagingUploadService(MemoryStore(), FakeBucket(), "private-corpus-bucket"))
+    try:
+        response = client.post(
+            "/api/admin/corpus-staging/attempts/pdf",
+            files={"source_pdf": (name, content, content_type)},
+        )
+        assert response.status_code == expected
     finally:
         app.dependency_overrides.clear()
 

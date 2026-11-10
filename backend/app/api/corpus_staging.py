@@ -20,7 +20,16 @@ from app.corpus.staging import (
     StagingAttemptNotFound,
     StagingPersistenceError,
     StagingUploadValidationError,
+    validate_staging_pdf,
     validate_staging_files,
+)
+from app.ingestion.hosted_parsing import (
+    CloudRunHostedParsingDispatcher,
+    FirestoreParsingCheckpointStore,
+    ParsingAttemptNotFound,
+    ParsingDispatchError,
+    ParsingError,
+    ParsingOutcomeUnknown,
 )
 from app.identity import get_admin_user
 
@@ -106,6 +115,67 @@ def corpus_staging_approval_service() -> CorpusStagingApprovalService:
         ) from None
 
 
+@lru_cache(maxsize=1)
+def _configured_hosted_parsing_dispatch() -> tuple[FirestoreParsingCheckpointStore, CloudRunHostedParsingDispatcher]:
+    project = os.environ.get("GOOGLE_CLOUD_PROJECT", "").strip()
+    location = os.environ.get("GOOGLE_CLOUD_LOCATION", "").strip()
+    job_name = os.environ.get("PARSER_JOB_NAME", "").strip()
+    if not project or not location or not job_name:
+        raise RuntimeError("hosted parsing dispatch is unavailable")
+    try:
+        from firebase_admin import firestore
+
+        from app.identity import _firebase_app
+
+        client = firestore.client(app=_firebase_app())
+        return (
+            FirestoreParsingCheckpointStore(client),
+            CloudRunHostedParsingDispatcher(project=project, location=location, job_name=job_name),
+        )
+    except Exception:
+        raise RuntimeError("hosted parsing dispatch is unavailable") from None
+
+
+def hosted_parsing_dispatch() -> tuple[FirestoreParsingCheckpointStore, CloudRunHostedParsingDispatcher]:
+    try:
+        return _configured_hosted_parsing_dispatch()
+    except Exception:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=ApiError(code="parsing_dispatch_unavailable", message="Hosted parsing is temporarily unavailable.", retryable=True, status=503).model_dump(mode="json"),
+        ) from None
+
+
+@router.post(
+    "/attempts/pdf",
+    response_model=CorpusStagingAttemptStatus,
+    status_code=status.HTTP_201_CREATED,
+)
+async def submit_pdf_only_staging_attempt(
+    source_pdf: UploadFile = File(..., media_type="application/pdf"),
+    admin: UserProfile = Depends(get_admin_user),
+    service: CorpusStagingUploadService = Depends(corpus_staging_upload_service),
+) -> CorpusStagingAttemptStatus:
+    try:
+        pdf_bytes = await _read_bounded(source_pdf, MAX_STAGING_PDF_BYTES)
+        validate_staging_pdf(
+            pdf_filename=source_pdf.filename,
+            pdf_content_type=source_pdf.content_type,
+            pdf_bytes=pdf_bytes,
+        )
+    except StagingUploadValidationError as error:
+        raise HTTPException(
+            status_code=error.status,
+            detail=ApiError(code=error.code, message=error.message, status=error.status).model_dump(mode="json"),
+        ) from None
+    try:
+        return await run_in_threadpool(
+            service.submit_pdf, actor_id=admin.user_id, pdf_bytes=pdf_bytes
+        )
+    except StagingPersistenceError:
+        raise _staging_unavailable() from None
+
+
 @router.post(
     "/attempts",
     response_model=CorpusStagingAttemptStatus,
@@ -142,6 +212,40 @@ async def submit_corpus_staging_attempt(
         )
     except StagingPersistenceError:
         raise _staging_unavailable() from None
+
+
+@router.post("/attempts/{attempt_id}/parse", response_model=CorpusStagingAttemptStatus)
+def submit_hosted_parse(
+    attempt_id: str,
+    _: UserProfile = Depends(get_admin_user),
+    parsing: tuple[FirestoreParsingCheckpointStore, CloudRunHostedParsingDispatcher] = Depends(hosted_parsing_dispatch),
+    status_service: CorpusStagingUploadService = Depends(corpus_staging_upload_service),
+) -> CorpusStagingAttemptStatus:
+    store, dispatcher = parsing
+    try:
+        record = store.enqueue(attempt_id)
+        if record.get("parsing_state") != "awaiting_review":
+            dispatcher.dispatch()
+        return status_service.status(attempt_id=attempt_id)
+    except (StagingAttemptNotFound, ParsingAttemptNotFound):
+        raise _staging_attempt_not_found() from None
+    except ParsingOutcomeUnknown:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=ApiError(code="parsing_outcome_unresolved", message="A previous parse submission needs sponsor reconciliation.", status=409).model_dump(mode="json"),
+        ) from None
+    except ParsingDispatchError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=ApiError(code="parsing_dispatch_failed", message="Hosted parsing could not be started. Retry the attempt.", retryable=True, status=503).model_dump(mode="json"),
+        ) from None
+    except StagingPersistenceError:
+        raise _staging_unavailable() from None
+    except ParsingError:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=ApiError(code="staging_attempt_not_parseable", message="This attempt is not available for hosted parsing.", status=409).model_dump(mode="json"),
+        ) from None
 
 
 @router.get("/attempts/{attempt_id}", response_model=CorpusStagingAttemptStatus)

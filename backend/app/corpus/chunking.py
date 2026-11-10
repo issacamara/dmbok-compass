@@ -82,23 +82,52 @@ def segment_children(
     children: list[ChildDocumentChunk] = []
     for parent in parents:
         pending: list[SourceSpan] = []
-        pending_tokens = 0
         ordinal = 0
+        table_header: tuple[str, str] | None = None
+        table_rows_seen = 0
+        pending_prefix = ""
         for span in _child_units(parent.source_spans, max_tokens):
-            tokens = _token_count(span.text)
-            if pending and pending_tokens + tokens > target_tokens:
-                children.append(_child(parent, ordinal, pending))
+            is_table_row = span.text.lstrip().startswith("|")
+            is_table_separator = is_table_row and bool(re.fullmatch(r"\s*\|?\s*[:|\- ]+\s*\|?\s*", span.text))
+            if not is_table_row:
+                table_header, table_rows_seen = None, 0
+            elif table_rows_seen == 0:
+                table_header, table_rows_seen = (span.text, ""), 1
+            elif table_rows_seen == 1 and is_table_separator and table_header is not None:
+                table_header = (table_header[0], span.text)
+                table_rows_seen = 2
+            else:
+                table_rows_seen += 1
+            candidate_text = "\n".join(([pending_prefix] if pending_prefix else []) + [item.text for item in pending] + [span.text])
+            if pending and _token_count(candidate_text) > target_tokens:
+                children.append(_child(parent, ordinal, pending, synthetic_prefix=pending_prefix))
                 ordinal += 1
-                pending, pending_tokens = [], 0
+                pending = []
+                pending_prefix = (
+                    "\n".join(table_header)
+                    if is_table_row and not is_table_separator and table_rows_seen > 2 and table_header
+                    else ""
+                )
+            elif not pending and is_table_row and not is_table_separator and table_rows_seen > 2 and table_header:
+                pending_prefix = "\n".join(table_header)
+            child_text = "\n".join(([pending_prefix] if pending_prefix else []) + [item.text for item in pending] + [span.text])
+            if _token_count(child_text) > max_tokens:
+                raise ValueError("repeated table context and indivisible row exceed child maximum")
             pending.append(span)
-            pending_tokens += tokens
         if pending:
-            children.append(_child(parent, ordinal, pending))
+            children.append(_child(parent, ordinal, pending, synthetic_prefix=pending_prefix))
     return tuple(children)
 
 
-def _child(parent: ParentChunk, ordinal: int, spans: list[SourceSpan]) -> ChildDocumentChunk:
-    text = "\n".join(span.text for span in spans)
+def _child(
+    parent: ParentChunk,
+    ordinal: int,
+    spans: list[SourceSpan],
+    *,
+    synthetic_prefix: str = "",
+) -> ChildDocumentChunk:
+    raw_text = "\n".join(span.text for span in spans)
+    text = f"{synthetic_prefix}\n{raw_text}" if synthetic_prefix else raw_text
     identity = "\x1f".join((parent.corpus_version_id, *parent.section_path, str(spans[0].page), str(spans[-1].page), str(ordinal), text))
     return ChildDocumentChunk(
         chunk_id=f"{parent.corpus_version_id}:child:{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:24]}",
@@ -132,10 +161,19 @@ def _split_child_unit(page: int, offset: int, text: str, max_tokens: int) -> tup
     if _token_count(text) <= max_tokens or text.lstrip().startswith(("|", "- ", "* ", "+ ")):
         return (SourceSpan(page=page, start_offset=offset, end_offset=offset + len(text), text=text),)
     matches = tuple(re.finditer(r"\S+\s*", text))
-    return tuple(
-        SourceSpan(page=page, start_offset=offset + group[0].start(), end_offset=offset + group[-1].end(), text=text[group[0].start() : group[-1].end()].rstrip())
-        for group in (matches[index : index + max_tokens] for index in range(0, len(matches), max_tokens))
-    )
+    spans: list[SourceSpan] = []
+    start = 0
+    for index, match in enumerate(matches):
+        end = match.end()
+        if index > 0 and _token_count(text[start:end].rstrip()) > max_tokens:
+            boundary = matches[index - 1].end()
+            value = text[start:boundary].rstrip()
+            spans.append(SourceSpan(page=page, start_offset=offset + start, end_offset=offset + start + len(value), text=value))
+            start = matches[index].start()
+    value = text[start:].rstrip()
+    if value:
+        spans.append(SourceSpan(page=page, start_offset=offset + start, end_offset=offset + start + len(value), text=value))
+    return tuple(spans)
 
 
 def segment_parents(
@@ -159,17 +197,40 @@ def segment_parents(
     parents: list[ParentChunk] = []
     exceptions: list[ParentReviewException] = []
     for section_ordinal, section in enumerate(sections):
-        units = _section_units(section)
+        units = _section_units(section, max_tokens=max_tokens)
         pending: list[SourceSpan] = []
-        pending_tokens = 0
         parent_ordinal = 0
+        table_header: list[str] = []
+        table_rows_seen = 0
         for unit in units:
             unit_tokens = _token_count(unit.text)
+            if unit.text.lstrip().startswith("|"):
+                is_separator = bool(re.fullmatch(r"\s*\|?\s*[:|\- ]+\s*\|?\s*", unit.text))
+                if table_rows_seen == 0:
+                    table_header, table_rows_seen = [unit.text], 1
+                elif table_rows_seen == 1 and is_separator:
+                    table_header.append(unit.text)
+                    table_rows_seen = 2
+                else:
+                    table_rows_seen += 1
+                    repeated_header = "\n".join(table_header)
+                    combined_table_tokens = _token_count(f"{repeated_header}\n{unit.text}")
+                    if table_rows_seen > 2 and combined_table_tokens > max_tokens:
+                        exceptions.append(
+                            ParentReviewException(
+                                section.section_path, unit.page, unit.page,
+                                combined_table_tokens,
+                                "repeated table header and row exceed parent maximum",
+                            )
+                        )
+                        continue
+            else:
+                table_header, table_rows_seen = [], 0
             if unit_tokens > max_tokens:
                 if pending:
                     parents.append(_parent(corpus_version_id, section, section_ordinal, parent_ordinal, pending))
                     parent_ordinal += 1
-                    pending, pending_tokens = [], 0
+                    pending = []
                 exceptions.append(
                     ParentReviewException(
                         section.section_path, unit.page, unit.page, unit_tokens,
@@ -177,12 +238,12 @@ def segment_parents(
                     )
                 )
                 continue
-            if pending and pending_tokens + unit_tokens > target_tokens:
+            candidate_text = "\n".join([item.text for item in pending] + [unit.text])
+            if pending and _token_count(candidate_text) > target_tokens:
                 parents.append(_parent(corpus_version_id, section, section_ordinal, parent_ordinal, pending))
                 parent_ordinal += 1
-                pending, pending_tokens = [], 0
+                pending = []
             pending.append(unit)
-            pending_tokens += unit_tokens
         if pending:
             parents.append(_parent(corpus_version_id, section, section_ordinal, parent_ordinal, pending))
     return ParentSegmentation(tuple(parents), tuple(exceptions))
@@ -209,8 +270,8 @@ def _parent(
     )
 
 
-def _section_units(section: LogicalSection) -> tuple[SourceSpan, ...]:
-    """Use complete non-empty lines as the smallest safe structural boundary."""
+def _section_units(section: LogicalSection, *, max_tokens: int) -> tuple[SourceSpan, ...]:
+    """Use complete lines and list/table items, splitting only oversized prose."""
 
     units: list[SourceSpan] = []
     for span in section.source_spans:
@@ -218,7 +279,7 @@ def _section_units(section: LogicalSection) -> tuple[SourceSpan, ...]:
         for line in span.text.splitlines(keepends=True):
             text = line.rstrip("\r\n")
             if text.strip():
-                units.append(SourceSpan(page=span.page, start_offset=span.start_offset + cursor, end_offset=span.start_offset + cursor + len(text), text=text))
+                units.extend(_split_child_unit(span.page, span.start_offset + cursor, text, max_tokens))
             cursor += len(line)
     return tuple(units)
 

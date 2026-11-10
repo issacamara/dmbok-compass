@@ -4,6 +4,7 @@ from app.contracts import ParentChunk, SourceSpan
 from app.corpus.structure_map import LogicalSection
 
 from app.corpus import SourcePage, chunk_pages, segment_children, segment_parents
+from app.corpus.tokenization import count_tokens
 
 
 def parent(text: str) -> ParentChunk:
@@ -14,7 +15,8 @@ def test_child_segmentation_is_deterministic_and_parent_linked() -> None:
     source = parent("one two three\nfour five six\nseven")
     first = segment_children([source], target_tokens=4, max_tokens=10)
     assert first == segment_children([source], target_tokens=4, max_tokens=10)
-    assert [child.parent_id for child in first] == ["parent-1", "parent-1"]
+    assert [child.parent_id for child in first] == ["parent-1"] * len(first)
+    assert all(child.token_count <= 10 for child in first)
     assert first[-1].text.endswith("seven")
 
 
@@ -33,7 +35,8 @@ def test_parent_segmentation_preserves_cross_page_source_spans_and_is_repeatable
 
     assert first == second
     assert first.ready_for_promotion
-    assert [(parent.page_start, parent.page_end) for parent in first.parents] == [(1, 1), (2, 2)]
+    assert all(parent.page_start == parent.page_end for parent in first.parents)
+    assert [(parent.page_start, parent.page_end) for parent in first.parents] == [(1, 1), (1, 1), (2, 2)]
     assert [span.text for parent in first.parents for span in parent.source_spans] == ["one two", "three four", "five six"]
 
 
@@ -115,3 +118,31 @@ def test_chunking_rejects_invalid_configuration(kwargs: dict[str, object], messa
 def test_chunking_rejects_invalid_page_provenance(page: SourcePage) -> None:
     with pytest.raises(ValueError):
         chunk_pages([page], corpus_version_id="v-1")
+
+
+def test_long_prose_is_split_at_token_boundaries_with_source_offsets():
+    text = " ".join(f"word{index}" for index in range(40))
+    result = segment_parents(
+        [LogicalSection(("Data",), (SourceSpan(page=1, start_offset=0, end_offset=len(text), text=text),))],
+        corpus_version_id="v1",
+        target_tokens=10,
+        max_tokens=12,
+    )
+
+    assert result.ready_for_promotion
+    assert all(parent.token_count <= 12 for parent in result.parents)
+    assert " ".join(span.text for parent in result.parents for span in parent.source_spans) == text
+
+
+def test_children_repeat_markdown_table_header_without_claiming_source_span():
+    text = "| Name | Value |\n| --- | --- |\n| first | one |\n| second | two |"
+    children = segment_children([parent(text)], target_tokens=10, max_tokens=20)
+
+    repeated = [
+        child for child in children
+        if child.text.startswith("| Name | Value |\n| --- | --- |")
+        and not any(span.text == "| Name | Value |" for span in child.source_spans)
+    ]
+    assert repeated
+    assert all(child.token_count == count_tokens(child.text) for child in children)
+    assert all(child.token_count <= 20 for child in children)

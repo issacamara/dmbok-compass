@@ -12,8 +12,9 @@ from app.corpus.structure_map import (
     propose_block_structure_map,
     propose_structure_map,
     validate_block_structure_map,
+    sections_from_parsing_artifact,
 )
-from app.contracts import StructureMapEntry
+from app.contracts import StructureMap, StructureMapEntry
 from app.contracts.v29 import ParsedBlock, ParsingArtifact
 
 
@@ -142,3 +143,53 @@ def test_script_binds_actual_source_digest(tmp_path: Path) -> None:
     )
     assert mismatch.returncode != 0
     assert "does not match" in mismatch.stderr
+
+
+def test_reviewed_parse_sections_use_cumulative_page_offsets_and_exact_bounds():
+    parsing = ParsingArtifact(
+        source_generation="3", source_sha256="a" * 64, output_sha256="b" * 64,
+        blocks=(
+            ParsedBlock(block_id="b1", physical_page=4, reading_order=0, kind="text", raw_text="first"),
+            ParsedBlock(block_id="b2", physical_page=4, reading_order=1, kind="text", raw_text="second"),
+        ),
+    )
+    structure_map = StructureMap(
+        map_id="reviewed", source_sha256=parsing.source_sha256,
+        parsing_output_sha256=parsing.output_sha256, content_hash="c" * 64,
+        entries=[StructureMapEntry(section_path=("Data",), page_start=4, page_end=4, block_ids=("b1", "b2"))],
+    )
+
+    section = sections_from_parsing_artifact(
+        structure_map, parsing, source_generation=3, source_sha256=parsing.source_sha256
+    )[0]
+    assert [(span.start_offset, span.end_offset) for span in section.source_spans] == [(0, 5), (6, 12)]
+
+    split_map = StructureMap(
+        map_id="reviewed-split", source_sha256=parsing.source_sha256,
+        parsing_output_sha256=parsing.output_sha256, content_hash="d" * 64,
+        entries=[
+            StructureMapEntry(section_path=("First",), page_start=4, page_end=4, block_ids=("b1",)),
+            StructureMapEntry(section_path=("Second",), page_start=4, page_end=4, block_ids=("b2",)),
+        ],
+    )
+    split_sections = sections_from_parsing_artifact(
+        split_map, parsing, source_generation=3, source_sha256=parsing.source_sha256
+    )
+    assert [section.source_spans[0].start_offset for section in split_sections] == [0, 6]
+
+
+def test_reviewed_parse_sections_reject_inaccurately_bounded_blocks():
+    parsing = ParsingArtifact(
+        source_generation="3", source_sha256="a" * 64, output_sha256="b" * 64,
+        blocks=(ParsedBlock(block_id="b1", physical_page=4, reading_order=0, kind="text", raw_text="first"),),
+    )
+    structure_map = StructureMap(
+        map_id="reviewed", source_sha256=parsing.source_sha256,
+        parsing_output_sha256=parsing.output_sha256, content_hash="c" * 64,
+        entries=[StructureMapEntry(section_path=("Data",), page_start=3, page_end=5, block_ids=("b1",))],
+    )
+
+    with pytest.raises(ValueError, match="page bounds"):
+        sections_from_parsing_artifact(
+            structure_map, parsing, source_generation=3, source_sha256=parsing.source_sha256
+        )

@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from threading import RLock
 
+import pytest
+
 from app.provider_allowance import ProviderAccountCapabilities, ProviderAllowanceObservation
 from app.provider_allowance_firestore import FirestoreProviderAllowanceStore
 
@@ -99,6 +101,33 @@ def test_concurrent_transactional_reservations_cannot_overspend() -> None:
     assert sum(result.status == "staged" for result in results) == 2
     account_record = next(value for key, value in client.data.items() if key.startswith("provider_allowance_accounts/"))
     assert account_record["reserved_units"] == 8
+
+
+def test_older_or_conflicting_observation_cannot_replace_current_balance() -> None:
+    client = FakeFirestore()
+    caps = account()
+    allowance_store = store(client)
+    allowance_store.observe(caps, observation(5, observed_at=NOW))
+
+    with pytest.raises(ValueError, match="newer allowance observation"):
+        allowance_store.observe(caps, observation(100, observed_at=NOW - timedelta(minutes=1)))
+    with pytest.raises(ValueError, match="conflicting allowance observations"):
+        allowance_store.observe(caps, observation(100, observed_at=NOW))
+
+    assert allowance_store.stage_reservation(caps, "stale-cannot-overspend", 6, now=NOW).status == "awaiting_budget"
+
+
+def test_replaying_identical_observation_does_not_erase_reconciled_usage() -> None:
+    client = FakeFirestore()
+    caps = account()
+    allowance_store = store(client)
+    current_observation = observation(20)
+    allowance_store.observe(caps, current_observation)
+    assert allowance_store.stage_reservation(caps, "charged", 5, now=NOW).status == "staged"
+    assert allowance_store.reconcile_usage(caps, "charged", 8).status == "staged"
+
+    allowance_store.observe(caps, current_observation)
+    assert allowance_store.stage_reservation(caps, "would-overspend", 13, now=NOW).status == "awaiting_budget"
 
 
 def test_reservation_survives_store_restart_and_replay() -> None:

@@ -28,11 +28,12 @@ def test_unknown_stale_and_insufficient_observations_pause_for_budget() -> None:
     store.observe(caps, observation(None))
     assert store.stage_reservation(caps, "unknown-balance", 1, now=NOW).status == "awaiting_budget"
 
-    store.observe(caps, observation(observed_at=NOW - timedelta(hours=2), expires_at=NOW - timedelta(hours=1)))
-    assert store.stage_reservation(caps, "stale", 1, now=NOW).status == "awaiting_budget"
+    stale_store = InMemoryProviderAllowanceStore()
+    stale_store.observe(caps, observation(observed_at=NOW - timedelta(hours=2), expires_at=NOW - timedelta(hours=1)))
+    assert stale_store.stage_reservation(caps, "stale", 1, now=NOW).status == "awaiting_budget"
 
-    store.observe(caps, observation(5))
-    result = store.stage_reservation(caps, "too-large", 3, retries=1, now=NOW)
+    store.observe(caps, observation(5, observed_at=NOW + timedelta(minutes=1), expires_at=NOW + timedelta(hours=1)))
+    result = store.stage_reservation(caps, "too-large", 3, retries=1, now=NOW + timedelta(minutes=1))
     assert result.status == "awaiting_budget"
     assert result.reservation is None
 
@@ -47,6 +48,31 @@ def test_concurrent_reservations_cannot_overspend_observed_balance() -> None:
         results = list(pool.map(lambda index: store.stage_reservation(caps, f"op-{index}", 2, retries=1, now=NOW), range(16)))
     assert sum(result.status == "staged" for result in results) == 2
     assert store.reserved_units[(caps.provider_id, caps.account_id, caps.kind)] == 8
+
+
+def test_older_or_conflicting_observation_cannot_replace_current_balance() -> None:
+    store = InMemoryProviderAllowanceStore()
+    caps = account()
+    store.observe(caps, observation(5, observed_at=NOW))
+
+    with pytest.raises(ValueError, match="newer allowance observation"):
+        store.observe(caps, observation(100, observed_at=NOW - timedelta(minutes=1)))
+    with pytest.raises(ValueError, match="conflicting allowance observations"):
+        store.observe(caps, observation(100, observed_at=NOW))
+
+    assert store.stage_reservation(caps, "stale-cannot-overspend", 6, now=NOW).status == "awaiting_budget"
+
+
+def test_replaying_identical_observation_does_not_erase_reconciled_usage() -> None:
+    store = InMemoryProviderAllowanceStore()
+    caps = account()
+    current_observation = observation(20)
+    store.observe(caps, current_observation)
+    assert store.stage_reservation(caps, "charged", 5, now=NOW).status == "staged"
+    assert store.reconcile_usage(caps, "charged", 8).status == "staged"
+
+    store.observe(caps, current_observation)
+    assert store.stage_reservation(caps, "would-overspend", 13, now=NOW).status == "awaiting_budget"
 
 
 def test_retry_estimate_is_bounded_and_provider_ceiling_is_per_operation() -> None:

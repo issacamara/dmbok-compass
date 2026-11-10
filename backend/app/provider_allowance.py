@@ -150,6 +150,17 @@ class InMemoryProviderAllowanceStore:
     def observe(self, capabilities: ProviderAccountCapabilities, observation: ProviderAllowanceObservation) -> None:
         account_key = self._account_key(capabilities)
         with self._lock:
+            previous = self.observations.get(account_key)
+            if previous is not None:
+                _, current = previous
+                if observation.observed_at < current.observed_at:
+                    raise ValueError("cannot replace a newer allowance observation")
+                if observation.observed_at == current.observed_at:
+                    if observation != current:
+                        raise ValueError("conflicting allowance observations share a timestamp")
+                    if previous[0] != capabilities:
+                        raise ValueError("capabilities changed without a newer allowance observation")
+                    return
             self.observations[account_key] = (capabilities, observation)
             # A fresh observed balance already reflects previously reconciled
             # usage. Unresolved reservations remain held against it.

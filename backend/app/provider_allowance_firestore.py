@@ -85,6 +85,21 @@ class FirestoreProviderAllowanceStore:
         def apply(transaction: Any) -> None:
             snapshot = account_ref.get(transaction=transaction)
             previous = snapshot.to_dict() if snapshot.exists else {}
+            previous_data = previous.get("observation")
+            if isinstance(previous_data, dict):
+                current_observation = _read_observation(previous_data)
+                if observation.observed_at < current_observation.observed_at:
+                    raise ValueError("cannot replace a newer allowance observation")
+                if observation.observed_at == current_observation.observed_at:
+                    if observation != current_observation:
+                        raise ValueError("conflicting allowance observations share a timestamp")
+                    expected_capabilities = {
+                        "max_units_per_operation": capabilities.max_units_per_operation,
+                        "max_retries": capabilities.max_retries,
+                    }
+                    if previous.get("capabilities") != expected_capabilities:
+                        raise ValueError("capabilities changed without a newer allowance observation")
+                    return
             transaction.set(account_ref, {
                 "provider_id": capabilities.provider_id,
                 "account_id": capabilities.account_id,

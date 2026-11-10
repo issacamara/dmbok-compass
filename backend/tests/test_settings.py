@@ -96,6 +96,8 @@ def test_stage_settings_fail_closed_without_affecting_serving() -> None:
         PARSER_ALLOWANCE_MAX_UNITS="100",
     )
     assert "private-parser-key" not in json.dumps(ParsingConfiguration.from_environment(env).model_dump())
+    with pytest.raises(ValueError, match="parsing stage settings"):
+        ParsingConfiguration.from_environment({**env, "PARSER_MODE": "extract"})
     for name, value in (("PARSER_SECRET_VERSION", "latest"), ("PARSER_ALLOWANCE_MAX_UNITS", "0")):
         with pytest.raises(ValueError, match="parsing stage settings"):
             ParsingConfiguration.from_environment({**env, name: value})

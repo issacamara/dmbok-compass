@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from typing import Mapping
+from typing import Literal, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -98,8 +98,8 @@ class ParsingConfiguration(BaseModel):
 
     model_config = ConfigDict(frozen=True, extra="forbid", str_strip_whitespace=True)
 
-    route: str = Field(min_length=1, max_length=128)
-    mode: str = Field(min_length=1, max_length=128)
+    route: Literal["llamacloud"]
+    mode: Literal["parse"]
     secret_version: str = Field(pattern=r"^[1-9][0-9]*$")
     allowance_policy: str = Field(min_length=1, max_length=128)
     allowance_max_units: int = Field(ge=1)

@@ -63,8 +63,11 @@ def test_api_cannot_act_as_or_invoke_parser_identity() -> None:
     iam = (terraform / "iam.tf").read_text()
     delivery = (terraform / "delivery.tf").read_text()
     assert 'service_account_id = google_service_account.workload["parser"].name' not in iam
-    assert 'name     = google_cloud_run_v2_job.parser.name' not in delivery
-    assert 'args    = ["-c", "raise SystemExit(\'Hosted parsing is not configured\')"]' in delivery
+    assert 'name     = google_cloud_run_v2_job.parser.name' in delivery
+    assert 'args    = ["-m", "app.ingestion.parsing_entrypoint"]' in delivery
+    parser_iam = delivery[delivery.index('resource "google_cloud_run_v2_job_iam_member" "runtime_parser_invoker"'):]
+    assert 'role     = "roles/run.invoker"' in parser_iam
+    assert 'roles/run.jobsExecutorWithOverrides' not in parser_iam
 
 
 def test_missing_or_unpinned_stage_settings_fail_before_deployment(tmp_path: Path) -> None:

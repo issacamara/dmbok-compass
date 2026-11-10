@@ -812,6 +812,8 @@ class CorpusStagingAttemptStatus(ContractModel):
     child_count: int | None = Field(default=None, ge=0)
     chunk_count: int | None = Field(default=None, ge=0)
     staged_corpus_version_id: str | None = Field(default=None, min_length=1, max_length=128)
+    hosted_parsing_state: Literal["queued", "awaiting_budget", "parsing", "awaiting_review", "failed"] | None = None
+    parsing_output_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     error: "ApiError | None" = None
 
     @model_validator(mode="after")

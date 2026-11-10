@@ -28,7 +28,12 @@ run "parser_secret_is_restricted_to_ingestion" {
   }
 
   assert {
-    condition     = google_cloud_run_v2_job.parser.template[0].template[0].containers[0].args == tolist(["-c", "raise SystemExit('Hosted parsing is not configured')"])
-    error_message = "The parser job must fail closed until its implementation is ready."
+    condition     = google_cloud_run_v2_job.parser.template[0].template[0].containers[0].args == tolist(["-m", "app.ingestion.parsing_entrypoint"])
+    error_message = "The parser job must use its fixed entry point."
+  }
+
+  assert {
+    condition     = google_cloud_run_v2_job_iam_member.runtime_parser_executor.role == "roles/run.jobsExecutor" && google_cloud_run_v2_job_iam_member.runtime_parser_invoker.role == "roles/run.invoker"
+    error_message = "The API may run only the fixed parser job without execution overrides."
   }
 }

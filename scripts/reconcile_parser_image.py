@@ -1,4 +1,4 @@
-"""Keep a newly provisioned parser on the image currently serving development."""
+"""Keep a newly provisioned parser on the image currently serving the API."""
 
 import os
 import re
@@ -32,7 +32,7 @@ def main() -> None:
                         f"--image={image}"), check=True)
         if ready_image() == image:
             return
-    raise RuntimeError("API image changed during reconciliation; retry the development infrastructure workflow")
+    raise RuntimeError("API image changed during reconciliation; retry the infrastructure workflow")
 
 
 if __name__ == "__main__":

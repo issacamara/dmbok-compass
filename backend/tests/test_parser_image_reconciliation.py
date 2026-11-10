@@ -59,8 +59,10 @@ def test_continuously_changing_api_fails_instead_of_silently_diverging(monkeypat
         run_reconciliation(monkeypatch, images)
 
 
-def test_reconciliation_is_development_only():
+def test_reconciliation_uses_protected_environment_project():
     workflow = (PATH.parents[1] / ".github/workflows/terraform.yml").read_text()
     development, production = workflow.split("  apply-production:", 1)
     assert "python scripts/reconcile_parser_image.py" in development
-    assert "python scripts/reconcile_parser_image.py" not in production
+    assert "python scripts/reconcile_parser_image.py" in production
+    assert "environment: production" in production
+    assert "PROJECT_ID: ${{ vars.GCP_PROJECT_PRODUCTION }}" in production

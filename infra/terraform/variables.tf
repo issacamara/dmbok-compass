@@ -137,8 +137,8 @@ variable "secret_names" {
   ]
 
   validation {
-    condition     = alltrue([for name in var.secret_names : can(regex("^[a-zA-Z0-9][a-zA-Z0-9_-]{0,254}$", name))])
-    error_message = "Secret names must use Secret Manager's supported characters and length."
+    condition     = !contains(var.secret_names, "llamacloud-parser-api-key") && alltrue([for name in var.secret_names : can(regex("^[a-zA-Z0-9][a-zA-Z0-9_-]{0,254}$", name))])
+    error_message = "Secret names must be valid and must not include the separately restricted parser secret."
   }
 }
 

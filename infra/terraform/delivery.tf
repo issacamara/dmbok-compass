@@ -22,6 +22,12 @@ variable "evaluation_job_name" {
   default     = "dmbok-compass-evaluation"
 }
 
+variable "parser_job_name" {
+  description = "Cloud Run job name for hosted parsing."
+  type        = string
+  default     = "dmbok-compass-parser"
+}
+
 
 variable "corpus_version_id" {
   description = "Immutable corpus version coupled to this API and its admin jobs."
@@ -270,6 +276,31 @@ resource "google_cloud_run_v2_job" "ingestion" {
   }
 
   depends_on = [google_project_service.required]
+}
+
+resource "google_cloud_run_v2_job" "parser" {
+  name     = var.parser_job_name
+  location = var.region
+  project  = var.project_id
+
+  template {
+    template {
+      service_account = google_service_account.workload["parser"].email
+      max_retries     = 0
+      timeout         = "3600s"
+      containers {
+        image   = var.api_image
+        command = ["python"]
+        args    = ["-c", "raise SystemExit('Hosted parsing is not configured')"]
+      }
+    }
+  }
+
+  lifecycle {
+    ignore_changes = [template[0].template[0].containers[0].image, template[0].template[0].containers[0].env]
+  }
+
+  depends_on = [google_project_service.required, google_secret_manager_secret_iam_member.parser_access]
 }
 
 resource "google_cloud_run_v2_job" "evaluation" {

@@ -20,6 +20,7 @@ locals {
   service_accounts = {
     runtime         = "${var.name_prefix}-runtime"
     worker          = "${var.name_prefix}-worker"
+    parser          = "${var.name_prefix}-parser"
     scheduler       = "${var.name_prefix}-scheduler"
     build           = "${var.name_prefix}-build"
     terraform_plan  = "${var.name_prefix}-terraform-plan"
@@ -122,6 +123,17 @@ resource "google_secret_manager_secret" "managed" {
 
   project   = var.project_id
   secret_id = each.value
+
+  replication {
+    auto {}
+  }
+
+  depends_on = [google_project_service.required]
+}
+
+resource "google_secret_manager_secret" "parser" {
+  project   = var.project_id
+  secret_id = "llamacloud-parser-api-key"
 
   replication {
     auto {}

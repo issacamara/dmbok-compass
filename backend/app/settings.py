@@ -93,6 +93,64 @@ class RuntimeConfiguration(BaseModel):
         return self.runtime
 
 
+class ParsingConfiguration(BaseModel):
+    """Non-secret configuration validated before a hosted parsing stage."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", str_strip_whitespace=True)
+
+    route: str = Field(min_length=1, max_length=128)
+    mode: str = Field(min_length=1, max_length=128)
+    secret_version: str = Field(pattern=r"^[1-9][0-9]*$")
+    allowance_policy: str = Field(min_length=1, max_length=128)
+    allowance_max_units: int = Field(ge=1)
+
+    @classmethod
+    def from_environment(cls, environ: Mapping[str, str] | None = None) -> "ParsingConfiguration":
+        env = os.environ if environ is None else environ
+        if not env.get("LLAMACLOUD_API_KEY", "").strip():
+            raise ValueError("Missing required parsing credential: LLAMACLOUD_API_KEY")
+        try:
+            return cls(
+                route=env.get("PARSER_ROUTE", ""),
+                mode=env.get("PARSER_MODE", ""),
+                secret_version=env.get("PARSER_SECRET_VERSION", ""),
+                allowance_policy=env.get("PARSER_ALLOWANCE_POLICY", ""),
+                allowance_max_units=env.get("PARSER_ALLOWANCE_MAX_UNITS", ""),
+            )
+        except ValidationError:
+            raise ValueError("Invalid or missing parsing stage settings") from None
+
+
+class EvaluationStageConfiguration(BaseModel):
+    """Separately versioned model and allowance settings for offline stages."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid", str_strip_whitespace=True)
+
+    route: str = Field(min_length=1, max_length=128)
+    model: str = Field(min_length=1, max_length=256)
+    configuration_version: str = Field(min_length=1, max_length=128)
+    allowance_policy: str = Field(min_length=1, max_length=128)
+    allowance_max_units: int = Field(ge=1)
+
+    @classmethod
+    def from_environment(
+        cls, stage: str, environ: Mapping[str, str] | None = None
+    ) -> "EvaluationStageConfiguration":
+        if stage not in {"GENERATOR", "JUDGE"}:
+            raise ValueError("Stage must be GENERATOR or JUDGE")
+        env = os.environ if environ is None else environ
+        try:
+            return cls(
+                route=env.get(f"{stage}_ROUTE", ""),
+                model=env.get(f"{stage}_MODEL", ""),
+                configuration_version=env.get(f"{stage}_CONFIGURATION_VERSION", ""),
+                allowance_policy=env.get(f"{stage}_ALLOWANCE_POLICY", ""),
+                allowance_max_units=env.get(f"{stage}_ALLOWANCE_MAX_UNITS", ""),
+            )
+        except ValidationError:
+            raise ValueError(f"Invalid or missing {stage.lower()} stage settings") from None
+
+
 def _required_bool(environ: Mapping[str, str], name: str) -> bool:
     value = environ.get(name, "").strip().lower()
     if value not in {"true", "false"}:

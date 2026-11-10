@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from app.settings import RuntimeConfiguration, startup_configuration
+from app.settings import EvaluationStageConfiguration, ParsingConfiguration, RuntimeConfiguration, startup_configuration
 
 
 def environment() -> dict[str, str]:
@@ -80,3 +80,37 @@ def test_vertex_configuration_requires_no_openrouter_fallback() -> None:
     configuration = RuntimeConfiguration.from_environment(env)
     assert configuration.runtime.provider == "vertex"
     assert configuration.runtime.fallback_model is None
+
+
+def test_stage_settings_fail_closed_without_affecting_serving() -> None:
+    env = environment()
+    assert startup_configuration(env).runtime.provider == "openrouter"
+    with pytest.raises(ValueError, match="parsing credential"):
+        ParsingConfiguration.from_environment(env)
+    env.update(
+        LLAMACLOUD_API_KEY="private-parser-key",
+        PARSER_ROUTE="llamacloud",
+        PARSER_MODE="parse",
+        PARSER_SECRET_VERSION="1",
+        PARSER_ALLOWANCE_POLICY="account-verified",
+        PARSER_ALLOWANCE_MAX_UNITS="100",
+    )
+    assert "private-parser-key" not in json.dumps(ParsingConfiguration.from_environment(env).model_dump())
+    for name, value in (("PARSER_SECRET_VERSION", "latest"), ("PARSER_ALLOWANCE_MAX_UNITS", "0")):
+        with pytest.raises(ValueError, match="parsing stage settings"):
+            ParsingConfiguration.from_environment({**env, name: value})
+
+
+def test_generator_and_judge_settings_are_independent_and_required() -> None:
+    env = {
+        "GENERATOR_ROUTE": "openrouter",
+        "GENERATOR_MODEL": "generator",
+        "GENERATOR_CONFIGURATION_VERSION": "v1",
+        "GENERATOR_ALLOWANCE_POLICY": "observed",
+        "GENERATOR_ALLOWANCE_MAX_UNITS": "42",
+    }
+    assert EvaluationStageConfiguration.from_environment("GENERATOR", env).allowance_max_units == 42
+    with pytest.raises(ValueError, match="judge stage settings"):
+        EvaluationStageConfiguration.from_environment("JUDGE", env)
+    with pytest.raises(ValueError, match="generator stage settings"):
+        EvaluationStageConfiguration.from_environment("GENERATOR", {**env, "GENERATOR_ALLOWANCE_MAX_UNITS": "0"})

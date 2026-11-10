@@ -8,7 +8,12 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, 
 from fastapi.responses import FileResponse
 from starlette.concurrency import run_in_threadpool
 
-from app.contracts import ApiError, CorpusStagingAttemptStatus, UserProfile
+from app.contracts import (
+    ApiError,
+    CorpusStagingAttemptStatus,
+    CorpusStagingStructureCorrectionRequest,
+    UserProfile,
+)
 from app.corpus.staging import (
     CloudRunCorpusIngestionDispatcher,
     CorpusStagingApprovalService,
@@ -258,6 +263,50 @@ def get_corpus_staging_attempt(
         return service.status(attempt_id=attempt_id)
     except StagingAttemptNotFound:
         raise _staging_attempt_not_found() from None
+    except StagingPersistenceError:
+        raise _staging_unavailable() from None
+
+
+@router.post("/attempts/{attempt_id}/structure/propose", response_model=CorpusStagingAttemptStatus)
+def propose_corpus_staging_structure(
+    attempt_id: str,
+    admin: UserProfile = Depends(get_admin_user),
+    service: CorpusStagingUploadService = Depends(corpus_staging_upload_service),
+) -> CorpusStagingAttemptStatus:
+    try:
+        return service.propose_structure(attempt_id=attempt_id, actor_id=admin.user_id)
+    except StagingAttemptNotFound:
+        raise _staging_attempt_not_found() from None
+    except StagingAttemptConflict:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=ApiError(code="stale_staging_attempt", message="Saved parsing output changed or is not ready for structure review.", status=409).model_dump(mode="json"),
+        ) from None
+    except StagingPersistenceError:
+        raise _staging_unavailable() from None
+
+
+@router.put("/attempts/{attempt_id}/structure", response_model=CorpusStagingAttemptStatus)
+def correct_corpus_staging_structure(
+    attempt_id: str,
+    request: CorpusStagingStructureCorrectionRequest,
+    admin: UserProfile = Depends(get_admin_user),
+    service: CorpusStagingUploadService = Depends(corpus_staging_upload_service),
+) -> CorpusStagingAttemptStatus:
+    try:
+        return service.correct_structure(
+            attempt_id=attempt_id,
+            expected_revision=request.expected_revision,
+            actor_id=admin.user_id,
+            entries=request.entries,
+        )
+    except StagingAttemptNotFound:
+        raise _staging_attempt_not_found() from None
+    except StagingAttemptConflict:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=ApiError(code="stale_staging_attempt", message="This structure review changed. Refresh before saving corrections.", status=409).model_dump(mode="json"),
+        ) from None
     except StagingPersistenceError:
         raise _staging_unavailable() from None
 

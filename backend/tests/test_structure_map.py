@@ -5,7 +5,16 @@ from pathlib import Path
 
 import pytest
 
-from app.corpus.structure_map import HeadingAnchor, SourceIdentity, propose_structure_map
+from app.corpus.structure_map import (
+    HeadingAnchor,
+    SourceIdentity,
+    correct_block_structure_map,
+    propose_block_structure_map,
+    propose_structure_map,
+    validate_block_structure_map,
+)
+from app.contracts import StructureMapEntry
+from app.contracts.v29 import ParsedBlock, ParsingArtifact
 
 
 SOURCE = SourceIdentity("gs://bucket/dmbok.pdf#12", 12, "a" * 64)
@@ -62,6 +71,48 @@ def test_page_anchor_changes_and_source_mismatches_are_detected() -> None:
     assert base.structure_map.content_hash != changed.structure_map.content_hash
     with pytest.raises(ValueError, match="source SHA-256"):
         SourceIdentity("gs://bucket/dmbok.pdf#12", 12, "not-a-digest")
+
+
+def test_block_proposal_is_complete_page_accurate_and_parse_bound() -> None:
+    parsing = ParsingArtifact(
+        source_generation="12", source_sha256=SOURCE.sha256, output_sha256="b" * 64,
+        blocks=(
+            ParsedBlock(block_id="b0", physical_page=4, reading_order=0, kind="text", raw_text="# Chapter 1"),
+            ParsedBlock(block_id="b1", physical_page=4, reading_order=1, kind="text", raw_text="Overview"),
+            ParsedBlock(block_id="b2", physical_page=5, reading_order=2, kind="text", raw_text="## 1.1 Roles"),
+        ),
+    )
+
+    proposal = propose_block_structure_map(SOURCE, parsing)
+
+    assert proposal.parsing_output_sha256 == parsing.output_sha256
+    assert [(entry.section_path, entry.page_start, entry.page_end, entry.block_ids) for entry in proposal.entries] == [
+        (("Chapter 1",), 4, 4, ("b0", "b1")),
+        (("Chapter 1", "1.1 Roles"), 5, 5, ("b2",)),
+    ]
+    validate_block_structure_map(parsing, proposal)
+
+
+def test_missing_duplicate_and_unclassified_blocks_cannot_form_an_approvable_map() -> None:
+    parsing = ParsingArtifact(
+        source_generation="12", source_sha256=SOURCE.sha256, output_sha256="b" * 64,
+        blocks=(
+            ParsedBlock(block_id="b0", physical_page=1, reading_order=0, kind="text", raw_text="opening"),
+            ParsedBlock(block_id="b1", physical_page=1, reading_order=1, kind="text", raw_text="# Chapter 1"),
+        ),
+    )
+    proposal = propose_block_structure_map(SOURCE, parsing)
+    with pytest.raises(ValueError, match="cover every parse block"):
+        correct_block_structure_map(SOURCE, parsing, [
+            StructureMapEntry(section_path=("Chapter 1",), page_start=1, page_end=1, block_ids=("b1",)),
+        ])
+    with pytest.raises(ValueError, match="cover every parse block"):
+        correct_block_structure_map(SOURCE, parsing, [
+            StructureMapEntry(section_path=("Chapter 1",), page_start=1, page_end=1, block_ids=("b0", "b1")),
+            StructureMapEntry(section_path=("Chapter 1", "duplicate"), page_start=1, page_end=1, block_ids=("b1",)),
+        ])
+    with pytest.raises(ValueError, match="does not cover"):
+        validate_block_structure_map(parsing, proposal)
 
 
 def test_script_binds_actual_source_digest(tmp_path: Path) -> None:

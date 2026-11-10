@@ -9,10 +9,12 @@ from dataclasses import dataclass
 from typing import Any, Iterable
 
 from app.contracts import SourceSpan, StructureMap, StructureMapEntry
+from app.contracts.v29 import ParsingArtifact
 
 
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _UNCLASSIFIED = ("Unclassified",)
+_MARKDOWN_HEADING = re.compile(r"^\s{0,3}(#{1,4})\s+(.+?)\s*#*\s*$", re.MULTILINE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,6 +181,98 @@ def propose_structure_map(
         entries=entries,
     )
     return StructureMapProposal("structure-map-proposal-v1", source, structure_map, tuple(unresolved))
+
+
+def propose_block_structure_map(
+    source: SourceIdentity, parsing: ParsingArtifact
+) -> StructureMap:
+    """Build a deterministic H1–H4 proposal covering each saved parse block once."""
+    if parsing.source_sha256 != source.sha256 or str(parsing.source_generation) != str(source.generation):
+        raise ValueError("parsing artifact does not match the staged source")
+
+    path: list[str] = []
+    assignments: list[tuple[str, ...]] = []
+    for block in parsing.blocks:
+        headings = _MARKDOWN_HEADING.findall(block.raw_text) if block.kind == "text" else []
+        if len(headings) > 1:
+            assignments.append(_UNCLASSIFIED)
+            continue
+        if headings:
+            marks, title = headings[0]
+            level = len(marks)
+            if level > len(path) + 1 or not title.strip():
+                assignments.append(_UNCLASSIFIED)
+                continue
+            path = path[:level - 1] + [title.strip()]
+        assignments.append(tuple(path) if path else _UNCLASSIFIED)
+
+    return _map_for_assignments(source, parsing, assignments)
+
+
+def correct_block_structure_map(
+    source: SourceIdentity,
+    parsing: ParsingArtifact,
+    assignments: Iterable[StructureMapEntry],
+) -> StructureMap:
+    """Rebuild a map from reviewer paths while deriving pages from saved blocks."""
+    if parsing.source_sha256 != source.sha256 or str(parsing.source_generation) != str(source.generation):
+        raise ValueError("parsing artifact does not match the staged source")
+    material = tuple(assignments)
+    requested = [block_id for entry in material for block_id in entry.block_ids]
+    expected = [block.block_id for block in parsing.blocks]
+    if len(requested) != len(set(requested)) or set(requested) != set(expected):
+        raise ValueError("structure review must cover every parse block exactly once")
+    path_by_id = {
+        block_id: entry.section_path
+        for entry in material
+        for block_id in entry.block_ids
+    }
+    return _map_for_assignments(source, parsing, [path_by_id[item] for item in expected])
+
+
+def validate_block_structure_map(parsing: ParsingArtifact, structure_map: StructureMap) -> None:
+    """Reject stale maps and missing, duplicate or legacy-unclassified blocks."""
+    block_ids = [block_id for entry in structure_map.entries for block_id in entry.block_ids]
+    expected = [block.block_id for block in parsing.blocks]
+    if (
+        structure_map.source_sha256 != parsing.source_sha256
+        or structure_map.parsing_output_sha256 != parsing.output_sha256
+        or len(block_ids) != len(set(block_ids))
+        or set(block_ids) != set(expected)
+        or any(entry.section_path == _UNCLASSIFIED for entry in structure_map.entries)
+    ):
+        raise ValueError("structure map does not cover the saved parse artifact")
+
+
+def _map_for_assignments(
+    source: SourceIdentity, parsing: ParsingArtifact, paths: list[tuple[str, ...]]
+) -> StructureMap:
+    entries: list[StructureMapEntry] = []
+    start = 0
+    for index in range(1, len(parsing.blocks) + 1):
+        if index < len(parsing.blocks) and paths[index] == paths[start]:
+            continue
+        blocks = parsing.blocks[start:index]
+        entries.append(StructureMapEntry(
+            section_path=paths[start],
+            page_start=blocks[0].physical_page,
+            page_end=blocks[-1].physical_page,
+            block_ids=tuple(block.block_id for block in blocks),
+        ))
+        start = index
+    material = [entry.model_dump(mode="json") for entry in entries]
+    content_hash = _sha256(_canonical_json({
+        "source_sha256": source.sha256,
+        "parsing_output_sha256": parsing.output_sha256,
+        "entries": material,
+    }))
+    return StructureMap(
+        map_id=f"staged-{source.sha256[:12]}-{content_hash[:12]}",
+        source_sha256=source.sha256,
+        parsing_output_sha256=parsing.output_sha256,
+        content_hash=content_hash,
+        entries=entries,
+    )
 
 
 def _group(anchors: Iterable[HeadingAnchor], page_count: int, label: str) -> dict[int, set[tuple[str, ...]]]:

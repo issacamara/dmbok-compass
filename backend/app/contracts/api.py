@@ -755,6 +755,7 @@ class StructureMapEntry(ContractModel):
     section_path: tuple[str, ...] = Field(min_length=1, max_length=4)
     page_start: int = Field(ge=1)
     page_end: int = Field(ge=1)
+    block_ids: tuple[str, ...] = Field(default_factory=tuple, max_length=5000)
 
     @model_validator(mode="after")
     def validate_page_range(self) -> "StructureMapEntry":
@@ -768,6 +769,7 @@ class StructureMap(ContractModel):
     map_id: str = Field(min_length=1, max_length=128)
     source_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     content_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
+    parsing_output_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     entries: list[StructureMapEntry] = Field(min_length=1)
 
 
@@ -787,6 +789,8 @@ class CorpusStagingPreviewEntry(ContractModel):
     page_end: int = Field(ge=1)
     match_status: CorpusStagingMatchStatus
     correction_codes: list[CorpusStagingCorrectionCode] = Field(default_factory=list)
+    block_ids: tuple[str, ...] = Field(default_factory=tuple, max_length=5000)
+    excerpt: str | None = Field(default=None, max_length=500)
 
     @model_validator(mode="after")
     def validate_page_range(self) -> "CorpusStagingPreviewEntry":
@@ -797,6 +801,16 @@ class CorpusStagingPreviewEntry(ContractModel):
         if self.match_status != "matched" and not self.correction_codes:
             raise ValueError("unmatched entries require correction guidance")
         return self
+
+
+class CorpusStagingStructureCorrectionEntry(ContractModel):
+    section_path: tuple[str, ...] = Field(min_length=1, max_length=4)
+    block_ids: tuple[str, ...] = Field(min_length=1, max_length=5000)
+
+
+class CorpusStagingStructureCorrectionRequest(ContractModel):
+    expected_revision: int = Field(ge=1)
+    entries: list[CorpusStagingStructureCorrectionEntry] = Field(min_length=1, max_length=5000)
 
 
 class CorpusStagingAttemptStatus(ContractModel):

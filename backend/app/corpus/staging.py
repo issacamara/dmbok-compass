@@ -19,11 +19,20 @@ from app.contracts import (
     ApiError,
     CorpusStagingAttemptStatus,
     CorpusStagingPreviewEntry,
+    CorpusStagingStructureCorrectionEntry,
     StructureTemplate,
     StructureMap,
     StructureMapEntry,
 )
-from app.corpus.structure_map import HeadingAnchor, SourceIdentity, propose_structure_map
+from app.contracts.v29 import ParsingArtifact
+from app.corpus.structure_map import (
+    HeadingAnchor,
+    SourceIdentity,
+    correct_block_structure_map,
+    propose_block_structure_map,
+    propose_structure_map,
+    validate_block_structure_map,
+)
 from app.ingestion.extract import extract_pdf
 
 # shortcut: keep fixed upload bounds until representative PDF sizes and API concurrency memory are measured.
@@ -60,7 +69,10 @@ class StagingDispatchError(RuntimeError):
 
 
 class CorpusIngestionDispatcher(Protocol):
-    def dispatch(self, *, attempt_id: str, source: dict[str, Any], map_artifact: dict[str, Any], approval_artifact: dict[str, Any]) -> None: ...
+    def dispatch(
+        self, *, attempt_id: str, source: dict[str, Any], map_artifact: dict[str, Any],
+        approval_artifact: dict[str, Any], parsing_artifact: dict[str, Any] | None = None,
+    ) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,6 +113,12 @@ class CorpusStagingAttemptStore(Protocol):
         status: CorpusStagingAttemptStatus,
         source_generation: int,
         structure_generation: int,
+    ) -> CorpusStagingAttemptStatus: ...
+
+    def save_structure_review(
+        self, *, attempt_id: str, expected_revision: int, parsing_artifact: dict[str, Any],
+        structure_artifact: dict[str, Any], status: CorpusStagingAttemptStatus,
+        reviewed_by: str,
     ) -> CorpusStagingAttemptStatus: ...
 
     def claim_approval(
@@ -251,6 +269,58 @@ class FirestoreCorpusStagingAttemptStore:
 
         return self._transaction_runner(self.client.transaction(), apply)
 
+    def save_structure_review(
+        self, *, attempt_id: str, expected_revision: int, parsing_artifact: dict[str, Any],
+        structure_artifact: dict[str, Any], status: CorpusStagingAttemptStatus,
+        reviewed_by: str,
+    ) -> CorpusStagingAttemptStatus:
+        reference = self.attempts.document(attempt_id)
+
+        def apply(transaction: Any) -> CorpusStagingAttemptStatus:
+            snapshot = reference.get(transaction=transaction)
+            if not snapshot.exists:
+                raise StagingAttemptNotFound("staging attempt is unavailable")
+            record = snapshot.to_dict()
+            current = _attempt_status(record)
+            if current.revision != expected_revision:
+                raise StagingAttemptConflict("staging attempt changed before structure review")
+            if (
+                record.get("parsing_state") != "awaiting_review"
+                or record.get("parsing_artifact") != parsing_artifact
+                or record.get("approval_artifact") is not None
+                or record.get("dispatch_claimed")
+                or current.state not in {"validating", "awaiting_review"}
+            ):
+                raise StagingAttemptConflict("saved parsing output is not available for review")
+            source = record.get("source")
+            if not isinstance(source, dict) or source.get("generation") is None:
+                raise StagingAttemptConflict("staged source is unavailable")
+            revision = expected_revision + 1
+            result = status.model_copy(update={"revision": revision})
+            reviewed_at = datetime.now(timezone.utc).isoformat()
+            payload = result.model_dump(mode="json", exclude={"hosted_parsing_state"})
+            payload.update({
+                "structure": structure_artifact,
+                "structure_review": {
+                    "revision": revision,
+                    "parsing_output_sha256": parsing_artifact.get("sha256"),
+                    "map_sha256": structure_artifact["sha256"],
+                    "reviewed_by": reviewed_by,
+                    "reviewed_at": reviewed_at,
+                },
+                "preview_binding": {
+                    "preview_revision": revision,
+                    "source_generation": source["generation"],
+                    "structure_generation": structure_artifact["generation"],
+                    "parsing_output_sha256": parsing_artifact.get("sha256"),
+                },
+                "updated_at": reviewed_at,
+            })
+            transaction.update(reference, payload)
+            return result
+
+        return self._transaction_runner(self.client.transaction(), apply)
+
     def claim_approval(
         self, *, attempt_id: str, expected_revision: int, approval: dict[str, Any]
     ) -> tuple[CorpusStagingAttemptStatus, bool]:
@@ -274,8 +344,8 @@ class FirestoreCorpusStagingAttemptStore:
             if not retry:
                 source, structure = current.get("source"), current.get("structure")
                 bucket_name = source.get("bucket") if isinstance(source, dict) else ""
-                if not _valid_artifact(source, bucket_name, attempt_id, "source") or not _valid_artifact(
-                    structure, bucket_name, attempt_id, "structure"
+                if not _valid_artifact(source, bucket_name, attempt_id, "source") or not _valid_structure_artifact(
+                    structure, bucket_name, attempt_id
                 ):
                     raise StagingAttemptConflict("staging attempt artifacts are unavailable")
                 if status.preview is None or status.correction_codes or any(
@@ -284,6 +354,13 @@ class FirestoreCorpusStagingAttemptStore:
                     raise StagingAttemptConflict("staging preview is not fully matched")
                 if current.get("preview_binding", {}).get("preview_revision") != status.revision:
                     raise StagingAttemptConflict("staging preview is stale")
+                parsing = current.get("parsing_artifact")
+                if parsing is not None and (
+                    not _valid_parsing_identity(parsing, attempt_id, source)
+                    or current.get("preview_binding", {}).get("parsing_output_sha256") != parsing.get("sha256")
+                    or approval.get("_parsing_binding") != parsing
+                ):
+                    raise StagingAttemptConflict("staging preview is not bound to the saved parse output")
                 if current.get("source") != approval.get("_source_binding") or current.get("structure") != approval.get("_structure_binding"):
                     raise StagingAttemptConflict("staging artifact pair changed")
             revision = status.revision + 1
@@ -457,6 +534,29 @@ def _attempt_status(record: dict[str, Any]) -> CorpusStagingAttemptStatus:
         ):
             raise StagingPersistenceError("staging preview binding is unavailable")
     return status
+
+
+def _block_preview(
+    structure_map: StructureMap, parsing: ParsingArtifact
+) -> tuple[list[CorpusStagingPreviewEntry], list[str]]:
+    by_id = {block.block_id: block for block in parsing.blocks}
+    preview: list[CorpusStagingPreviewEntry] = []
+    corrections: set[str] = set()
+    for index, entry in enumerate(structure_map.entries):
+        codes = ["unmatched_passage"] if entry.section_path == ("Unclassified",) else []
+        corrections.update(codes)
+        excerpt = " ".join(by_id[item].raw_text for item in entry.block_ids if item in by_id)[:500]
+        preview.append(CorpusStagingPreviewEntry(
+            entry_index=index,
+            section_path=entry.section_path,
+            page_start=entry.page_start,
+            page_end=entry.page_end,
+            match_status="unmatched" if codes else "matched",
+            correction_codes=codes,
+            block_ids=entry.block_ids,
+            excerpt=excerpt or None,
+        ))
+    return preview, sorted(corrections)
 
 
 _NON_ALNUM = re.compile(r"[^a-z0-9]+")
@@ -763,6 +863,119 @@ class CorpusStagingUploadService:
         except Exception:
             raise StagingPersistenceError("staging storage is unavailable") from None
 
+    def propose_structure(self, *, attempt_id: str, actor_id: str) -> CorpusStagingAttemptStatus:
+        record = self.store.get(attempt_id=attempt_id)
+        if record is None:
+            raise StagingAttemptNotFound("staging attempt is unavailable")
+        current = _attempt_status(record)
+        source = record.get("source")
+        if record.get("parsing_state") != "awaiting_review":
+            raise StagingAttemptConflict("hosted parsing has not completed")
+        if current.state == "awaiting_review" and current.preview is not None:
+            return current
+        parsing_identity = record.get("parsing_artifact")
+        parsing = self._saved_parsing_artifact(attempt_id, source, parsing_identity)
+        source_identity = SourceIdentity(
+            f"gs://{source['bucket']}/{source['object_name']}#{source['generation']}",
+            int(source["generation"]), str(source["sha256"]),
+        )
+        structure_map = propose_block_structure_map(source_identity, parsing)
+        return self._save_structure_review(
+            attempt_id, actor_id, record, source, parsing_identity,
+            structure_map, current.revision,
+        )
+
+    def correct_structure(
+        self, *, attempt_id: str, expected_revision: int, actor_id: str,
+        entries: list[CorpusStagingStructureCorrectionEntry],
+    ) -> CorpusStagingAttemptStatus:
+        record = self.store.get(attempt_id=attempt_id)
+        if record is None:
+            raise StagingAttemptNotFound("staging attempt is unavailable")
+        current = _attempt_status(record)
+        if current.revision != expected_revision or current.state != "awaiting_review":
+            raise StagingAttemptConflict("staging attempt changed before structure correction")
+        source = record.get("source")
+        if record.get("parsing_state") != "awaiting_review":
+            raise StagingAttemptConflict("hosted parsing has not completed")
+        parsing_identity = record.get("parsing_artifact")
+        parsing = self._saved_parsing_artifact(attempt_id, source, parsing_identity)
+        source_identity = SourceIdentity(
+            f"gs://{source['bucket']}/{source['object_name']}#{source['generation']}",
+            int(source["generation"]), str(source["sha256"]),
+        )
+        try:
+            structure_map = correct_block_structure_map(source_identity, parsing, entries)
+        except ValueError as error:
+            raise StagingAttemptConflict(str(error)) from None
+        return self._save_structure_review(
+            attempt_id, actor_id, record, source, parsing_identity,
+            structure_map, expected_revision,
+        )
+
+    def _saved_parsing_artifact(
+        self, attempt_id: str, source: Any, identity: Any
+    ) -> ParsingArtifact:
+        if (
+            not isinstance(source, dict)
+            or not _valid_artifact(source, self.bucket_name, attempt_id, "source")
+            or not isinstance(identity, dict)
+            or identity.get("source_generation") != str(source.get("generation"))
+            or identity.get("source_sha256") != source.get("sha256")
+            or not isinstance(identity.get("artifact_generation"), int)
+            or not isinstance(identity.get("artifact_sha256"), str)
+            or not re.fullmatch(r"[a-f0-9]{64}", identity["artifact_sha256"])
+            or identity.get("object_name") != f"staging/{attempt_id}/parsing/{identity.get('sha256')}.json"
+        ):
+            raise StagingAttemptConflict("saved parsing output is unavailable")
+        try:
+            blob = self.bucket.blob(identity["object_name"], generation=identity["artifact_generation"])
+            payload = blob.download_as_bytes(timeout=60)
+            if sha256(payload).hexdigest() != identity["artifact_sha256"]:
+                raise ValueError("parsing artifact digest mismatch")
+            parsing = ParsingArtifact.model_validate_json(payload)
+            if parsing.output_sha256 != identity.get("sha256"):
+                raise ValueError("parsing output digest mismatch")
+            if parsing.source_sha256 != source["sha256"] or str(parsing.source_generation) != str(source["generation"]):
+                raise ValueError("parsing source mismatch")
+            return parsing
+        except Exception:
+            raise StagingAttemptConflict("saved parsing output is invalid") from None
+
+    def _save_structure_review(
+        self, attempt_id: str, actor_id: str, record: dict[str, Any], source: dict[str, Any],
+        parsing_identity: dict[str, Any], structure_map: StructureMap, expected_revision: int,
+    ) -> CorpusStagingAttemptStatus:
+        parsing = self._saved_parsing_artifact(attempt_id, source, parsing_identity)
+        preview, corrections = _block_preview(structure_map, parsing)
+        payload = (json.dumps(structure_map.model_dump(mode="json"), sort_keys=True, separators=(",", ":")) + "\n").encode()
+        next_revision = expected_revision + 1
+        object_name = f"staging/{attempt_id}/structure-revisions/{next_revision}-{structure_map.content_hash}.json"
+        artifact = _write_pinned_artifact(self.bucket, self.bucket_name, object_name, payload, "application/json")
+        status = CorpusStagingAttemptStatus(
+            attempt_id=attempt_id,
+            revision=expected_revision,
+            state="awaiting_review",
+            completed_stage="review",
+            preview=preview,
+            correction_codes=corrections,
+            hosted_parsing_state="awaiting_review",
+            parsing_output_sha256=parsing.output_sha256,
+        )
+        try:
+            return self.store.save_structure_review(
+                attempt_id=attempt_id,
+                expected_revision=expected_revision,
+                parsing_artifact=parsing_identity,
+                structure_artifact=artifact,
+                status=status,
+                reviewed_by=actor_id,
+            )
+        except (StagingAttemptNotFound, StagingAttemptConflict):
+            raise
+        except Exception:
+            raise StagingPersistenceError("staging structure review is unavailable") from None
+
     def validate(self, *, attempt_id: str) -> CorpusStagingAttemptStatus:
         record = self.store.get(attempt_id=attempt_id)
         if record is None:
@@ -972,7 +1185,10 @@ class CloudRunCorpusIngestionDispatcher:
         self.job_name = _required_config(job_name, "job_name")
         self._execute = execute or self._execute_cloud_run
 
-    def dispatch(self, *, attempt_id: str, source: dict[str, Any], map_artifact: dict[str, Any], approval_artifact: dict[str, Any]) -> None:
+    def dispatch(
+        self, *, attempt_id: str, source: dict[str, Any], map_artifact: dict[str, Any],
+        approval_artifact: dict[str, Any], parsing_artifact: dict[str, Any] | None = None,
+    ) -> None:
         environment = {
             "CORPUS_BUCKET_NAME": source["bucket"],
             "CORPUS_OBJECT_NAME": source["object_name"],
@@ -983,6 +1199,12 @@ class CloudRunCorpusIngestionDispatcher:
             "CORPUS_STRUCTURE_MAP_APPROVAL_SHA256": approval_artifact["sha256"],
             "CORPUS_STAGING_ATTEMPT_ID": attempt_id,
         }
+        if parsing_artifact is not None:
+            environment.update({
+                "CORPUS_PARSING_ARTIFACT_URI": _pinned_uri(parsing_artifact),
+                "CORPUS_PARSING_ARTIFACT_SHA256": parsing_artifact["sha256"],
+                "CORPUS_PARSING_OUTPUT_SHA256": parsing_artifact["output_sha256"],
+            })
         try:
             self._execute(environment)
         except StagingDispatchError:
@@ -1023,8 +1245,10 @@ class CorpusStagingApprovalService:
         if current.revision != expected_revision or current.state not in {"awaiting_review", "failed"}:
             raise StagingAttemptConflict("staging attempt changed before approval")
         source, template_artifact = record.get("source"), record.get("structure")
-        if not _valid_artifact(source, self.bucket_name, attempt_id, "source") or not _valid_artifact(
-            template_artifact, self.bucket_name, attempt_id, "structure"
+        parsing_identity = record.get("parsing_artifact")
+        parse_bound = parsing_identity is not None
+        if not _valid_artifact(source, self.bucket_name, attempt_id, "source") or not _valid_structure_artifact(
+            template_artifact, self.bucket_name, attempt_id
         ):
             raise StagingAttemptConflict("staging artifact pair is invalid")
         if current.state == "awaiting_review" and (
@@ -1039,7 +1263,11 @@ class CorpusStagingApprovalService:
             if current.state == "failed":
                 map_artifact = record.get("approved_map_artifact")
                 approval_artifact = record.get("approval_artifact")
-                map_bytes = self._read_derived(attempt_id, map_artifact, "approved-structure-map.json")
+                map_bytes = (
+                    self._read_reviewed_map(attempt_id, map_artifact)
+                    if parse_bound
+                    else self._read_derived(attempt_id, map_artifact, "approved-structure-map.json")
+                )
                 approval_bytes = self._read_derived(attempt_id, approval_artifact, "approval.json")
                 previous = record.get("approval")
                 if not isinstance(previous, dict):
@@ -1053,39 +1281,86 @@ class CorpusStagingApprovalService:
                     raise StagingAttemptConflict("the pinned approval does not match this source")
                 if map_value.get("source_sha256") != source["sha256"] or previous.get("map", {}).get("content_hash") != map_value.get("content_hash"):
                     raise StagingAttemptConflict("the pinned map does not match this source")
+                if parse_bound:
+                    parsing = self._read_parsing_artifact(attempt_id, source, parsing_identity)
+                    structure_map = StructureMap.model_validate_json(map_bytes)
+                    validate_block_structure_map(parsing, structure_map)
+                    if previous.get("parsing", {}).get("output_sha256") != parsing.output_sha256:
+                        raise StagingAttemptConflict("the pinned approval does not match the saved parse output")
                 approval = {
                     **previous, "_source_binding": source, "_structure_binding": template_artifact,
                     "_map_artifact": map_artifact, "_approval_artifact": approval_artifact,
+                    "_parsing_binding": parsing_identity,
                 }
+                parsing_dispatch = self._parsing_dispatch_identity(source, parsing_identity) if parse_bound else None
             else:
-                map_bytes, map_artifact = self._persist_map(attempt_id, source, template_artifact)
-                _, approval_artifact = self._persist_approval(
-                    attempt_id, source, map_artifact, map_bytes, actor_id=actor_id
-                )
-                map_value = json.loads(map_bytes)
-                approval = {
-                    "schema_version": "corpus-owner-approval-v1", "decision": "approved", "approved_by": actor_id,
-                    "source": {
-                        "uri": f"gs://{source['bucket']}/{source['object_name']}#{source['generation']}",
-                        "generation": source["generation"], "sha256": source["sha256"],
-                    },
-                    "map": {
-                        "artifact_uri": f"gs://{map_artifact['bucket']}/{map_artifact['object_name']}",
-                        "generation": map_artifact["generation"], "file_sha256": map_artifact["sha256"],
-                        "content_hash": map_value["content_hash"], "map_id": map_value["map_id"],
-                        "schema_version": "structure-map-v1",
-                    },
-                    "ingestion_gate": {"oversized_indivisible_list_items_or_table_rows": True},
-                    "_source_binding": source, "_structure_binding": template_artifact,
-                    "_map_artifact": map_artifact, "_approval_artifact": approval_artifact,
-                }
+                if parse_bound:
+                    parsing = self._read_parsing_artifact(attempt_id, source, parsing_identity)
+                    map_bytes = self._read_reviewed_map(attempt_id, template_artifact)
+                    structure_map = StructureMap.model_validate_json(map_bytes)
+                    validate_block_structure_map(parsing, structure_map)
+                    map_artifact = template_artifact
+                    _, approval_artifact = self._persist_parse_bound_approval(
+                        attempt_id, source, parsing_identity, map_artifact, map_bytes,
+                        actor_id=actor_id, review_revision=current.revision,
+                    )
+                    map_value = structure_map.model_dump(mode="json")
+                    approval = {
+                        "schema_version": "corpus-owner-approval-v1", "decision": "approved",
+                        "approved_by": actor_id,
+                        "source": {
+                            "uri": f"gs://{source['bucket']}/{source['object_name']}#{source['generation']}",
+                            "generation": source["generation"], "sha256": source["sha256"],
+                        },
+                        "parsing": {
+                            "artifact_uri": f"gs://{source['bucket']}/{parsing_identity['object_name']}#{parsing_identity['artifact_generation']}",
+                            "artifact_sha256": parsing_identity["artifact_sha256"],
+                            "output_sha256": parsing_identity["sha256"],
+                        },
+                        "map": {
+                            "artifact_uri": f"gs://{map_artifact['bucket']}/{map_artifact['object_name']}#{map_artifact['generation']}",
+                            "generation": map_artifact["generation"], "file_sha256": map_artifact["sha256"],
+                            "content_hash": map_value["content_hash"], "map_id": map_value["map_id"],
+                            "schema_version": "structure-map-v1",
+                        },
+                        "review_revision": current.revision,
+                        "ingestion_gate": {"oversized_indivisible_list_items_or_table_rows": True},
+                        "_source_binding": source, "_structure_binding": template_artifact,
+                        "_parsing_binding": parsing_identity,
+                        "_map_artifact": map_artifact, "_approval_artifact": approval_artifact,
+                    }
+                    parsing_dispatch = self._parsing_dispatch_identity(source, parsing_identity)
+                else:
+                    map_bytes, map_artifact = self._persist_map(attempt_id, source, template_artifact)
+                    _, approval_artifact = self._persist_approval(
+                        attempt_id, source, map_artifact, map_bytes, actor_id=actor_id
+                    )
+                    map_value = json.loads(map_bytes)
+                    approval = {
+                        "schema_version": "corpus-owner-approval-v1", "decision": "approved", "approved_by": actor_id,
+                        "source": {
+                            "uri": f"gs://{source['bucket']}/{source['object_name']}#{source['generation']}",
+                            "generation": source["generation"], "sha256": source["sha256"],
+                        },
+                        "map": {
+                            "artifact_uri": f"gs://{map_artifact['bucket']}/{map_artifact['object_name']}",
+                            "generation": map_artifact["generation"], "file_sha256": map_artifact["sha256"],
+                            "content_hash": map_value["content_hash"], "map_id": map_value["map_id"],
+                            "schema_version": "structure-map-v1",
+                        },
+                        "ingestion_gate": {"oversized_indivisible_list_items_or_table_rows": True},
+                        "_source_binding": source, "_structure_binding": template_artifact,
+                        "_map_artifact": map_artifact, "_approval_artifact": approval_artifact,
+                    }
+                    parsing_dispatch = None
             queued, should_dispatch = self.store.claim_approval(
                 attempt_id=attempt_id, expected_revision=expected_revision, approval=approval
             )
             if not should_dispatch:
                 return queued
             self.dispatcher.dispatch(
-                attempt_id=attempt_id, source=source, map_artifact=map_artifact, approval_artifact=approval_artifact
+                attempt_id=attempt_id, source=source, map_artifact=map_artifact,
+                approval_artifact=approval_artifact, parsing_artifact=parsing_dispatch,
             )
             return queued
         except StagingDispatchError as error:
@@ -1099,6 +1374,76 @@ class CorpusStagingApprovalService:
             raise
         except Exception:
             raise StagingPersistenceError("staging approval is unavailable") from None
+
+    def _read_parsing_artifact(
+        self, attempt_id: str, source: dict[str, Any], identity: dict[str, Any]
+    ) -> ParsingArtifact:
+        if not _valid_parsing_identity(identity, attempt_id, source):
+            raise StagingAttemptConflict("the saved parsing artifact is unavailable")
+        try:
+            payload = self.bucket.blob(
+                identity["object_name"], generation=identity["artifact_generation"]
+            ).download_as_bytes(timeout=60)
+            if sha256(payload).hexdigest() != identity["artifact_sha256"]:
+                raise ValueError("parsing artifact digest mismatch")
+            parsing = ParsingArtifact.model_validate_json(payload)
+            if parsing.output_sha256 != identity["sha256"]:
+                raise ValueError("parsing output digest mismatch")
+            return parsing
+        except Exception:
+            raise StagingAttemptConflict("the saved parsing artifact is invalid") from None
+
+    def _parsing_dispatch_identity(
+        self, source: dict[str, Any], identity: dict[str, Any]
+    ) -> dict[str, Any]:
+        return {
+            "bucket": source["bucket"],
+            "object_name": identity["object_name"],
+            "generation": identity["artifact_generation"],
+            "sha256": identity["artifact_sha256"],
+            "output_sha256": identity["sha256"],
+        }
+
+    def _read_reviewed_map(self, attempt_id: str, artifact: Any) -> bytes:
+        if not _valid_structure_artifact(artifact, self.bucket_name, attempt_id):
+            raise StagingAttemptConflict("the reviewed structure map is unavailable")
+        try:
+            payload = _read_pinned_object(self.bucket, artifact)
+            if sha256(payload).hexdigest() != artifact["sha256"]:
+                raise ValueError("structure map digest mismatch")
+            return payload
+        except Exception:
+            raise StagingAttemptConflict("the reviewed structure map is invalid") from None
+
+    def _persist_parse_bound_approval(
+        self, attempt_id: str, source: dict[str, Any], parsing_identity: dict[str, Any],
+        map_artifact: dict[str, Any], map_bytes: bytes, *, actor_id: str, review_revision: int,
+    ) -> tuple[bytes, dict[str, Any]]:
+        structure_map = StructureMap.model_validate_json(map_bytes)
+        value = {
+            "schema_version": "corpus-owner-approval-v1",
+            "decision": "approved",
+            "approved_by": actor_id,
+            "source": {
+                "uri": f"gs://{source['bucket']}/{source['object_name']}#{source['generation']}",
+                "generation": source["generation"], "sha256": source["sha256"],
+            },
+            "parsing": {
+                "artifact_uri": f"gs://{source['bucket']}/{parsing_identity['object_name']}#{parsing_identity['artifact_generation']}",
+                "artifact_sha256": parsing_identity["artifact_sha256"],
+                "output_sha256": parsing_identity["sha256"],
+            },
+            "map": {
+                "artifact_uri": f"gs://{map_artifact['bucket']}/{map_artifact['object_name']}#{map_artifact['generation']}",
+                "generation": map_artifact["generation"], "file_sha256": map_artifact["sha256"],
+                "content_hash": structure_map.content_hash, "map_id": structure_map.map_id,
+                "schema_version": structure_map.schema_version,
+            },
+            "review_revision": review_revision,
+            "ingestion_gate": {"oversized_indivisible_list_items_or_table_rows": True},
+        }
+        payload = (json.dumps(value, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        return payload, self._write_pinned(f"staging/{attempt_id}/approval.json", payload, "application/json")
 
     def _persist_map(self, attempt_id: str, source: dict[str, Any], artifact: dict[str, Any]) -> tuple[bytes, dict[str, Any]]:
         template_bytes = _read_pinned_object(self.bucket, artifact)
@@ -1194,6 +1539,62 @@ def _valid_artifact(
         and re.fullmatch(r"[a-f0-9]{64}", artifact["sha256"]) is not None
         and artifact.get("content_type") == ("application/pdf" if kind == "source" else "application/json")
     )
+
+
+def _valid_structure_artifact(artifact: Any, bucket_name: str, attempt_id: str) -> bool:
+    return _valid_artifact(artifact, bucket_name, attempt_id, "structure") or (
+        isinstance(artifact, dict)
+        and artifact.get("bucket") == bucket_name
+        and re.fullmatch(
+            rf"staging/{re.escape(attempt_id)}/structure-revisions/\d+-[a-f0-9]{{64}}\.json",
+            str(artifact.get("object_name", "")),
+        ) is not None
+        and isinstance(artifact.get("generation"), int)
+        and artifact["generation"] > 0
+        and isinstance(artifact.get("sha256"), str)
+        and re.fullmatch(r"[a-f0-9]{64}", artifact["sha256"]) is not None
+        and artifact.get("content_type") == "application/json"
+    )
+
+
+def _valid_parsing_identity(identity: Any, attempt_id: str, source: Any) -> bool:
+    return (
+        isinstance(identity, dict)
+        and isinstance(source, dict)
+        and identity.get("source_generation") == str(source.get("generation"))
+        and identity.get("source_sha256") == source.get("sha256")
+        and identity.get("object_name") == f"staging/{attempt_id}/parsing/{identity.get('sha256')}.json"
+        and isinstance(identity.get("sha256"), str)
+        and re.fullmatch(r"[a-f0-9]{64}", identity["sha256"]) is not None
+        and isinstance(identity.get("artifact_sha256"), str)
+        and re.fullmatch(r"[a-f0-9]{64}", identity["artifact_sha256"]) is not None
+        and isinstance(identity.get("artifact_generation"), int)
+        and identity["artifact_generation"] > 0
+        and isinstance(identity.get("remote_job_id"), str)
+    )
+
+
+def _write_pinned_artifact(
+    bucket: Any, bucket_name: str, object_name: str, payload: bytes, content_type: str
+) -> dict[str, Any]:
+    blob = bucket.blob(object_name)
+    try:
+        blob.upload_from_string(payload, content_type=content_type, if_generation_match=0, timeout=60)
+        generation = int(blob.generation)
+    except PreconditionFailed:
+        existing = bucket.blob(object_name)
+        existing.reload()
+        generation = int(existing.generation)
+        pinned = bucket.blob(object_name, generation=generation).download_as_bytes(timeout=60)
+        if pinned != payload:
+            raise StagingAttemptConflict("immutable structure revision conflicts") from None
+    return {
+        "bucket": bucket_name,
+        "object_name": object_name,
+        "generation": generation,
+        "sha256": sha256(payload).hexdigest(),
+        "content_type": content_type,
+    }
 
 
 def _read_pinned_object(bucket: Any, artifact: dict[str, Any]) -> bytes:

@@ -22,7 +22,6 @@ from app.corpus.staging import (
     MAX_STAGING_MAP_BYTES,
     MAX_STAGING_PDF_BYTES,
     StagingUploadValidationError,
-    validate_staging_pdf,
     validate_staging_files,
 )
 from app.identity import get_admin_user, get_current_profile

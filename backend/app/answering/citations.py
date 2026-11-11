@@ -187,8 +187,8 @@ def _validate_child_parent_link(child: ChildDocumentChunk, parent: ParentChunk) 
             f"retrieved child has an invalid parent link: {child.chunk_id}"
         )
     if (
-        parent.text != "\n".join(span.text for span in parent.source_spans)
-        or child.text != "\n".join(span.text for span in child.source_spans)
+        (parent.source_text or parent.text) != "\n".join(span.text for span in parent.source_spans)
+        or (child.source_text or child.text) != "\n".join(span.text for span in child.source_spans)
         or any(
             span.end_offset - span.start_offset != len(span.text)
             for span in (*parent.source_spans, *child.source_spans)
@@ -203,6 +203,7 @@ def _validate_child_parent_link(child: ChildDocumentChunk, parent: ParentChunk) 
     for child_span in child.source_spans:
         linked = any(
             source.page == child_span.page
+            and source.block_id == child_span.block_id
             and source.start_offset <= child_span.start_offset
             and child_span.end_offset <= source.end_offset
             and source.text[

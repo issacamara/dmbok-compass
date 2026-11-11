@@ -737,17 +737,27 @@ class CorpusValidationEvidence(ContractModel):
 
 
 class SourceSpan(ContractModel):
-    """An ordered, page-linked slice of the approved source document."""
+    """An ordered, page-linked slice of the approved source document or parse block."""
 
     page: int = Field(ge=1)
     start_offset: int = Field(ge=0)
     end_offset: int = Field(gt=0)
     text: str = Field(min_length=1, max_length=20_000)
+    span_id: str | None = Field(default=None, min_length=1, max_length=128)
+    block_id: str | None = Field(default=None, min_length=1, max_length=256)
+    block_order: int | None = Field(default=None, ge=0)
+    printed_page_label: str | None = Field(default=None, min_length=1, max_length=128)
 
     @model_validator(mode="after")
     def validate_offsets(self) -> "SourceSpan":
         if self.end_offset <= self.start_offset:
             raise ValueError("end_offset must be greater than start_offset")
+        if (self.span_id is None) != (self.block_id is None):
+            raise ValueError("parse block spans require both span_id and block_id")
+        if self.block_order is not None and self.block_id is None:
+            raise ValueError("block_order requires a parse block")
+        if self.printed_page_label is not None and self.block_id is None:
+            raise ValueError("printed page label requires a parse block")
         return self
 
 
@@ -851,6 +861,8 @@ class ParentChunk(ContractModel):
     page_start: int = Field(ge=1)
     page_end: int = Field(ge=1)
     source_spans: list[SourceSpan] = Field(min_length=1)
+    source_text: str | None = Field(default=None, min_length=1, max_length=20_000)
+    table_header: str | None = Field(default=None, min_length=1, max_length=5_000)
     content_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     token_count: int = Field(ge=1)
     text: str = Field(min_length=1, max_length=20_000)
@@ -864,6 +876,8 @@ class ParentChunk(ContractModel):
             raise ValueError("source_spans must be ordered by page")
         if pages[0] != self.page_start or pages[-1] != self.page_end:
             raise ValueError("page range must cover source_spans")
+        if self.source_text is not None and self.source_text != "\n".join(span.text for span in self.source_spans):
+            raise ValueError("source_text must reconstruct from source_spans")
         return self
 
 
@@ -878,6 +892,7 @@ class ChildDocumentChunk(ContractModel):
     page_start: int = Field(ge=1)
     page_end: int = Field(ge=1)
     source_spans: list[SourceSpan] = Field(min_length=1)
+    source_text: str | None = Field(default=None, min_length=1, max_length=20_000)
     child_ordinal: int = Field(ge=0)
     content_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     token_count: int = Field(ge=1)
@@ -892,6 +907,8 @@ class ChildDocumentChunk(ContractModel):
             raise ValueError("source_spans must be ordered by page")
         if pages[0] != self.page_start or pages[-1] != self.page_end:
             raise ValueError("page range must cover source_spans")
+        if self.source_text is not None and self.source_text != "\n".join(span.text for span in self.source_spans):
+            raise ValueError("source_text must reconstruct from source_spans")
         return self
 
 

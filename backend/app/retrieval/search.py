@@ -386,7 +386,7 @@ def _child_source_from_document(document: Document) -> ChildDocumentChunk | None
     fields = (
         "schema_version", "chunk_id", "corpus_version_id", "parent_id",
         "section_path", "page_start", "page_end", "source_spans",
-        "child_ordinal", "content_hash", "token_count",
+        "source_text", "child_ordinal", "content_hash", "token_count",
     )
     try:
         return ChildDocumentChunk.model_validate({

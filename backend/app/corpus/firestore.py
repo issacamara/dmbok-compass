@@ -65,7 +65,7 @@ class FirestoreParentChunkStore:
             )
         batch = self.client.batch()
         for parent in parents:
-            record = parent.model_dump(mode="json")
+            record = parent.model_dump(mode="json", exclude_none=True)
             record["metadata"] = dict(metadata or {})
             batch.set(self.collection.document(parent.parent_id), record)
         if parents:
@@ -310,7 +310,7 @@ class FirestoreCorpusVersionStore:
                 for key in (
                     "schema_version", "chunk_id", "corpus_version_id", "parent_id",
                     "section_path", "page_start", "page_end", "source_spans",
-                    "child_ordinal", "content_hash", "token_count",
+                    "source_text", "child_ordinal", "content_hash", "token_count",
                 )
                 if key in metadata
             }

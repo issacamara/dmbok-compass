@@ -145,7 +145,7 @@ def test_script_binds_actual_source_digest(tmp_path: Path) -> None:
     assert "does not match" in mismatch.stderr
 
 
-def test_reviewed_parse_sections_use_cumulative_page_offsets_and_exact_bounds():
+def test_reviewed_parse_sections_preserve_block_local_offsets_across_sections():
     parsing = ParsingArtifact(
         source_generation="3", source_sha256="a" * 64, output_sha256="b" * 64,
         blocks=(
@@ -162,7 +162,9 @@ def test_reviewed_parse_sections_use_cumulative_page_offsets_and_exact_bounds():
     section = sections_from_parsing_artifact(
         structure_map, parsing, source_generation=3, source_sha256=parsing.source_sha256
     )[0]
-    assert [(span.start_offset, span.end_offset) for span in section.source_spans] == [(0, 5), (6, 12)]
+    assert [(span.start_offset, span.end_offset) for span in section.source_spans] == [(0, 5), (0, 6)]
+    assert [span.block_id for span in section.source_spans] == ["b1", "b2"]
+    assert [span.block_order for span in section.source_spans] == [0, 1]
 
     split_map = StructureMap(
         map_id="reviewed-split", source_sha256=parsing.source_sha256,
@@ -175,7 +177,7 @@ def test_reviewed_parse_sections_use_cumulative_page_offsets_and_exact_bounds():
     split_sections = sections_from_parsing_artifact(
         split_map, parsing, source_generation=3, source_sha256=parsing.source_sha256
     )
-    assert [section.source_spans[0].start_offset for section in split_sections] == [0, 6]
+    assert [section.source_spans[0].start_offset for section in split_sections] == [0, 0]
 
 
 def test_reviewed_parse_sections_reject_inaccurately_bounded_blocks():

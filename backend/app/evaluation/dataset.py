@@ -235,8 +235,9 @@ def _remap_hierarchical_annotation(
                 if child.parent_id == parent.parent_id
                 and any(
                     location[0] == span.page
-                    and location[1] < span.end_offset
-                    and span.start_offset < location[2]
+                    and location[1] == span.block_id
+                    and location[2] < span.end_offset
+                    and span.start_offset < location[3]
                     for location in locations
                     for span in child.source_spans
                 )
@@ -289,9 +290,9 @@ def _remap_hierarchical_annotation(
     )
 
 
-def _normalise_parent_spans(parent: ParentChunk) -> tuple[str, tuple[tuple[int, int, int] | None, ...]]:
+def _normalise_parent_spans(parent: ParentChunk) -> tuple[str, tuple[tuple[int, str | None, int, int] | None, ...]]:
     chars: list[str] = []
-    mapping: list[tuple[int, int, int] | None] = []
+    mapping: list[tuple[int, str | None, int, int] | None] = []
     for span_index, span in enumerate(parent.source_spans):
         if span_index and chars and chars[-1] != " ":
             chars.append(" ")
@@ -304,7 +305,9 @@ def _normalise_parent_spans(parent: ParentChunk) -> tuple[str, tuple[tuple[int, 
                 continue
             folded = char.casefold()
             chars.extend(folded)
-            mapping.extend([(span.page, span.start_offset + offset, span.start_offset + offset + 1)] * len(folded))
+            mapping.extend([(
+                span.page, span.block_id, span.start_offset + offset, span.start_offset + offset + 1
+            )] * len(folded))
     return "".join(chars).strip(), tuple(mapping[: len("".join(chars).strip())])
 
 

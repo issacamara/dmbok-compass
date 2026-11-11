@@ -19,7 +19,7 @@ from google.cloud import firestore, storage
 
 from app.contracts import ChildDocumentChunk, CorpusServingBinding, CorpusVersion, ParentChunk, StructureMap
 from app.contracts.v29 import ParsingArtifact
-from app.corpus.chunking import ParentReviewException, segment_children, segment_parents
+from app.corpus.chunking import ParentReviewException, build_llamaindex_nodes, segment_children, segment_parents
 from app.corpus.firestore import FirestoreCorpusVersionStore, FirestoreParentChunkStore
 from app.corpus.indexing import HierarchicalCorpusWriter, VECTOR_SCHEMA_VERSION
 from app.corpus.manifest import SourceManifest, create_source_manifest, hierarchical_derivation
@@ -265,6 +265,7 @@ class HierarchicalCorpusCandidate:
     children: tuple[ChildDocumentChunk, ...]
     exceptions: tuple[ParentReviewException, ...]
     ingestion_gate: dict[str, Any]
+    llamaindex_nodes: tuple[object, ...] = ()
 
 
 def build_hierarchical_candidate(
@@ -349,6 +350,7 @@ def build_hierarchical_candidate(
     children = segment_children(segmented.parents)
     if not segmented.parents or not children:
         raise RuntimeError("The approved structure map produced no hierarchical chunks.")
+    llamaindex_nodes = build_llamaindex_nodes(segmented.parents, children)
     version = CorpusVersion(
         version_id=manifest.corpus_version_id,
         source_uri=manifest.object_uri,
@@ -372,6 +374,7 @@ def build_hierarchical_candidate(
         children=children,
         exceptions=segmented.exceptions,
         ingestion_gate=ingestion_gate,
+        llamaindex_nodes=llamaindex_nodes,
     )
 
 
@@ -395,6 +398,7 @@ def build_and_stage_hierarchical_candidate(
         children=candidate.children,
         exceptions=candidate.exceptions,
         ingestion_gate=candidate.ingestion_gate,
+        llamaindex_nodes=candidate.llamaindex_nodes,
     )
 
 

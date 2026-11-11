@@ -30,8 +30,8 @@ def section(*spans: tuple[int, str]) -> LogicalSection:
 def test_parent_segmentation_preserves_cross_page_source_spans_and_is_repeatable() -> None:
     source = section((1, "one two\nthree four"), (2, "five six"))
 
-    first = segment_parents([source], corpus_version_id="v1", target_tokens=4, max_tokens=6)
-    second = segment_parents([source], corpus_version_id="v1", target_tokens=4, max_tokens=6)
+    first = segment_parents([source], corpus_version_id="v1", target_tokens=8, max_tokens=12)
+    second = segment_parents([source], corpus_version_id="v1", target_tokens=8, max_tokens=12)
 
     assert first == second
     assert first.ready_for_promotion
@@ -46,7 +46,7 @@ def test_parent_segmentation_keeps_short_sections_and_blocks_indivisible_rows() 
 
     result = segment_parents([short, oversized_row], corpus_version_id="v1", target_tokens=10, max_tokens=1_500)
 
-    assert [parent.text for parent in result.parents] == ["short section"]
+    assert [parent.source_text for parent in result.parents] == ["short section"]
     assert not result.ready_for_promotion
     assert result.exceptions[0].page_start == result.exceptions[0].page_end == 2
     assert "table row" in result.exceptions[0].reason
@@ -126,11 +126,11 @@ def test_long_prose_is_split_at_token_boundaries_with_source_offsets():
         [LogicalSection(("Data",), (SourceSpan(page=1, start_offset=0, end_offset=len(text), text=text),))],
         corpus_version_id="v1",
         target_tokens=10,
-        max_tokens=12,
+        max_tokens=20,
     )
 
     assert result.ready_for_promotion
-    assert all(parent.token_count <= 12 for parent in result.parents)
+    assert all(parent.token_count <= 20 for parent in result.parents)
     assert " ".join(span.text for parent in result.parents for span in parent.source_spans) == text
 
 
@@ -140,9 +140,110 @@ def test_children_repeat_markdown_table_header_without_claiming_source_span():
 
     repeated = [
         child for child in children
-        if child.text.startswith("| Name | Value |\n| --- | --- |")
+        if "\n| Name | Value |\n| --- | --- |" in child.text
         and not any(span.text == "| Name | Value |" for span in child.source_spans)
     ]
     assert repeated
     assert all(child.token_count == count_tokens(child.text) for child in children)
     assert all(child.token_count <= 20 for child in children)
+
+
+def test_parent_table_header_is_repeated_across_parent_boundaries():
+    text = "| Name | Value |\n| --- | --- |\n" + "".join(
+        f"| row-{index} | value-{index} |\n" for index in range(12)
+    )
+    source = LogicalSection(
+        ("Data", "Table"),
+        (SourceSpan(page=4, start_offset=0, end_offset=len(text), text=text),),
+    )
+
+    parents = segment_parents([source], corpus_version_id="v1", target_tokens=36, max_tokens=60)
+    children = segment_children(parents.parents, target_tokens=24, max_tokens=60)
+
+    assert parents.ready_for_promotion
+    assert len(parents.parents) > 1
+    assert all(parent.token_count <= 60 for parent in parents.parents)
+    assert all(child.token_count <= 60 for child in children)
+    for parent in parents.parents[1:]:
+        assert parent.table_header == "| Name | Value |\n| --- | --- |"
+        assert parent.text.startswith("Section: Data > Table\n| Name | Value |\n| --- | --- |\n")
+    assert all(
+        child.text.startswith("Section: Data > Table\n| Name | Value |\n| --- | --- |\n")
+        for child in children
+        if child.source_spans[0].text.startswith("| row-")
+    )
+
+
+def test_parent_and_child_keep_embedding_context_separate_from_exact_source_text():
+    raw = "Reviewed text from the parser block."
+    span = SourceSpan(
+        page=7,
+        start_offset=12,
+        end_offset=12 + len(raw),
+        text=raw,
+        span_id="span-1",
+        block_id="block-1",
+        block_order=9,
+        printed_page_label="vii",
+    )
+    parent_record = segment_parents(
+        [LogicalSection(("Data", "Governance"), (span,))],
+        corpus_version_id="v1",
+        target_tokens=80,
+        max_tokens=100,
+    ).parents[0]
+    child = segment_children([parent_record], target_tokens=80, max_tokens=100)[0]
+
+    assert parent_record.source_text == raw
+    assert parent_record.text == "Section: Data > Governance\n" + raw
+    assert child.source_text == raw
+    assert child.text == "Section: Data > Governance\n" + raw
+    assert child.source_spans[0] == span
+
+
+def test_llamaindex_nodes_link_children_to_parents_and_keep_provenance():
+    pytest.importorskip("llama_index.core")
+    from llama_index.core.schema import NodeRelationship, TextNode
+
+    source = section((1, "A reviewed paragraph."))
+    parents = segment_parents([source], corpus_version_id="v1").parents
+    children = segment_children(parents)
+    from app.corpus.chunking import build_llamaindex_nodes
+
+    nodes = build_llamaindex_nodes(parents, children)
+    by_id = {node.node_id: node for node in nodes}
+    parent_node = by_id[parents[0].parent_id]
+    child_node = by_id[children[0].chunk_id]
+
+    assert isinstance(parent_node, TextNode)
+    assert isinstance(child_node, TextNode)
+    assert child_node.parent_node.node_id == parent_node.node_id
+    assert [node.node_id for node in parent_node.child_nodes] == [child_node.node_id]
+    assert child_node.metadata["source_text"] == children[0].source_text
+    assert NodeRelationship.PARENT in child_node.relationships
+
+
+def test_provenance_fields_survive_parent_and_child_contract_round_trip():
+    span = SourceSpan(
+        page=2,
+        start_offset=4,
+        end_offset=9,
+        text="proof",
+        span_id="span-2",
+        block_id="block-2",
+        block_order=3,
+        printed_page_label="iv",
+    )
+    parent_record = segment_parents(
+        [LogicalSection(("Evidence",), (span,))],
+        corpus_version_id="v1",
+    ).parents[0]
+    child = segment_children([parent_record])[0]
+
+    restored_parent = ParentChunk.model_validate_json(parent_record.model_dump_json())
+    restored_child = type(child).model_validate_json(child.model_dump_json())
+
+    assert restored_parent == parent_record
+    assert restored_child == child
+    assert restored_child.source_spans[0].block_id == "block-2"
+    assert restored_child.source_spans[0].printed_page_label == "iv"

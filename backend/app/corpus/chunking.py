@@ -18,7 +18,7 @@ _WHITESPACE = re.compile(r"\s+")
 MAX_CHUNK_CHARACTERS = 5_000
 MAX_SECTION_CHARACTERS = 500
 SUBDIVISION_ALGORITHM_VERSION = "fixed-character-window-v1"
-PARENT_SEGMENTATION_VERSION = "semantic-parent-v1"
+PARENT_SEGMENTATION_VERSION = "semantic-parent-v2"
 PARENT_TARGET_TOKENS = 1_000
 PARENT_MAX_TOKENS = 1_500
 CHILD_TARGET_TOKENS = 300
@@ -85,7 +85,11 @@ def segment_children(
         ordinal = 0
         table_header: tuple[str, str] | None = None
         table_rows_seen = 0
-        pending_prefix = ""
+        pending_prefix = parent.table_header or ""
+        if parent.table_header:
+            table_header = tuple((parent.table_header.splitlines() + [""])[:2])
+            table_rows_seen = 2
+        breadcrumb = _section_breadcrumb(parent.section_path)
         for span in _child_units(parent.source_spans, max_tokens):
             is_table_row = span.text.lstrip().startswith("|")
             is_table_separator = is_table_row and bool(re.fullmatch(r"\s*\|?\s*[:|\- ]+\s*\|?\s*", span.text))
@@ -98,7 +102,7 @@ def segment_children(
                 table_rows_seen = 2
             else:
                 table_rows_seen += 1
-            candidate_text = "\n".join(([pending_prefix] if pending_prefix else []) + [item.text for item in pending] + [span.text])
+            candidate_text = "\n".join([breadcrumb] + ([pending_prefix] if pending_prefix else []) + [item.text for item in pending] + [span.text])
             if pending and _token_count(candidate_text) > target_tokens:
                 children.append(_child(parent, ordinal, pending, synthetic_prefix=pending_prefix))
                 ordinal += 1
@@ -110,7 +114,7 @@ def segment_children(
                 )
             elif not pending and is_table_row and not is_table_separator and table_rows_seen > 2 and table_header:
                 pending_prefix = "\n".join(table_header)
-            child_text = "\n".join(([pending_prefix] if pending_prefix else []) + [item.text for item in pending] + [span.text])
+            child_text = "\n".join([breadcrumb] + ([pending_prefix] if pending_prefix else []) + [item.text for item in pending] + [span.text])
             if _token_count(child_text) > max_tokens:
                 raise ValueError("repeated table context and indivisible row exceed child maximum")
             pending.append(span)
@@ -126,8 +130,8 @@ def _child(
     *,
     synthetic_prefix: str = "",
 ) -> ChildDocumentChunk:
-    raw_text = "\n".join(span.text for span in spans)
-    text = f"{synthetic_prefix}\n{raw_text}" if synthetic_prefix else raw_text
+    source_text = "\n".join(span.text for span in spans)
+    text = "\n".join(value for value in (_section_breadcrumb(parent.section_path), synthetic_prefix, source_text) if value)
     identity = "\x1f".join((parent.corpus_version_id, *parent.section_path, str(spans[0].page), str(spans[-1].page), str(ordinal), text))
     return ChildDocumentChunk(
         chunk_id=f"{parent.corpus_version_id}:child:{hashlib.sha256(identity.encode('utf-8')).hexdigest()[:24]}",
@@ -137,6 +141,7 @@ def _child(
         page_start=spans[0].page,
         page_end=spans[-1].page,
         source_spans=spans,
+        source_text=source_text,
         child_ordinal=ordinal,
         content_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
         token_count=_token_count(text),
@@ -151,15 +156,15 @@ def _child_units(spans: Iterable[SourceSpan], max_tokens: int) -> tuple[SourceSp
         for line in span.text.splitlines(keepends=True):
             text = line.rstrip("\r\n")
             if text.strip():
-                units.extend(_split_child_unit(span.page, span.start_offset + cursor, text, max_tokens))
+                units.extend(_split_child_unit(span, span.start_offset + cursor, text, max_tokens))
             cursor += len(line)
     return tuple(units)
 
 
-def _split_child_unit(page: int, offset: int, text: str, max_tokens: int) -> tuple[SourceSpan, ...]:
+def _split_child_unit(source: SourceSpan, offset: int, text: str, max_tokens: int) -> tuple[SourceSpan, ...]:
     """Only prose may be split; Markdown rows/items remain intact."""
     if _token_count(text) <= max_tokens or text.lstrip().startswith(("|", "- ", "* ", "+ ")):
-        return (SourceSpan(page=page, start_offset=offset, end_offset=offset + len(text), text=text),)
+        return (_source_fragment(source, offset, text),)
     matches = tuple(re.finditer(r"\S+\s*", text))
     spans: list[SourceSpan] = []
     start = 0
@@ -168,12 +173,85 @@ def _split_child_unit(page: int, offset: int, text: str, max_tokens: int) -> tup
         if index > 0 and _token_count(text[start:end].rstrip()) > max_tokens:
             boundary = matches[index - 1].end()
             value = text[start:boundary].rstrip()
-            spans.append(SourceSpan(page=page, start_offset=offset + start, end_offset=offset + start + len(value), text=value))
+            spans.append(_source_fragment(source, offset + start, value))
             start = matches[index].start()
     value = text[start:].rstrip()
     if value:
-        spans.append(SourceSpan(page=page, start_offset=offset + start, end_offset=offset + start + len(value), text=value))
+        spans.append(_source_fragment(source, offset + start, value))
     return tuple(spans)
+
+
+def _source_fragment(source: SourceSpan, start_offset: int, text: str) -> SourceSpan:
+    end_offset = start_offset + len(text)
+    span_id = source.span_id if start_offset == source.start_offset and end_offset == source.end_offset else None
+    if source.block_id is not None and span_id is None:
+        span_id = hashlib.sha256(
+            f"{source.block_id}:{start_offset}:{end_offset}".encode("utf-8")
+        ).hexdigest()[:24]
+    return SourceSpan(
+        page=source.page,
+        start_offset=start_offset,
+        end_offset=end_offset,
+        text=text,
+        span_id=span_id,
+        block_id=source.block_id,
+        block_order=source.block_order,
+        printed_page_label=source.printed_page_label,
+    )
+
+
+def _section_breadcrumb(section_path: tuple[str, ...]) -> str:
+    return "Section: " + " > ".join(section_path)
+
+
+def build_llamaindex_nodes(
+    parents: Iterable[ParentChunk], children: Iterable[ChildDocumentChunk]
+) -> tuple[object, ...]:
+    """Materialize the validated hierarchy as linked LlamaIndex nodes."""
+
+    from llama_index.core.schema import NodeRelationship, RelatedNodeInfo, TextNode
+
+    parent_records = tuple(parents)
+    child_records = tuple(children)
+    parent_nodes = {
+        parent.parent_id: TextNode(
+            id_=parent.parent_id,
+            text=parent.text,
+            metadata={
+                "section_path": list(parent.section_path),
+                "page_start": parent.page_start,
+                "page_end": parent.page_end,
+                "source_text": parent.source_text,
+                "source_spans": [span.model_dump(mode="json", exclude_none=True) for span in parent.source_spans],
+            },
+        )
+        for parent in parent_records
+    }
+    child_nodes = []
+    children_by_parent: dict[str, list[RelatedNodeInfo]] = {parent_id: [] for parent_id in parent_nodes}
+    for child in child_records:
+        if child.parent_id not in parent_nodes:
+            raise ValueError("LlamaIndex child node references a missing parent")
+        node = TextNode(
+            id_=child.chunk_id,
+            text=child.text,
+            metadata={
+                "parent_id": child.parent_id,
+                "section_path": list(child.section_path),
+                "page_start": child.page_start,
+                "page_end": child.page_end,
+                "source_text": child.source_text,
+                "source_spans": [span.model_dump(mode="json", exclude_none=True) for span in child.source_spans],
+            },
+            relationships={
+                NodeRelationship.PARENT: RelatedNodeInfo(node_id=child.parent_id),
+            },
+        )
+        child_nodes.append(node)
+        children_by_parent[child.parent_id].append(RelatedNodeInfo(node_id=child.chunk_id))
+    for parent_id, node in parent_nodes.items():
+        node.relationships[NodeRelationship.CHILD] = children_by_parent[parent_id]
+    return (*parent_nodes.values(), *child_nodes)
 
 
 def segment_parents(
@@ -197,11 +275,16 @@ def segment_parents(
     parents: list[ParentChunk] = []
     exceptions: list[ParentReviewException] = []
     for section_ordinal, section in enumerate(sections):
-        units = _section_units(section, max_tokens=max_tokens)
+        breadcrumb = _section_breadcrumb(section.section_path)
+        units = _section_units(
+            section,
+            max_tokens=max(1, max_tokens - _token_count(breadcrumb)),
+        )
         pending: list[SourceSpan] = []
         parent_ordinal = 0
         table_header: list[str] = []
         table_rows_seen = 0
+        pending_table_header: str | None = None
         for unit in units:
             unit_tokens = _token_count(unit.text)
             if unit.text.lstrip().startswith("|"):
@@ -228,9 +311,13 @@ def segment_parents(
                 table_header, table_rows_seen = [], 0
             if unit_tokens > max_tokens:
                 if pending:
-                    parents.append(_parent(corpus_version_id, section, section_ordinal, parent_ordinal, pending))
+                    parents.append(_parent(
+                        corpus_version_id, section, section_ordinal, parent_ordinal, pending,
+                        repeated_table_header=pending_table_header,
+                    ))
                     parent_ordinal += 1
                     pending = []
+                    pending_table_header = None
                 exceptions.append(
                     ParentReviewException(
                         section.section_path, unit.page, unit.page, unit_tokens,
@@ -238,14 +325,30 @@ def segment_parents(
                     )
                 )
                 continue
-            candidate_text = "\n".join([item.text for item in pending] + [unit.text])
+            candidate_text = "\n".join([breadcrumb] + ([pending_table_header] if pending_table_header else []) + [item.text for item in pending] + [unit.text])
             if pending and _token_count(candidate_text) > target_tokens:
-                parents.append(_parent(corpus_version_id, section, section_ordinal, parent_ordinal, pending))
+                parents.append(_parent(
+                    corpus_version_id, section, section_ordinal, parent_ordinal, pending,
+                    repeated_table_header=pending_table_header,
+                ))
                 parent_ordinal += 1
                 pending = []
+                pending_table_header = None
+                if unit.text.lstrip().startswith("|") and table_rows_seen >= 2:
+                    pending_table_header = "\n".join(table_header[:1] if is_separator else table_header)
+            single_text = "\n".join(value for value in (breadcrumb, pending_table_header, unit.text) if value)
+            if _token_count(single_text) > max_tokens:
+                exceptions.append(ParentReviewException(
+                    section.section_path, unit.page, unit.page, _token_count(single_text),
+                    "structural context and indivisible source unit exceed parent maximum",
+                ))
+                continue
             pending.append(unit)
         if pending:
-            parents.append(_parent(corpus_version_id, section, section_ordinal, parent_ordinal, pending))
+            parents.append(_parent(
+                corpus_version_id, section, section_ordinal, parent_ordinal, pending,
+                repeated_table_header=pending_table_header,
+            ))
     return ParentSegmentation(tuple(parents), tuple(exceptions))
 
 
@@ -255,8 +358,11 @@ def _parent(
     section_ordinal: int,
     parent_ordinal: int,
     spans: list[SourceSpan],
+    *,
+    repeated_table_header: str | None = None,
 ) -> ParentChunk:
-    text = "\n".join(span.text for span in spans)
+    source_text = "\n".join(span.text for span in spans)
+    text = "\n".join(value for value in (_section_breadcrumb(section.section_path), repeated_table_header, source_text) if value)
     return ParentChunk(
         parent_id=f"{corpus_version_id}:parent:{section_ordinal}:{parent_ordinal}",
         corpus_version_id=corpus_version_id,
@@ -264,6 +370,8 @@ def _parent(
         page_start=spans[0].page,
         page_end=spans[-1].page,
         source_spans=spans,
+        source_text=source_text,
+        table_header=repeated_table_header,
         content_hash=hashlib.sha256(text.encode("utf-8")).hexdigest(),
         token_count=_token_count(text),
         text=text,
@@ -279,7 +387,7 @@ def _section_units(section: LogicalSection, *, max_tokens: int) -> tuple[SourceS
         for line in span.text.splitlines(keepends=True):
             text = line.rstrip("\r\n")
             if text.strip():
-                units.extend(_split_child_unit(span.page, span.start_offset + cursor, text, max_tokens))
+                units.extend(_split_child_unit(span, span.start_offset + cursor, text, max_tokens))
             cursor += len(line)
     return tuple(units)
 

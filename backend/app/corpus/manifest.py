@@ -32,9 +32,9 @@ from app.corpus.tokenization import TOKENIZER_ENCODING, TOKENIZER_PACKAGE_VERSIO
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _SECRET_KEY = re.compile(r"(?:api[_-]?key|credential|password|secret|token)", re.IGNORECASE)
 RAG_DERIVATION = "langchain-rag-v2"
-HIERARCHICAL_DERIVATION = "hierarchical-corpus-v1"
+HIERARCHICAL_DERIVATION = "hierarchical-corpus-v2"
 STRUCTURE_MAP_PARSER_VERSION = "structure-map-v1"
-CHILD_SEGMENTATION_VERSION = "stable-child-v1"
+CHILD_SEGMENTATION_VERSION = "stable-child-v2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -156,7 +156,7 @@ def hierarchical_derivation(
 
     result = default_derivation(vector_collection=vector_collection)
     result["implementation_revision"] = HIERARCHICAL_DERIVATION
-    result["normalization"] = {"version": "page-whitespace-v1"}
+    result["normalization"] = {"version": "reviewed-block-embedding-context-v1"}
     result["provenance"] = {
         "version": "reviewed-structure-map-v1",
         "parser_version": STRUCTURE_MAP_PARSER_VERSION,

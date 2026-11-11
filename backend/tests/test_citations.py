@@ -67,8 +67,15 @@ def retrieved(child: ChildDocumentChunk) -> tuple[RetrievedPassage, ...]:
 
 
 def test_citations_reconstruct_page_section_and_excerpt_from_child_source_spans() -> None:
-    first = SourceSpan(page=1, start_offset=10, end_offset=21, text="First page.")
-    second = SourceSpan(page=2, start_offset=30, end_offset=46, text="Second page text")
+    first = SourceSpan(
+        page=1, start_offset=10, end_offset=21, text="First page.",
+        span_id="span-first", block_id="block-first", block_order=4,
+    )
+    second = SourceSpan(
+        page=2, start_offset=30, end_offset=46, text="Second page text",
+        span_id="span-second", block_id="block-second", block_order=5,
+        printed_page_label="xiv",
+    )
     parent = source_parent([first, second])
     child = source_child([first, second])
 

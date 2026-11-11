@@ -133,12 +133,6 @@ def sections_from_parsing_artifact(
     if reviewed_order != parsed_order:
         raise ValueError("reviewed structure map block order does not match the parsing artifact")
     by_id = {block.block_id: block for block in parsing.blocks}
-    page_offsets: dict[int, int] = {}
-    offset_by_block: dict[str, int] = {}
-    for block in parsing.blocks:
-        page_offset = page_offsets.get(block.physical_page, 0)
-        offset_by_block[block.block_id] = page_offset
-        page_offsets[block.physical_page] = page_offset + len(block.raw_text) + 1
     sections: list[LogicalSection] = []
     for entry in structure_map.entries:
         blocks = [by_id[block_id] for block_id in entry.block_ids]
@@ -149,9 +143,13 @@ def sections_from_parsing_artifact(
         spans = tuple(
             SourceSpan(
                 page=block.physical_page,
-                start_offset=offset_by_block[block.block_id],
-                end_offset=offset_by_block[block.block_id] + len(block.raw_text),
+                start_offset=0,
+                end_offset=len(block.raw_text),
                 text=block.raw_text,
+                span_id=block.block_id,
+                block_id=block.block_id,
+                block_order=block.reading_order,
+                printed_page_label=block.printed_page_label,
             )
             for block in blocks
         )

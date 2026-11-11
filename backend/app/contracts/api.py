@@ -747,6 +747,13 @@ class SourceSpan(ContractModel):
     block_id: str | None = Field(default=None, min_length=1, max_length=256)
     block_order: int | None = Field(default=None, ge=0)
     printed_page_label: str | None = Field(default=None, min_length=1, max_length=128)
+    block_kind: Literal["text", "table", "list"] | None = None
+    table_rows: tuple[tuple[str, ...], ...] = Field(default_factory=tuple, max_length=5000)
+    list_items: tuple[str, ...] = Field(default_factory=tuple, max_length=5000)
+    table_row_index: int | None = Field(default=None, ge=0)
+    table_header_text: str | None = Field(default=None, min_length=1, max_length=5000)
+    table_header_row_count: int | None = Field(default=None, ge=1, le=2)
+    list_item_index: int | None = Field(default=None, ge=0)
 
     @model_validator(mode="after")
     def validate_offsets(self) -> "SourceSpan":
@@ -758,6 +765,20 @@ class SourceSpan(ContractModel):
             raise ValueError("block_order requires a parse block")
         if self.printed_page_label is not None and self.block_id is None:
             raise ValueError("printed page label requires a parse block")
+        if (self.table_rows or self.list_items or self.block_kind is not None) and self.block_id is None:
+            raise ValueError("parsed structure metadata requires a parse block")
+        if self.table_rows and self.block_kind != "table":
+            raise ValueError("table rows require a table parse block")
+        if self.list_items and self.block_kind != "list":
+            raise ValueError("list items require a list parse block")
+        if self.table_row_index is not None and self.block_kind != "table":
+            raise ValueError("table row index requires a table parse block")
+        if self.table_header_text is not None and self.block_kind != "table":
+            raise ValueError("table header requires a table parse block")
+        if self.table_header_row_count is not None and self.block_kind != "table":
+            raise ValueError("table header row count requires a table parse block")
+        if self.list_item_index is not None and self.block_kind != "list":
+            raise ValueError("list item index requires a list parse block")
         return self
 
 

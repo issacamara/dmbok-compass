@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import csv
 import hashlib
+import io
 import re
 from dataclasses import dataclass
 from typing import Iterable
@@ -91,29 +93,41 @@ def segment_children(
             table_rows_seen = 2
         breadcrumb = _section_breadcrumb(parent.section_path)
         for span in _child_units(parent.source_spans, max_tokens):
-            is_table_row = span.text.lstrip().startswith("|")
-            is_table_separator = is_table_row and bool(re.fullmatch(r"\s*\|?\s*[:|\- ]+\s*\|?\s*", span.text))
+            typed_table = span.block_kind == "table" and span.table_row_index is not None
+            is_table_row = typed_table or span.text.lstrip().startswith("|")
+            is_table_data = typed_table and span.table_row_index >= (span.table_header_row_count or 1)
+            is_table_separator = is_table_row and (
+                (typed_table and span.table_row_index < (span.table_header_row_count or 1))
+                or bool(re.fullmatch(r"\s*\|?\s*[:|\- ]+\s*\|?\s*", span.text))
+            )
             if not is_table_row:
                 table_header, table_rows_seen = None, 0
             elif table_rows_seen == 0:
-                table_header, table_rows_seen = (span.text, ""), 1
+                if span.block_kind == "table":
+                    table_header = tuple((span.table_header_text or span.text).splitlines()[:2])
+                    table_rows_seen = span.table_header_row_count or 1
+                else:
+                    table_header, table_rows_seen = (span.text, ""), 1
             elif table_rows_seen == 1 and is_table_separator and table_header is not None:
-                table_header = (table_header[0], span.text)
+                if span.block_kind != "table":
+                    table_header = (table_header[0], span.text)
                 table_rows_seen = 2
             else:
                 table_rows_seen += 1
+                if not typed_table:
+                    is_table_data = table_rows_seen > 2
             candidate_text = "\n".join([breadcrumb] + ([pending_prefix] if pending_prefix else []) + [item.text for item in pending] + [span.text])
             if pending and _token_count(candidate_text) > target_tokens:
                 children.append(_child(parent, ordinal, pending, synthetic_prefix=pending_prefix))
                 ordinal += 1
                 pending = []
                 pending_prefix = (
-                    "\n".join(table_header)
-                    if is_table_row and not is_table_separator and table_rows_seen > 2 and table_header
+                    span.table_header_text or "\n".join(table_header)
+                    if is_table_row and is_table_data and table_header
                     else ""
                 )
-            elif not pending and is_table_row and not is_table_separator and table_rows_seen > 2 and table_header:
-                pending_prefix = "\n".join(table_header)
+            elif not pending and is_table_row and is_table_data and table_header:
+                pending_prefix = span.table_header_text or "\n".join(table_header)
             child_text = "\n".join([breadcrumb] + ([pending_prefix] if pending_prefix else []) + [item.text for item in pending] + [span.text])
             if _token_count(child_text) > max_tokens:
                 raise ValueError("repeated table context and indivisible row exceed child maximum")
@@ -152,6 +166,11 @@ def _child(
 def _child_units(spans: Iterable[SourceSpan], max_tokens: int) -> tuple[SourceSpan, ...]:
     units: list[SourceSpan] = []
     for span in spans:
+        if (span.block_kind == "table" and span.table_row_index is not None) or (
+            span.block_kind == "list" and span.list_item_index is not None
+        ):
+            units.append(span)
+            continue
         cursor = 0
         for line in span.text.splitlines(keepends=True):
             text = line.rstrip("\r\n")
@@ -181,7 +200,16 @@ def _split_child_unit(source: SourceSpan, offset: int, text: str, max_tokens: in
     return tuple(spans)
 
 
-def _source_fragment(source: SourceSpan, start_offset: int, text: str) -> SourceSpan:
+def _source_fragment(
+    source: SourceSpan,
+    start_offset: int,
+    text: str,
+    *,
+    table_row_index: int | None = None,
+    table_header_text: str | None = None,
+    table_header_row_count: int | None = None,
+    list_item_index: int | None = None,
+) -> SourceSpan:
     end_offset = start_offset + len(text)
     span_id = source.span_id if start_offset == source.start_offset and end_offset == source.end_offset else None
     if source.block_id is not None and span_id is None:
@@ -197,6 +225,11 @@ def _source_fragment(source: SourceSpan, start_offset: int, text: str) -> Source
         block_id=source.block_id,
         block_order=source.block_order,
         printed_page_label=source.printed_page_label,
+        block_kind=source.block_kind,
+        table_row_index=table_row_index,
+        table_header_text=table_header_text,
+        table_header_row_count=table_header_row_count,
+        list_item_index=list_item_index,
     )
 
 
@@ -287,18 +320,32 @@ def segment_parents(
         pending_table_header: str | None = None
         for unit in units:
             unit_tokens = _token_count(unit.text)
-            if unit.text.lstrip().startswith("|"):
-                is_separator = bool(re.fullmatch(r"\s*\|?\s*[:|\- ]+\s*\|?\s*", unit.text))
-                if table_rows_seen == 0:
-                    table_header, table_rows_seen = [unit.text], 1
-                elif table_rows_seen == 1 and is_separator:
-                    table_header.append(unit.text)
-                    table_rows_seen = 2
+            typed_table = unit.block_kind == "table" and unit.table_row_index is not None
+            is_table_unit = typed_table or unit.text.lstrip().startswith("|")
+            is_separator = is_table_unit and (
+                (typed_table and unit.table_row_index < (unit.table_header_row_count or 1))
+                or bool(re.fullmatch(r"\s*\|?\s*[:|\- ]+\s*\|?\s*", unit.text))
+            )
+            table_header_text = unit.table_header_text or "\n".join(table_header)
+            is_table_data = typed_table and unit.table_row_index >= (unit.table_header_row_count or 1)
+            if is_table_unit:
+                if typed_table:
+                    table_header = (unit.table_header_text or unit.text).splitlines()
+                    table_rows_seen = unit.table_row_index + 1
                 else:
-                    table_rows_seen += 1
-                    repeated_header = "\n".join(table_header)
-                    combined_table_tokens = _token_count(f"{repeated_header}\n{unit.text}")
-                    if table_rows_seen > 2 and combined_table_tokens > max_tokens:
+                    table_header_text = "\n".join(table_header)
+                    if table_rows_seen == 0:
+                        table_header, table_rows_seen = [unit.text], 1
+                    elif table_rows_seen == 1 and is_separator:
+                        table_header.append(unit.text)
+                        table_rows_seen = 2
+                    else:
+                        table_rows_seen += 1
+                        is_table_data = table_rows_seen > 2
+                table_header_text = unit.table_header_text or "\n".join(table_header)
+                if is_table_data:
+                    combined_table_tokens = _token_count(f"{table_header_text}\n{unit.text}")
+                    if combined_table_tokens > max_tokens:
                         exceptions.append(
                             ParentReviewException(
                                 section.section_path, unit.page, unit.page,
@@ -334,8 +381,8 @@ def segment_parents(
                 parent_ordinal += 1
                 pending = []
                 pending_table_header = None
-                if unit.text.lstrip().startswith("|") and table_rows_seen >= 2:
-                    pending_table_header = "\n".join(table_header[:1] if is_separator else table_header)
+                if is_table_data:
+                    pending_table_header = table_header_text
             single_text = "\n".join(value for value in (breadcrumb, pending_table_header, unit.text) if value)
             if _token_count(single_text) > max_tokens:
                 exceptions.append(ParentReviewException(
@@ -383,12 +430,99 @@ def _section_units(section: LogicalSection, *, max_tokens: int) -> tuple[SourceS
 
     units: list[SourceSpan] = []
     for span in section.source_spans:
+        if span.block_kind == "table" and span.table_rows:
+            units.extend(_table_units(span))
+            continue
+        if span.block_kind == "list" and span.list_items:
+            units.extend(_list_units(span))
+            continue
         cursor = 0
         for line in span.text.splitlines(keepends=True):
             text = line.rstrip("\r\n")
             if text.strip():
                 units.extend(_split_child_unit(span, span.start_offset + cursor, text, max_tokens))
             cursor += len(line)
+    return tuple(units)
+
+
+def _table_units(source: SourceSpan) -> tuple[SourceSpan, ...]:
+    """Turn a parsed table into atomic raw row spans, including quoted CSV records."""
+
+    if source.text.lstrip().startswith("|"):
+        rows: list[tuple[int, int, str]] = []
+        cursor = 0
+        for line in source.text.splitlines(keepends=True):
+            text = line.rstrip("\r\n")
+            if text.strip():
+                rows.append((cursor, cursor + len(text), text))
+            cursor += len(line)
+        if not rows:
+            raise ValueError("parsed Markdown table has no source rows")
+        header_count = 2 if len(rows) > 1 and re.fullmatch(r"\s*\|?\s*[:|\- ]+\s*\|?\s*", rows[1][2]) else 1
+        header_text = "\n".join(row[2] for row in rows[:header_count])
+        return tuple(
+            _source_fragment(
+                source,
+                source.start_offset + start,
+                text,
+                table_row_index=index,
+                table_header_text=header_text,
+                table_header_row_count=header_count,
+            )
+            for index, (start, _, text) in enumerate(rows)
+        )
+
+    line_starts = [0]
+    for line in source.text.splitlines(keepends=True):
+        line_starts.append(line_starts[-1] + len(line))
+    reader = csv.reader(io.StringIO(source.text, newline=""))
+    records: list[tuple[int, int]] = []
+    parsed_rows: list[tuple[str, ...]] = []
+    previous_line = 0
+    for row in reader:
+        end_line = reader.line_num
+        records.append((line_starts[previous_line], line_starts[end_line]))
+        parsed_rows.append(tuple(row))
+        previous_line = end_line
+    if parsed_rows != list(source.table_rows):
+        raise ValueError("parsed CSV table rows do not match their raw source records")
+    raw_records = [source.text[start:end].rstrip("\r\n") for start, end in records]
+    if not raw_records or any(not record for record in raw_records):
+        raise ValueError("parsed CSV table has an empty source record")
+    header_text = raw_records[0]
+    return tuple(
+        _source_fragment(
+            source,
+            source.start_offset + start,
+            record,
+            table_row_index=index,
+            table_header_text=header_text,
+            table_header_row_count=1,
+        )
+        for index, ((start, _), record) in enumerate(zip(records, raw_records, strict=True))
+    )
+
+
+def _list_units(source: SourceSpan) -> tuple[SourceSpan, ...]:
+    """Preserve each parser-reviewed list item as one indivisible source unit."""
+
+    units: list[SourceSpan] = []
+    cursor = 0
+    for index, item in enumerate(source.list_items):
+        start = source.text.find(item, cursor)
+        if start < 0:
+            raise ValueError("parsed list item cannot be located in its source block")
+        line_start = source.text.rfind("\n", 0, start) + 1
+        end = start + len(item)
+        units.append(
+            _source_fragment(
+                source,
+                source.start_offset + line_start,
+                source.text[line_start:end],
+                list_item_index=index,
+            )
+        )
+        cursor = end
     return tuple(units)
 
 

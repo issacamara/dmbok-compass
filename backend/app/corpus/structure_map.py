@@ -150,6 +150,9 @@ def sections_from_parsing_artifact(
                 block_id=block.block_id,
                 block_order=block.reading_order,
                 printed_page_label=block.printed_page_label,
+                block_kind=block.kind,
+                table_rows=block.table_rows,
+                list_items=block.list_items,
             )
             for block in blocks
         )

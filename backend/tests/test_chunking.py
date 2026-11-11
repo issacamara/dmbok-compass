@@ -1,7 +1,9 @@
 import pytest
 
 from app.contracts import ParentChunk, SourceSpan
-from app.corpus.structure_map import LogicalSection
+from app.contracts import StructureMap, StructureMapEntry
+from app.contracts.v29 import ParsedBlock, ParsingArtifact
+from app.corpus.structure_map import LogicalSection, sections_from_parsing_artifact
 
 from app.corpus import SourcePage, chunk_pages, segment_children, segment_parents
 from app.corpus.tokenization import count_tokens
@@ -247,3 +249,88 @@ def test_provenance_fields_survive_parent_and_child_contract_round_trip():
     assert restored_child == child
     assert restored_child.source_spans[0].block_id == "block-2"
     assert restored_child.source_spans[0].printed_page_label == "iv"
+
+
+def test_csv_fallback_keeps_multiline_quoted_rows_atomic_and_repeats_header():
+    raw_csv = 'Name,Notes\n"first\ncontinued",one\nsecond,two\nthird,three'
+    parsing = ParsingArtifact(
+        source_generation="3",
+        source_sha256="a" * 64,
+        output_sha256="b" * 64,
+        blocks=(ParsedBlock(
+            block_id="table-1",
+            physical_page=5,
+            reading_order=0,
+            kind="table",
+            raw_text=raw_csv,
+            table_rows=(("Name", "Notes"), ("first\ncontinued", "one"), ("second", "two"), ("third", "three")),
+        ),),
+    )
+    structure_map = StructureMap(
+        map_id="reviewed-table",
+        source_sha256=parsing.source_sha256,
+        parsing_output_sha256=parsing.output_sha256,
+        content_hash="c" * 64,
+        entries=[StructureMapEntry(
+            section_path=("Tables",), page_start=5, page_end=5, block_ids=("table-1",)
+        )],
+    )
+    sections = sections_from_parsing_artifact(
+        structure_map, parsing, source_generation=3, source_sha256=parsing.source_sha256
+    )
+    assert sections[0].source_spans[0].block_kind == "table"
+    assert sections[0].source_spans[0].table_rows == parsing.blocks[0].table_rows
+
+    parents = segment_parents(sections, corpus_version_id="v1", target_tokens=12, max_tokens=80)
+    children = segment_children(parents.parents, target_tokens=8, max_tokens=80)
+
+    assert parents.ready_for_promotion
+    assert [span.text for parent_chunk in parents.parents for span in parent_chunk.source_spans] == [
+        "Name,Notes", '"first\ncontinued",one', "second,two", "third,three"
+    ]
+    assert any(span.text == '"first\ncontinued",one' for child in children for span in child.source_spans)
+    assert all(parent_chunk.token_count <= 80 for parent_chunk in parents.parents)
+    assert all(child.token_count <= 80 for child in children)
+    assert any(parent_chunk.table_header == "Name,Notes" for parent_chunk in parents.parents[1:])
+    assert all(
+        child.text.startswith("Section: Tables\nName,Notes\n")
+        for child in children
+        if child.source_spans[0].table_row_index not in (0, None)
+    )
+
+
+def test_parsed_list_items_remain_indivisible_in_parent_and_child_spans():
+    raw_list = "- first item\n- second item with\n  continuation\n- third item"
+    parsing = ParsingArtifact(
+        source_generation="3",
+        source_sha256="a" * 64,
+        output_sha256="b" * 64,
+        blocks=(ParsedBlock(
+            block_id="list-1",
+            physical_page=6,
+            reading_order=0,
+            kind="list",
+            raw_text=raw_list,
+            list_items=("first item", "second item with\n  continuation", "third item"),
+        ),),
+    )
+    structure_map = StructureMap(
+        map_id="reviewed-list",
+        source_sha256=parsing.source_sha256,
+        parsing_output_sha256=parsing.output_sha256,
+        content_hash="d" * 64,
+        entries=[StructureMapEntry(
+            section_path=("Lists",), page_start=6, page_end=6, block_ids=("list-1",)
+        )],
+    )
+    sections = sections_from_parsing_artifact(
+        structure_map, parsing, source_generation=3, source_sha256=parsing.source_sha256
+    )
+
+    parents = segment_parents(sections, corpus_version_id="v1", target_tokens=8, max_tokens=80)
+    children = segment_children(parents.parents, target_tokens=6, max_tokens=80)
+    expected = ("- first item", "- second item with\n  continuation", "- third item")
+
+    assert parents.ready_for_promotion
+    assert tuple(span.text for parent_chunk in parents.parents for span in parent_chunk.source_spans) == expected
+    assert tuple(span.list_item_index for child in children for span in child.source_spans) == (0, 1, 2)

@@ -5,10 +5,10 @@ from __future__ import annotations
 from hashlib import sha256
 import json
 
-from app.contracts import EvaluationCandidateSnapshot, EvaluationDataset, EvaluationItem, GoldAnnotation
+from app.contracts import EvaluationCandidateSnapshot, EvaluationDataset
 from app.contracts.v29 import CandidateDatasetBinding, DatasetHead, EvaluationRunSnapshot
 from app.evaluation.generations import FirestoreEvaluationGenerationStore
-from app.evaluation.job import EvaluationJobService, EvaluationRunError
+from app.evaluation.job import EvaluationJobService, EvaluationRunError, candidate_rows_dataset
 from model.candidate_generation import PROMPT_VERSION
 
 
@@ -34,7 +34,7 @@ class CandidateExplorationPublisher:
         if not rows:
             raise EvaluationRunError("candidate dataset revision is empty")
         dataset_id = _dataset_id(head)
-        dataset = _legacy_dataset(dataset_id, rows)
+        dataset = candidate_rows_dataset(dataset_id, rows)
         self.store.stage(dataset)
 
         candidate = self.jobs.snapshots.resolve(
@@ -49,7 +49,8 @@ class CandidateExplorationPublisher:
             dataset_revision=head.revision,
         )
         run_id = _candidate_run_id(
-            binding, configuration_version_id, model_version_id, candidate, selected_ids
+            binding, configuration_version_id, model_version_id, candidate, selected_ids,
+            selection="full" if item_ids is None else "subset",
         )
         snapshot = self.store.create_run_snapshot(
             run_id=run_id,
@@ -86,42 +87,16 @@ def _candidate_run_id(
     model_version_id: str,
     snapshot: EvaluationCandidateSnapshot,
     selected_ids: tuple[str, ...],
+    *,
+    selection: str,
 ) -> str:
     material = {
         "binding": binding.model_dump(),
         "configuration_version_id": configuration_version_id,
         "model_version_id": model_version_id,
         "snapshot": snapshot.model_dump(mode="json"),
+        "selection": selection,
         "selected_item_ids": selected_ids,
     }
     encoded = json.dumps(material, sort_keys=True, separators=(",", ":"))
     return "eval-" + sha256(encoded.encode("utf-8")).hexdigest()[:32]
-
-
-def _legacy_dataset(dataset_id: str, rows: tuple[object, ...]) -> EvaluationDataset:
-    """Project the frozen v2 rows into the existing worker input contract."""
-    from app.contracts.v29 import EvaluationRowV2
-
-    candidate_rows = tuple(EvaluationRowV2.model_validate(row.model_dump()) for row in rows)
-    return EvaluationDataset(
-        dataset_version_id=dataset_id,
-        items=[
-            EvaluationItem(
-                item_id=row.item_id,
-                question=row.question,
-                category=row.category,
-                dataset_version_id=dataset_id,
-            )
-            for row in candidate_rows
-        ],
-        gold_annotations=[
-            GoldAnnotation(
-                item_id=row.item_id,
-                expected_answer_or_rubric=row.expected_answer_or_rubric,
-                relevant_chunk_ids=list(row.relevant_child_ids),
-                review_status="candidate",
-                supporting_passage="\n\n".join(span.raw_text for span in row.source_spans) or row.scope_rationale,
-            )
-            for row in candidate_rows
-        ],
-    )

@@ -315,8 +315,6 @@ class FirestoreEvaluationGenerationStore:
         item_ids: tuple[str, ...] | None = None,
     ) -> EvaluationRunSnapshot:
         """Pin selected rows and the complete candidate configuration before dispatch."""
-        if isinstance(binding, ServingDatasetBinding):
-            raise EvaluationGenerationError("serving snapshots require authoritative release resolution")
         reference = self.run_snapshots.document(sha256(run_id.encode()).hexdigest())
         existing = reference.get()
         if existing.exists and existing.to_dict().get("status") == "ready":
@@ -327,12 +325,24 @@ class FirestoreEvaluationGenerationStore:
                     or (item_ids is not None and tuple(row.item_id for row in saved.items) != item_ids)):
                 raise GenerationIntegrityError("run ID is already bound to different inputs")
             return saved
+        serving_artifact_id = None
+        if isinstance(binding, ServingDatasetBinding):
+            resolved_binding, _, resolved_configuration, resolved_head, _, serving_artifact_id, _, _ = (
+                self.resolve_serving_revision()
+            )
+            if (
+                resolved_binding != binding
+                or resolved_configuration != configuration
+                or resolved_head.revision != binding.dataset_revision
+            ):
+                raise GenerationIntegrityError("serving run binding does not match the selected release")
+
         winner = self.revision_winners.document(_revision_id(binding.corpus_version_id, binding.dataset_revision))
         revision = winner.get()
         if not revision.exists:
             raise EvaluationGenerationError("run requires a published corpus revision")
         head = DatasetHead.model_validate(revision.to_dict())
-        if self.corpus_head(binding.corpus_version_id) != head:
+        if isinstance(binding, CandidateDatasetBinding) and self.corpus_head(binding.corpus_version_id) != head:
             raise ConcurrentActivationError("corpus dataset revision is no longer current")
         if configuration.corpus_binding.corpus_version_id != binding.corpus_version_id:
             raise GenerationIntegrityError("run configuration belongs to a different corpus")
@@ -368,15 +378,134 @@ class FirestoreEvaluationGenerationStore:
         ]
         self._commit_staged_writes(writes)
         pointer = self.corpus_heads.document(_corpus_id(binding.corpus_version_id))
+        serving_pointer = self.client.collection("release_state").document("serving")
 
         def publish(transaction: Any) -> None:
-            current = pointer.get(transaction=transaction)
-            if not current.exists or DatasetHead.model_validate(current.to_dict()) != head:
-                raise ConcurrentActivationError("corpus dataset revision changed during run preparation")
+            if isinstance(binding, CandidateDatasetBinding):
+                current = pointer.get(transaction=transaction)
+                if not current.exists or DatasetHead.model_validate(current.to_dict()) != head:
+                    raise ConcurrentActivationError("corpus dataset revision changed during run preparation")
+            else:
+                current_release = serving_pointer.get(transaction=transaction)
+                release = current_release.to_dict() if current_release.exists else {}
+                if (
+                    release.get("release_id") != binding.release_id
+                    or release.get("corpus_version_id") != binding.corpus_version_id
+                    or release.get("configuration_version_id") != configuration_version_id
+                    or release.get("artifact_id") != serving_artifact_id
+                ):
+                    raise ConcurrentActivationError("serving release changed during run preparation")
             transaction.update(reference, {"status": "ready"})
 
         self._transaction_runner(self.client.transaction(), publish)
         return self.get_run_snapshot(run_id)[0]
+
+    def resolve_serving_revision(
+        self,
+    ) -> tuple[ServingDatasetBinding, str, EvaluationCandidateSnapshot, DatasetHead, tuple[EvaluationRowV2, ...], str, str, str]:
+        """Resolve the actually serving approved release through its manifest and original full run."""
+        from app.release.firestore import ReleaseManifest
+        from app.release.publication import FirestoreServingReleaseStore
+
+        serving_release = FirestoreServingReleaseStore(self.client).current()
+        if serving_release is None:
+            raise EvaluationGenerationError("no serving release is selected")
+        release_id = serving_release.release_id
+        artifact_id = serving_release.artifact_id
+        manifest_snapshot = self.client.collection("release_manifests").document(release_id).get()
+        decision_snapshot = self.client.collection("release_decisions").document(release_id).get()
+        if not manifest_snapshot.exists or not decision_snapshot.exists:
+            raise EvaluationGenerationError("serving release manifest or decision is unavailable")
+        try:
+            manifest = ReleaseManifest.model_validate(manifest_snapshot.to_dict())
+            decision_record = decision_snapshot.to_dict()
+            decision = decision_record["decision"]
+        except (KeyError, TypeError, ValueError):
+            raise GenerationIntegrityError("serving release records are invalid") from None
+        if (
+            decision.get("decision") != "approved"
+            or decision.get("release_id") != release_id
+            or decision_record.get("candidate_digest") != artifact_id
+            or manifest.release_id != release_id
+            or manifest.candidate_digest != artifact_id
+            or serving_release.corpus_version_id != manifest.corpus_version_id
+            or serving_release.configuration_version_id != manifest.configuration_version_id
+        ):
+            raise GenerationIntegrityError("serving release records do not agree")
+        try:
+            original_snapshot, configuration = self.get_run_snapshot(manifest.evaluation_run_id)
+            original_binding = original_snapshot.binding
+            original_run_reference = self.client.collection("evaluation_runs").document(
+                manifest.evaluation_run_id
+            )
+            original_run_snapshot = original_run_reference.get()
+            if not original_run_snapshot.exists:
+                raise EvaluationGenerationError("serving release evaluation run is unavailable")
+            run = original_run_snapshot.to_dict()
+            run_configuration = EvaluationCandidateSnapshot.model_validate(run.get("candidate_snapshot"))
+            if not isinstance(original_binding, CandidateDatasetBinding):
+                raise GenerationIntegrityError("serving release run is not bound to a candidate revision")
+        except EvaluationGenerationError:
+            raise
+        except (KeyError, TypeError, ValueError):
+            raise GenerationIntegrityError("serving release run snapshot is invalid") from None
+        identity = {
+            "evaluation_run_id": manifest.evaluation_run_id,
+            "dataset_version_id": manifest.dataset_version_id,
+            "corpus_version_id": manifest.corpus_version_id,
+            "configuration_version_id": manifest.configuration_version_id,
+            "model_version_id": manifest.model_version_id,
+        }
+        run_identity = {
+            "run_id": manifest.evaluation_run_id,
+            "dataset_version_id": manifest.dataset_version_id,
+            "corpus_version_id": manifest.corpus_version_id,
+            "configuration_version_id": manifest.configuration_version_id,
+            "model_version_id": manifest.model_version_id,
+        }
+        mismatches = [
+            name for name, invalid in (
+                ("decision_identity", any(decision.get(key) != value for key, value in identity.items())),
+                ("run_identity", any(run.get(key) != value for key, value in run_identity.items())),
+                ("run_status", run.get("status") != "completed"),
+                ("run_items", run.get("selected_item_ids") != [row.item_id for row in original_snapshot.items]),
+                ("run_scope", original_snapshot.selection != "full"),
+                ("candidate_corpus", original_binding.corpus_version_id != manifest.corpus_version_id),
+                ("candidate_configuration", configuration != run_configuration),
+                ("configuration_corpus", configuration.corpus_binding.corpus_version_id != manifest.corpus_version_id),
+                ("model_version", manifest.model_version_id != run.get("model_version_id")),
+                ("candidate_digest", sha256(configuration.model_dump_json().encode("utf-8")).hexdigest() != artifact_id),
+                ("provider_version", not manifest.provider_version_id.startswith(f"{configuration.answer_provider}-")),
+                ("scorer_version", manifest.scorer_version_id != configuration.scorer_version),
+                ("vector_collection", serving_release.vector_collection != configuration.corpus_binding.vector_collection),
+                ("vector_schema", serving_release.vector_schema_version != configuration.corpus_binding.vector_schema_version),
+            ) if invalid
+        ]
+        if mismatches:
+            raise GenerationIntegrityError(
+                "serving release does not match its immutable evaluation snapshot: " + ", ".join(mismatches)
+            )
+        revision_ref = self.revision_winners.document(_revision_id(
+            original_binding.corpus_version_id, original_binding.dataset_revision
+        ))
+        revision_snapshot = revision_ref.get()
+        if not revision_snapshot.exists:
+            raise EvaluationGenerationError("serving release dataset revision is unavailable")
+        head = DatasetHead.model_validate(revision_snapshot.to_dict())
+        if head.corpus_version_id != manifest.corpus_version_id:
+            raise GenerationIntegrityError("serving release revision belongs to another corpus")
+        rows = self.get_revision(head)
+        if tuple(rows) != original_snapshot.items:
+            raise GenerationIntegrityError("serving release run snapshot does not match its dataset revision")
+        binding = ServingDatasetBinding(
+            release_id=release_id,
+            corpus_version_id=manifest.corpus_version_id,
+            dataset_revision=head.revision,
+        )
+        return (
+            binding, manifest.dataset_version_id, configuration, head, rows, artifact_id,
+            manifest.configuration_version_id, manifest.model_version_id,
+        )
 
     def get_run_snapshot(self, run_id: str) -> tuple[EvaluationRunSnapshot, EvaluationCandidateSnapshot]:
         reference = self.run_snapshots.document(sha256(run_id.encode()).hexdigest())

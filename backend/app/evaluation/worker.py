@@ -24,8 +24,10 @@ from app.evaluation.assessments import score_assessment
 from app.evaluation.job import (
     EvaluationCandidateSnapshotResolver,
     ResolvedEvaluationCandidate,
+    ResolvedServingEvaluation,
     EvaluationOutcome,
     EvaluationRunError,
+    candidate_rows_dataset,
     EvaluationCorpusReadinessError,
     EvaluationRunStore,
     EvaluationStageStore,
@@ -120,6 +122,25 @@ class FirestoreEvaluationCandidateSnapshotResolver(EvaluationCandidateSnapshotRe
             configuration_version_id=configuration_version_id,
             model_version_id=model_version_id,
             snapshot=snapshot,
+        )
+
+    def resolve_serving(self) -> ResolvedServingEvaluation:
+        generations = FirestoreEvaluationGenerationStore(self.client)
+        binding, dataset_id, snapshot, head, rows, _, configuration_version_id, model_version_id = (
+            generations.resolve_serving_revision()
+        )
+        dataset = candidate_rows_dataset(dataset_id, rows)
+        stored_dataset = generations.get(dataset_id)
+        if stored_dataset is None or stored_dataset.model_dump(mode="json") != dataset.model_dump(mode="json"):
+            raise EvaluationRunError("serving dataset does not match the approved revision")
+        return ResolvedServingEvaluation(
+            binding=binding,
+            dataset=dataset,
+            configuration_version_id=configuration_version_id,
+            model_version_id=model_version_id,
+            snapshot=snapshot,
+            head=head,
+            rows=rows,
         )
 
 

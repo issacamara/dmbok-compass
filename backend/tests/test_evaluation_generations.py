@@ -505,7 +505,7 @@ def test_v2_run_snapshot_survives_revision_change_and_restart() -> None:
     snapshot = repository.create_run_snapshot(run_id="run", binding=binding, configuration_version_id="config",
                                                configuration=configuration, item_ids=("one",))
     second = repository.stage_revision("corpus", 2, (row.model_copy(update={"question": "Changed?"}),))
-    with pytest.raises(ValueError, match="authoritative release resolution"):
+    with pytest.raises(ValueError, match="no serving release is selected"):
         repository.create_run_snapshot(
             run_id="unpublished", binding=ServingDatasetBinding(release_id="release", corpus_version_id="corpus", dataset_revision=2),
             configuration_version_id="config", configuration=configuration,
@@ -516,7 +516,7 @@ def test_v2_run_snapshot_survives_revision_change_and_restart() -> None:
     assert restored.items[0].question == "Out of scope?"
     assert restored.selection == "subset"
     assert restored_configuration == configuration
-    with pytest.raises(ValueError, match="authoritative release resolution"):
+    with pytest.raises(ValueError, match="no serving release is selected"):
         repository.create_run_snapshot(
             run_id="serving", binding=ServingDatasetBinding(release_id="release", corpus_version_id="corpus", dataset_revision=1),
             configuration_version_id="config", configuration=configuration,
@@ -608,9 +608,12 @@ def test_candidate_revision_publication_requires_the_current_lease_owner() -> No
 
 
 def test_candidate_exploration_publishes_inactive_dataset_and_dispatches_one_full_run() -> None:
-    from app.contracts import EvaluationCandidateSnapshot, EvaluationRowV2
+    from hashlib import sha256
+    from app.contracts import EvaluationCandidateSnapshot, EvaluationRowV2, ServingDatasetBinding
     from app.evaluation.automatic import CandidateExplorationPublisher
-    from app.evaluation.job import EvaluationJobService, InMemoryEvaluationJobDispatcher, InMemoryEvaluationRunStore
+    from app.evaluation.job import EvaluationJobService, EvaluationRunError, FirestoreEvaluationRunStore, InMemoryEvaluationJobDispatcher
+    from app.evaluation.worker import FirestoreEvaluationCandidateSnapshotResolver
+    from app.release.firestore import ReleaseManifest
 
     client = FakeFirestore()
     repository = store(client)
@@ -645,11 +648,16 @@ def test_candidate_exploration_publishes_inactive_dataset_and_dispatches_one_ful
             )
 
     dispatcher = InMemoryEvaluationJobDispatcher()
-    jobs = EvaluationJobService(repository, InMemoryEvaluationRunStore(), dispatcher, Resolver())
+    run_store = FirestoreEvaluationRunStore(client)
+    jobs = EvaluationJobService(repository, run_store, dispatcher, Resolver())
     publisher = CandidateExplorationPublisher(repository, jobs)
 
     snapshot = publisher.launch(
         attempt_id="attempt-v2", head=head, configuration_version_id="config-v2", model_version_id="model-v2",
+    )
+    candidate_subset = publisher.launch(
+        attempt_id="attempt-v2", head=head, configuration_version_id="config-v2", model_version_id="model-v2",
+        item_ids=["candidate-item"],
     )
     replay = publisher.launch(
         attempt_id="attempt-v2", head=head, configuration_version_id="config-v2", model_version_id="model-v2",
@@ -660,12 +668,110 @@ def test_candidate_exploration_publishes_inactive_dataset_and_dispatches_one_ful
     assert snapshot.binding.attempt_id == "attempt-v2"
     assert snapshot.binding.corpus_version_id == "corpus-v2"
     assert snapshot.selection == "full"
+    candidate_subset_record, _ = repository.get_run_snapshot(candidate_subset.run_id)
+    assert candidate_subset.run_id != snapshot.run_id
+    assert candidate_subset_record.selection == "subset"
     assert run.dataset_version_id.startswith("candidate-")
     assert run.selected_item_ids == ["candidate-item"]
     assert run.report_eligibility is not None
     assert run.report_eligibility.eligibility == "exploratory"
     assert repository.active().generation_id == "serving-dataset"
-    assert set(dispatcher.dispatched) == {snapshot.run_id}
+    assert set(dispatcher.dispatched) == {snapshot.run_id, candidate_subset.run_id}
+
+    completed = run_store.update(run.model_copy(update={"status": "completed"}))
+    candidate_digest = sha256(completed.candidate_snapshot.model_dump_json().encode("utf-8")).hexdigest()
+    manifest = ReleaseManifest(
+        release_id="release-v2",
+        evaluation_run_id=completed.run_id,
+        dataset_version_id=completed.dataset_version_id,
+        corpus_version_id=completed.corpus_version_id,
+        configuration_version_id=completed.configuration_version_id,
+        provider_version_id="openrouter-v1",
+        model_version_id=completed.model_version_id,
+        scorer_version_id=completed.candidate_snapshot.scorer_version,
+        candidate_digest=candidate_digest,
+        gate_report_ids=["gates-v1"],
+    )
+    client.collection("release_manifests").document(manifest.release_id).set(manifest.model_dump(mode="json"))
+    client.collection("release_decisions").document(manifest.release_id).set({
+        "decision": {
+            **manifest.model_dump(exclude={"provider_version_id", "scorer_version_id", "candidate_digest", "gate_report_ids"}),
+            "decision": "approved",
+            "provider_version_id": manifest.provider_version_id,
+            "scorer_version_id": manifest.scorer_version_id,
+            "gate_report_ids": manifest.gate_report_ids,
+            "rationale": "Approved for serving.",
+            "exception_approved": False,
+        },
+        "candidate_digest": candidate_digest,
+        "actor_user_id": "admin",
+        "decided_at": "2026-11-11T12:00:00+00:00",
+    })
+    client.collection("release_state").document("serving").set({
+        "release_id": manifest.release_id,
+        "artifact_id": candidate_digest,
+        "configuration_version_id": manifest.configuration_version_id,
+        "corpus_version_id": manifest.corpus_version_id,
+        "vector_collection": completed.candidate_snapshot.corpus_binding.vector_collection,
+        "vector_schema_version": completed.candidate_snapshot.corpus_binding.vector_schema_version,
+        "source_uri": "gs://corpus/dmbok.pdf",
+        "published_at": "2026-11-11T12:00:00+00:00",
+        "previous": None,
+    })
+    # A newer approval that is not yet published must not replace the serving selector.
+    client.collection("release_state").document("approved").set({
+        "release_id": "future-approved-release", "candidate_digest": "f" * 64,
+    })
+    serving_jobs = EvaluationJobService(
+        repository, run_store, dispatcher, FirestoreEvaluationCandidateSnapshotResolver(client)
+    )
+    served_subset = serving_jobs.launch(item_ids=["candidate-item"])
+    served_replay = serving_jobs.launch(item_ids=["candidate-item"])
+    served_snapshot, _ = repository.get_run_snapshot(served_subset.run_id)
+    assert served_subset == served_replay
+    assert served_snapshot.binding.release_id == manifest.release_id
+    assert served_snapshot.binding.corpus_version_id == manifest.corpus_version_id
+    assert served_snapshot.selection == "subset"
+    served_full = serving_jobs.launch(item_ids=None)
+    full_snapshot, _ = repository.get_run_snapshot(served_full.run_id)
+    assert served_full.run_id != served_subset.run_id
+    assert full_snapshot.selection == "full"
+    assert set(dispatcher.dispatched) == {
+        snapshot.run_id, candidate_subset.run_id, served_subset.run_id, served_full.run_id,
+    }
+    with pytest.raises(EvaluationRunError, match="unknown evaluation item IDs"):
+        serving_jobs.launch(item_ids=["not-in-approved-dataset"])
+    with pytest.raises(EvaluationRunError, match="resolved by the server"):
+        serving_jobs.launch(
+            corpus_version_id="caller-corpus",
+            configuration_version_id="caller-config",
+            model_version_id="caller-model",
+            item_ids=None,
+        )
+    with pytest.raises(GenerationIntegrityError, match="does not match the selected release"):
+        repository.create_run_snapshot(
+            run_id="mismatched-serving-binding",
+            binding=ServingDatasetBinding(
+                release_id="other-release", corpus_version_id=manifest.corpus_version_id, dataset_revision=head.revision
+            ),
+            configuration_version_id=manifest.configuration_version_id,
+            configuration=completed.candidate_snapshot,
+            item_ids=None,
+        )
+
+    def switch_release_before_commit(transaction, callback):  # type: ignore[no-untyped-def]
+        transaction.data["release_state/serving"]["release_id"] = "replacement-release"
+        return callback(transaction)
+
+    repository._transaction_runner = switch_release_before_commit
+    with pytest.raises(ConcurrentActivationError, match="serving release changed"):
+        repository.create_run_snapshot(
+            run_id="pointer-switch-during-serving-snapshot",
+            binding=full_snapshot.binding,
+            configuration_version_id=manifest.configuration_version_id,
+            configuration=completed.candidate_snapshot,
+            item_ids=None,
+        )
 
 
 def test_v2_revision_rejects_invalid_shape_and_corrupted_staged_items() -> None:

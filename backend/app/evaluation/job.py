@@ -20,12 +20,16 @@ from app.contracts import (
     EvaluationMetric,
     EvaluationReportEligibility,
     EvaluationRun,
+    EvaluationRowV2,
+    EvaluationItem,
+    GoldAnnotation,
     RetrievalResult,
     RunBoundSupportEvidence,
 )
 from app.contracts.api import AnswerOutcomeKind
 from app.evaluation.dataset import EvaluationDatasetStore
 from app.evaluation.support import approved_refusal, approved_support_chunk_ids
+from app.contracts.v29 import CandidateDatasetBinding, DatasetHead, ServingDatasetBinding
 
 
 class EvaluationRunError(ValueError):
@@ -188,6 +192,8 @@ class EvaluationCandidateSnapshotResolver(Protocol):
 
     def resolve_candidate(self) -> "ResolvedEvaluationCandidate": ...
 
+    def resolve_serving(self) -> "ResolvedServingEvaluation": ...
+
 
 @dataclass(frozen=True)
 class ResolvedEvaluationCandidate:
@@ -197,6 +203,19 @@ class ResolvedEvaluationCandidate:
     configuration_version_id: str
     model_version_id: str
     snapshot: EvaluationCandidateSnapshot
+
+
+@dataclass(frozen=True)
+class ResolvedServingEvaluation:
+    """A server-resolved approved serving release and its frozen dataset/configuration."""
+
+    binding: ServingDatasetBinding
+    dataset: EvaluationDataset
+    configuration_version_id: str
+    model_version_id: str
+    snapshot: EvaluationCandidateSnapshot
+    head: DatasetHead
+    rows: tuple[EvaluationRowV2, ...]
 
 
 class InMemoryEvaluationRunStore:
@@ -607,6 +626,49 @@ def stable_run_id(
     return "eval-" + sha256(material.encode("utf-8")).hexdigest()[:32]
 
 
+def stable_bound_run_id(
+    dataset_version_id: str,
+    configuration_version_id: str,
+    model_version_id: str,
+    snapshot: EvaluationCandidateSnapshot,
+    binding: CandidateDatasetBinding | ServingDatasetBinding,
+    selected_item_ids: tuple[str, ...],
+    *,
+    selection: Literal["full", "subset"],
+) -> str:
+    material = "|".join((
+        dataset_version_id, configuration_version_id, model_version_id,
+        binding.model_dump_json(), snapshot.model_dump_json(), selection, *selected_item_ids,
+    ))
+    return "eval-" + sha256(material.encode("utf-8")).hexdigest()[:32]
+
+
+def candidate_rows_dataset(dataset_id: str, rows: tuple[EvaluationRowV2, ...]) -> EvaluationDataset:
+    """Project frozen row-v2 records into the existing worker dataset contract."""
+    return EvaluationDataset(
+        dataset_version_id=dataset_id,
+        items=[
+            EvaluationItem(
+                item_id=row.item_id,
+                question=row.question,
+                category=row.category,
+                dataset_version_id=dataset_id,
+            )
+            for row in rows
+        ],
+        gold_annotations=[
+            GoldAnnotation(
+                item_id=row.item_id,
+                expected_answer_or_rubric=row.expected_answer_or_rubric,
+                relevant_chunk_ids=list(row.relevant_child_ids),
+                review_status="candidate",
+                supporting_passage="\n\n".join(span.raw_text for span in row.source_spans) or row.scope_rationale,
+            )
+            for row in rows
+        ],
+    )
+
+
 class EvaluationJobService:
     def __init__(
         self,
@@ -630,6 +692,14 @@ class EvaluationJobService:
         model_version_id: str | None = None,
         item_ids: list[str] | None,
     ) -> EvaluationRun:
+        resolve_serving = getattr(self.snapshots, "resolve_serving", None)
+        if callable(resolve_serving) and any(
+            value is not None for value in (corpus_version_id, configuration_version_id, model_version_id)
+        ):
+            raise EvaluationRunError("run bindings are resolved by the server")
+        if all(value is None for value in (corpus_version_id, configuration_version_id, model_version_id)):
+            if callable(resolve_serving):
+                return self._launch_serving(resolve_serving(), item_ids=item_ids)
         dataset = self.datasets.active_dataset()
         if dataset is None:
             raise EvaluationRunError("no active evaluation dataset")
@@ -668,6 +738,47 @@ class EvaluationJobService:
             self.dispatcher.dispatch(stored, dataset)
         return stored
 
+    def _launch_serving(
+        self, resolved: ResolvedServingEvaluation, *, item_ids: list[str] | None
+    ) -> EvaluationRun:
+        dataset = resolved.dataset
+        selected = select_items(dataset, item_ids)
+        run_id = stable_bound_run_id(
+            dataset.dataset_version_id,
+            resolved.configuration_version_id,
+            resolved.model_version_id,
+            resolved.snapshot,
+            resolved.binding,
+            selected,
+            selection="full" if item_ids is None else "subset",
+        )
+        create_snapshot = getattr(self.datasets, "create_run_snapshot", None)
+        if not callable(create_snapshot):
+            raise EvaluationRunError("durable serving run snapshots are unavailable")
+        persisted_snapshot = create_snapshot(
+            run_id=run_id,
+            binding=resolved.binding,
+            configuration_version_id=resolved.configuration_version_id,
+            configuration=resolved.snapshot,
+            item_ids=None if item_ids is None else selected,
+        )
+        if (
+            persisted_snapshot.run_id != run_id
+            or persisted_snapshot.binding != resolved.binding
+            or tuple(row.item_id for row in persisted_snapshot.items) != selected
+        ):
+            raise EvaluationRunError("serving run snapshot does not match the selected rows")
+        run = self.launch_immutable_serving(
+            dataset=dataset,
+            binding=resolved.binding,
+            configuration_version_id=resolved.configuration_version_id,
+            model_version_id=resolved.model_version_id,
+            snapshot=resolved.snapshot,
+            run_id=run_id,
+            item_ids=item_ids,
+        )
+        return run
+
     def launch_immutable_candidate(
         self,
         *,
@@ -695,6 +806,53 @@ class EvaluationJobService:
             run_id=run_id,
             dataset_version_id=dataset.dataset_version_id,
             corpus_version_id=corpus_version_id,
+            status="queued",
+            selected_item_ids=list(selected),
+            configuration_version_id=configuration_version_id,
+            model_version_id=model_version_id,
+            candidate_snapshot=snapshot,
+            report_eligibility=None,
+        )
+        run = run.model_copy(update={"report_eligibility": self._eligibility_for_run(run)})
+        persisted = self.runs.create_or_get(run)
+        if persisted.status == "queued":
+            self.dispatcher.dispatch(persisted, dataset)
+        return persisted
+
+    def launch_immutable_serving(
+        self,
+        *,
+        dataset: EvaluationDataset,
+        binding: ServingDatasetBinding,
+        configuration_version_id: str,
+        model_version_id: str,
+        snapshot: EvaluationCandidateSnapshot,
+        run_id: str,
+        item_ids: list[str] | None,
+    ) -> EvaluationRun:
+        """Dispatch a serving run only from a previously persisted serving snapshot."""
+        if snapshot.corpus_binding.corpus_version_id != binding.corpus_version_id:
+            raise EvaluationRunError("serving snapshot does not match the selected corpus")
+        load_snapshot = getattr(self.datasets, "get_run_snapshot", None)
+        if not callable(load_snapshot):
+            raise EvaluationRunError("durable serving run snapshots are unavailable")
+        persisted_snapshot, persisted_configuration = load_snapshot(run_id)
+        selected = select_items(dataset, item_ids)
+        if (
+            persisted_snapshot.binding != binding
+            or persisted_snapshot.configuration_version_id != configuration_version_id
+            or persisted_configuration != snapshot
+            or tuple(row.item_id for row in persisted_snapshot.items) != selected
+            or persisted_snapshot.selection != ("full" if item_ids is None else "subset")
+        ):
+            raise EvaluationRunError("serving run does not match its durable snapshot")
+        stored_dataset = self.datasets.get(dataset.dataset_version_id)
+        if stored_dataset is None or stored_dataset.model_dump(mode="json") != dataset.model_dump(mode="json"):
+            raise EvaluationRunError("serving dataset is not durably committed")
+        run = EvaluationRun(
+            run_id=run_id,
+            dataset_version_id=dataset.dataset_version_id,
+            corpus_version_id=binding.corpus_version_id,
             status="queued",
             selected_item_ids=list(selected),
             configuration_version_id=configuration_version_id,

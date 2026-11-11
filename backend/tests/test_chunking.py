@@ -373,3 +373,23 @@ def test_markdown_table_header_and_separator_stay_together_when_parent_splits():
         for child in children
         if child.source_spans[0].table_row_index not in (0, None)
     )
+
+
+def test_markdown_table_rows_must_match_parsed_structured_rows():
+    markdown = "| Name | Value |\n| --- | --- |\n| first | altered |"
+    section = LogicalSection(
+        ("Data",),
+        (SourceSpan(
+            page=3,
+            start_offset=0,
+            end_offset=len(markdown),
+            text=markdown,
+            span_id="table",
+            block_id="table",
+            block_kind="table",
+            table_rows=(("Name", "Value"), ("first", "approved")),
+        ),),
+    )
+
+    with pytest.raises(ValueError, match="Markdown table rows do not match"):
+        segment_parents([section], corpus_version_id="v1")

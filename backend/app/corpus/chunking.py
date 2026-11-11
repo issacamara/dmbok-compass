@@ -459,6 +459,13 @@ def _table_units(source: SourceSpan) -> tuple[SourceSpan, ...]:
         if not rows:
             raise ValueError("parsed Markdown table has no source rows")
         header_count = 2 if len(rows) > 1 and re.fullmatch(r"\s*\|?\s*[:|\- ]+\s*\|?\s*", rows[1][2]) else 1
+        markdown_rows = [
+            _markdown_table_cells(row[2])
+            for index, row in enumerate(rows)
+            if not (index == 1 and header_count == 2)
+        ]
+        if markdown_rows != list(source.table_rows):
+            raise ValueError("parsed Markdown table rows do not match their raw source rows")
         header_start = rows[0][0]
         header_end = rows[header_count - 1][1]
         header_text = source.text[header_start:header_end]
@@ -514,6 +521,15 @@ def _table_units(source: SourceSpan) -> tuple[SourceSpan, ...]:
         )
         for index, ((start, _), record) in enumerate(zip(records, raw_records, strict=True))
     )
+
+
+def _markdown_table_cells(row: str) -> tuple[str, ...]:
+    content = row.strip()
+    if content.startswith("|"):
+        content = content[1:]
+    if content.endswith("|") and not content.endswith("\\|"):
+        content = content[:-1]
+    return tuple(cell.strip().replace("\\|", "|") for cell in re.split(r"(?<!\\)\|", content))
 
 
 def _list_units(source: SourceSpan) -> tuple[SourceSpan, ...]:

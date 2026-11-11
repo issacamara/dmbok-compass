@@ -5,7 +5,7 @@ from __future__ import annotations
 from hashlib import sha256
 import json
 
-from app.contracts import EvaluationCandidateSnapshot, EvaluationDataset
+from app.contracts import EvaluationCandidateSnapshot
 from app.contracts.v29 import CandidateDatasetBinding, DatasetHead, EvaluationRunSnapshot
 from app.evaluation.generations import FirestoreEvaluationGenerationStore
 from app.evaluation.job import EvaluationJobService, EvaluationRunError, candidate_rows_dataset

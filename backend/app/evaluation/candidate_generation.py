@@ -98,10 +98,15 @@ class _UsageAccumulator:
     tokens: int = 0
     known: bool = True
     request_in_flight: bool = False
+    reconciled: bool = False
 
 
 class CandidateSourceError(ValueError):
     """Raised when the supplied ready-corpus source set is not self-consistent."""
+
+
+class CandidateAllowanceReconciliationError(RuntimeError):
+    """Raised when known provider usage cannot be recorded by the allowance ledger."""
 
 
 async def generate_candidate_revision(
@@ -114,6 +119,7 @@ async def generate_candidate_revision(
     generator_route: str,
     generator_model: str,
     generator_configuration_version: str,
+    operation_key: str,
     allowance: AllowanceStageResult,
     allowance_store: ProviderAllowanceStore,
     allowance_capabilities: ProviderAccountCapabilities,
@@ -134,6 +140,12 @@ async def generate_candidate_revision(
     reservation = allowance.reservation
     if reservation.kind != "generation" or allowance_capabilities.kind != "generation":
         raise ValueError("candidate generation requires a generation allowance reservation")
+    if not operation_key.strip() or reservation.operation_key != operation_key:
+        raise ValueError("candidate generation allowance reservation has the wrong operation key")
+    if generator_route not in _MODEL_PROVIDER:
+        raise ValueError("candidate generation requires a supported generator route")
+    if allowance_capabilities.provider_id != _MODEL_PROVIDER[generator_route]:
+        raise ValueError("candidate generator route does not match its allowance provider")
     usage = _UsageAccumulator()
     try:
         if target_count < 1:
@@ -166,14 +178,35 @@ async def generate_candidate_revision(
             generator_route=generator_route,
             generator_model=generator_model,
             generator_configuration_version=generator_configuration_version,
+            allowance_reservation=reservation,
+            allowance_store=allowance_store,
+            allowance_capabilities=allowance_capabilities,
             store=store,
             target_count=target_count,
             usage=usage,
         )
     finally:
-        actual_units = None if not usage.known or usage.request_in_flight else usage.tokens
-        allowance_store.reconcile_usage(
-            allowance_capabilities, reservation.operation_key, actual_units
+        if not usage.reconciled:
+            _reconcile_usage(
+                allowance_store, allowance_capabilities, reservation, usage
+            )
+
+
+def _reconcile_usage(
+    allowance_store: ProviderAllowanceStore,
+    capabilities: ProviderAccountCapabilities,
+    reservation: AllowanceReservation,
+    usage: _UsageAccumulator,
+) -> None:
+    actual_units = None if not usage.known or usage.request_in_flight else usage.tokens
+    usage.reconciled = True
+    result = allowance_store.reconcile_usage(
+        capabilities, reservation.operation_key, actual_units
+    )
+    expected_status = "staged" if actual_units is not None else "awaiting_budget"
+    if result.status != expected_status or result.reservation != reservation:
+        raise CandidateAllowanceReconciliationError(
+            "candidate generation allowance reconciliation was not confirmed"
         )
 
 
@@ -213,6 +246,9 @@ async def _generate_candidate_revision(
     generator_route: str,
     generator_model: str,
     generator_configuration_version: str,
+    allowance_reservation: AllowanceReservation,
+    allowance_store: ProviderAllowanceStore,
+    allowance_capabilities: ProviderAccountCapabilities,
     store: CandidateRevisionStore,
     target_count: int,
     usage: _UsageAccumulator,
@@ -309,6 +345,9 @@ async def _generate_candidate_revision(
             "failed", corpus_version_id, generator_configuration_version, generator_model,
             target_count, (), rejected, _usage(usage.tokens, usage.known), error="no valid candidates were generated",
         )
+    _reconcile_usage(
+        allowance_store, allowance_capabilities, allowance_reservation, usage
+    )
     if store.corpus_head(corpus_version_id) != old_head:
         raise ConcurrentActivationError("corpus dataset changed during candidate generation")
     next_revision = (old_head.revision + 1) if old_head else 1

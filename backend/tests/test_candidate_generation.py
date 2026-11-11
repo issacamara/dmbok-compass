@@ -18,6 +18,7 @@ from app.contracts import (
 from app.corpus.chunking import _token_count
 from app.corpus.versions import hierarchical_validation_evidence
 from app.evaluation.candidate_generation import (
+    CandidateAllowanceReconciliationError,
     CandidateSourceError,
     _validate_sources,
     generate_candidate_revision,
@@ -172,13 +173,14 @@ class FakeStore:
 
 
 class FakeAllowanceStore:
-    def __init__(self, reservation):
+    def __init__(self, reservation, *, forced_status=None):
         self.reservation = reservation
         self.reconciliations = []
+        self.forced_status = forced_status
 
     def reconcile_usage(self, capabilities, operation_key, actual_units):
         self.reconciliations.append((capabilities, operation_key, actual_units))
-        status = "staged" if actual_units is not None else "awaiting_budget"
+        status = self.forced_status or ("staged" if actual_units is not None else "awaiting_budget")
         return AllowanceStageResult(status, self.reservation)
 
 def allowance(status="staged", *, kind="generation", units=1_000_000):
@@ -258,6 +260,7 @@ def generate(
     corpus_store=None,
     allowance_store=None,
     allowance_capabilities=None,
+    operation_key="generation-1",
 ):
     if children is None or parents is None:
         children, parents = source_records()
@@ -276,6 +279,7 @@ def generate(
         generator_route="openrouter",
         generator_model="generator-v1",
         generator_configuration_version="generator-config-v1",
+        operation_key=operation_key,
         allowance=budget,
         allowance_store=allowance_store,
         allowance_capabilities=allowance_capabilities,
@@ -372,6 +376,60 @@ def test_insufficient_generation_reservation_reconciles_zero_without_calls():
     account_key = (capabilities.provider_id, capabilities.account_id, capabilities.kind)
     assert allowances.reserved_units[account_key] == 0
     assert allowances.spent_units[account_key] == 0
+
+
+def test_generation_rejects_wrong_provider_or_operation_reservation_before_calls():
+    for capabilities, operation_key, error in (
+        (
+            ProviderAccountCapabilities("google-gemini", "generator", "generation"),
+            "generation-1",
+            "does not match",
+        ),
+        (
+            ProviderAccountCapabilities("openrouter", "generator", "generation"),
+            "another-operation",
+            "wrong operation key",
+        ),
+    ):
+        budget = allowance()
+        allowances = FakeAllowanceStore(budget.reservation)
+        adapter = FakeAdapter([result([answer_candidate("Must not run")])])
+        store = FakeStore()
+        with pytest.raises(ValueError, match=error):
+            generate(
+                adapter,
+                store,
+                budget=budget,
+                allowance_store=allowances,
+                allowance_capabilities=capabilities,
+                operation_key=operation_key,
+                target_count=1,
+            )
+        assert adapter.calls == 0
+        assert store.head_reads == 0
+        assert store.staged == 0
+        assert allowances.reconciliations == []
+
+
+def test_failed_known_usage_reconciliation_prevents_dataset_publication():
+    budget = allowance()
+    allowances = FakeAllowanceStore(budget.reservation, forced_status="awaiting_budget")
+    adapter = FakeAdapter([result([answer_candidate("Reconcile before publish")], usage=19)])
+    store = FakeStore()
+
+    with pytest.raises(CandidateAllowanceReconciliationError, match="not confirmed"):
+        generate(
+            adapter,
+            store,
+            budget=budget,
+            allowance_store=allowances,
+            target_count=1,
+        )
+
+    assert adapter.calls == 1
+    assert store.staged == 0
+    assert store.head is None
+    assert [entry[2] for entry in allowances.reconciliations] == [19]
 
 
 def test_candidates_bind_exact_corpus_spans_and_remain_unapproved():

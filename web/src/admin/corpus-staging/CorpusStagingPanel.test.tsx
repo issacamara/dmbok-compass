@@ -87,6 +87,21 @@ describe("CorpusStagingPanel", () => {
     expect(api.proposeCorpusStagingStructure).toHaveBeenCalledWith("admin-token", "attempt-1");
   });
 
+  it("shows and polls ingestion after approval while the hosted parse state stays awaiting review", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem("dmbok-compass.corpus-staging-attempt", "approved-id");
+    api.getCorpusStagingStatus
+      .mockResolvedValueOnce(reviewed)
+      .mockResolvedValueOnce({ ...reviewed, state: "running", hosted_parsing_state: "awaiting_review", preview: null });
+    api.approveCorpusStagingAttempt.mockResolvedValue({ ...reviewed, state: "queued", hosted_parsing_state: "awaiting_review", preview: null });
+    render(<CorpusStagingPanel token="admin-token" />);
+    await waitFor(() => expect(api.getCorpusStagingStatus).toHaveBeenCalledTimes(1));
+    await user.click(await screen.findByRole("button", { name: "Approve outline and create chunks" }));
+    expect(await screen.findByText(/Status: queued/)).toBeInTheDocument();
+    expect(await screen.findByText(/Status: running/, {}, { timeout: 3500 })).toBeInTheDocument();
+    expect(api.getCorpusStagingStatus).toHaveBeenCalledTimes(2);
+  });
+
   it("resumes the saved attempt, handles stale revisions, and keeps refresh available", async () => {
     const user = userEvent.setup();
     window.localStorage.setItem("dmbok-compass.corpus-staging-attempt", "saved-id");

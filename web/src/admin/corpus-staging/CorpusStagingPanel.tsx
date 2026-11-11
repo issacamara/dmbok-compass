@@ -44,10 +44,12 @@ export function CorpusStagingPanel({ token }: { token: string }) {
 
   useEffect(() => { void refresh(); }, [token]);
   useEffect(() => {
-    if (!attemptId || !attempt || !ACTIVE_PARSING_STATES.includes(attempt.hosted_parsing_state ?? "")) return;
+    const parsing = ACTIVE_PARSING_STATES.includes(attempt?.hosted_parsing_state ?? "");
+    const ingesting = attempt?.state === "queued" || attempt?.state === "running";
+    if (!attemptId || !attempt || (!parsing && !ingesting)) return;
     const timer = window.setInterval(() => { void refresh(attemptId); }, 2000);
     return () => window.clearInterval(timer);
-  }, [attemptId, attempt?.hosted_parsing_state, token]);
+  }, [attemptId, attempt?.state, attempt?.hosted_parsing_state, token]);
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setError(""); setMessage("");
@@ -142,7 +144,7 @@ export function CorpusStagingPanel({ token }: { token: string }) {
     </form>
     {attempt && <section className="staging-review" aria-labelledby="staging-review-title">
       <div className="section-heading"><h4 id="staging-review-title">Staging review</h4><button id="staging-refresh" className="secondary" type="button" onClick={() => void refresh()} disabled={busy}>Refresh status</button></div>
-      <p role="status">Status: {(attempt.state === "staged" || attempt.state === "failed" ? attempt.state : attempt.hosted_parsing_state ?? attempt.state).replaceAll("_", " ")}{attempt.completed_stage ? ` · completed ${attempt.completed_stage}` : ""}</p>
+      <p role="status">Status: {(attempt.state === "queued" || attempt.state === "running" || attempt.state === "staged" || attempt.state === "failed" ? attempt.state : attempt.hosted_parsing_state ?? attempt.state).replaceAll("_", " ")}{attempt.completed_stage ? ` · completed ${attempt.completed_stage}` : ""}</p>
       {attempt.hosted_parsing_state === "awaiting_budget" && <div className="status"><p>Hosted parsing is waiting for available budget. No outline has been approved.</p><button type="button" className="secondary" onClick={() => void retryParsing()} disabled={busy}>Retry parsing</button></div>}
       {attempt.hosted_parsing_state === "failed" && <div className="error"><p>Parsing did not complete. Refresh the attempt or retry parsing.</p><button type="button" className="secondary" onClick={() => void retryParsing()} disabled={busy}>Retry parsing</button></div>}
       {attempt.preview && <>

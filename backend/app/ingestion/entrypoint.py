@@ -164,7 +164,7 @@ def _run(termination_requested: Callable[[], bool]) -> None:
                 FirestoreParentChunkStore(client),
                 source_metadata=candidate.manifest.corpus_metadata(),
             )
-            CorpusIngestionJob(versions, writer).run_hierarchical(
+            result = CorpusIngestionJob(versions, writer).run_hierarchical(
                 staged,
                 candidate.parents,
                 candidate.children,
@@ -176,6 +176,14 @@ def _run(termination_requested: Callable[[], bool]) -> None:
                     )
                 ) if progress is not None else None,
             )
+            if result.version.status == "validated" and attempt_id:
+                _dispatch_candidate_generation(
+                    client=client,
+                    project=project,
+                    configuration=configuration,
+                    attempt_id=attempt_id,
+                    corpus_version_id=result.version.version_id,
+                )
         except BaseException as error:
             if progress is not None:
                 progress(
@@ -201,6 +209,42 @@ def _run(termination_requested: Callable[[], bool]) -> None:
                 }
             )
         )
+
+
+def _dispatch_candidate_generation(
+    *, client: Any, project: str, configuration: RuntimeConfiguration,
+    attempt_id: str, corpus_version_id: str,
+) -> None:
+    """Queue candidate preparation only after ingestion stored a validated corpus."""
+    from app.evaluation.automatic import candidate_generator_fingerprint
+    from app.evaluation.dispatch import (
+        CloudRunCandidateGenerationDispatcher,
+        CloudRunJobExecutor,
+        EvaluationDispatchClaimStore,
+    )
+    from app.settings import EvaluationStageConfiguration
+
+    generator = EvaluationStageConfiguration.from_environment("GENERATOR")
+    fingerprint = candidate_generator_fingerprint(
+        generator.route, generator.model, generator.configuration_version
+    )
+    dispatcher = CloudRunCandidateGenerationDispatcher(
+        EvaluationDispatchClaimStore(client),
+        CloudRunJobExecutor(
+            project=project,
+            location=configuration.runtime.location,
+            job_name=os.environ.get("EVALUATION_JOB_NAME", "dmbok-compass-evaluation"),
+        ),
+    )
+    submitted = dispatcher.dispatch(
+        attempt_id=attempt_id,
+        corpus_version_id=corpus_version_id,
+        generator_fingerprint=fingerprint,
+    )
+    print(json.dumps({
+        "event": "candidate_generation_dispatch",
+        "status": "submitted" if submitted else "already_submitted",
+    }))
 
 
 def _staging_progress_callback(

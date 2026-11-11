@@ -110,6 +110,51 @@ def test_full_and_subset_runs_are_version_bound_and_retry_idempotent() -> None:
     assert full.candidate_snapshot.corpus_binding.corpus_version_id == "corpus-v2"
 
 
+def test_immutable_candidate_launch_replays_without_changing_active_dataset() -> None:
+    datasets = InMemoryEvaluationDatasetStore()
+    serving_dataset = dataset()
+    datasets.create(serving_dataset)
+    candidate = EvaluationDataset(
+        dataset_version_id="candidate-corpus-v2-r1",
+        items=[
+            EvaluationItem(item_id=f"candidate-{i}", question=f"Candidate question {i}", dataset_version_id="candidate-corpus-v2-r1")
+            for i in range(2)
+        ],
+    )
+    # Candidate rows are durably staged but deliberately do not move the
+    # legacy active-generation pointer used by serving evaluation.
+    datasets._datasets[candidate.dataset_version_id] = candidate
+    dispatcher = InMemoryEvaluationJobDispatcher()
+    job = EvaluationJobService(
+        datasets, InMemoryEvaluationRunStore(), dispatcher, SnapshotResolver()
+    )
+    snapshot = SnapshotResolver().resolve(
+        corpus_version_id="corpus-v2",
+        configuration_version_id="config-v3",
+        model_version_id="model-v4",
+    )
+    options = {
+        "dataset": candidate,
+        "corpus_version_id": "corpus-v2",
+        "configuration_version_id": "config-v3",
+        "model_version_id": "model-v4",
+        "snapshot": snapshot,
+        "run_id": "candidate-run-1",
+    }
+
+    full = job.launch_immutable_candidate(**options)
+    replay = job.launch_immutable_candidate(**options)
+    subset = job.launch_immutable_candidate(**(options | {"run_id": "candidate-run-subset", "item_ids": ["candidate-1"]}))
+
+    assert full == replay
+    assert full.selected_item_ids == ["candidate-0", "candidate-1"]
+    assert subset.selected_item_ids == ["candidate-1"]
+    assert datasets.active_dataset() == serving_dataset
+    assert set(dispatcher.dispatched) == {full.run_id, subset.run_id}
+    assert full.report_eligibility is not None
+    assert full.report_eligibility.eligibility == "exploratory"
+
+
 def test_subset_selection_rejects_empty_duplicate_and_stale_item_ids_before_dispatch() -> None:
     job, dispatcher = service()
 
@@ -493,3 +538,19 @@ def test_execute_run_fails_safely_when_current_corpus_is_unavailable() -> None:
     assert result is not None
     assert result.status == "failed"
     assert result.error == "evaluation corpus unavailable"
+
+
+def test_candidate_preparation_requires_attempt_to_bind_the_validated_corpus() -> None:
+    from app.evaluation.worker import _validate_candidate_staging_attempt
+
+    valid = {
+        "attempt_id": "attempt-1",
+        "state": "staged",
+        "staged_corpus_version_id": "corpus-1",
+    }
+    _validate_candidate_staging_attempt(valid, attempt_id="attempt-1", corpus_version_id="corpus-1")
+
+    with pytest.raises(EvaluationRunError, match="does not match its validated corpus"):
+        _validate_candidate_staging_attempt(valid, attempt_id="attempt-1", corpus_version_id="corpus-other")
+    with pytest.raises(EvaluationRunError, match="does not match its validated corpus"):
+        _validate_candidate_staging_attempt(None, attempt_id="attempt-1", corpus_version_id="corpus-1")

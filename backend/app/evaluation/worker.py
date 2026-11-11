@@ -24,8 +24,10 @@ from app.evaluation.assessments import score_assessment
 from app.evaluation.job import (
     EvaluationCandidateSnapshotResolver,
     ResolvedEvaluationCandidate,
+    ResolvedServingEvaluation,
     EvaluationOutcome,
     EvaluationRunError,
+    candidate_rows_dataset,
     EvaluationCorpusReadinessError,
     EvaluationRunStore,
     EvaluationStageStore,
@@ -122,6 +124,25 @@ class FirestoreEvaluationCandidateSnapshotResolver(EvaluationCandidateSnapshotRe
             snapshot=snapshot,
         )
 
+    def resolve_serving(self) -> ResolvedServingEvaluation:
+        generations = FirestoreEvaluationGenerationStore(self.client)
+        binding, dataset_id, snapshot, head, rows, _, configuration_version_id, model_version_id = (
+            generations.resolve_serving_revision()
+        )
+        dataset = candidate_rows_dataset(dataset_id, rows)
+        stored_dataset = generations.get(dataset_id)
+        if stored_dataset is None or stored_dataset.model_dump(mode="json") != dataset.model_dump(mode="json"):
+            raise EvaluationRunError("serving dataset does not match the approved revision")
+        return ResolvedServingEvaluation(
+            binding=binding,
+            dataset=dataset,
+            configuration_version_id=configuration_version_id,
+            model_version_id=model_version_id,
+            snapshot=snapshot,
+            head=head,
+            rows=rows,
+        )
+
 
 def execute_run(
     run_id: str,
@@ -213,8 +234,17 @@ def main() -> None:
     previous_handler = signal.signal(signal.SIGTERM, lambda *_: termination_requested.set())
     configuration = RuntimeConfiguration.from_environment()
     project = configuration.runtime.project
-    run_id = _required("EVALUATION_RUN_ID")
     client = firestore.Client(project=project)
+    task = os.environ.get("EVALUATION_TASK", "run").strip()
+    if task == "prepare_candidates":
+        try:
+            _prepare_candidate_evaluation(client, project, configuration)
+        finally:
+            signal.signal(signal.SIGTERM, previous_handler)
+        return
+    if task != "run":
+        raise EvaluationRunError("unknown evaluation task")
+    run_id = _required("EVALUATION_RUN_ID")
     datasets = FirestoreEvaluationGenerationStore(client)
     runs = FirestoreEvaluationRunStore(client)
     stages = FirestoreEvaluationStageStore(client)
@@ -262,6 +292,143 @@ def main() -> None:
         raise
     finally:
         signal.signal(signal.SIGTERM, previous_handler)
+
+
+def _prepare_candidate_evaluation(client: firestore.Client, project: str, runtime_configuration) -> None:
+    """Generate once for a validated corpus, publish its head, then launch its run."""
+    from uuid import uuid4
+
+    from app.evaluation.automatic import CandidateExplorationPublisher, candidate_generator_fingerprint
+    from app.evaluation.candidate_generation import generate_candidate_revision
+    from app.evaluation.dispatch import CloudRunCandidateGenerationDispatcher, EvaluationDispatchClaimStore
+    from app.corpus.staging import FirestoreCorpusStagingAttemptStore
+    from app.provider_allowance import ProviderAccountCapabilities
+    from app.provider_allowance_firestore import FirestoreProviderAllowanceStore
+    from app.settings import EvaluationStageConfiguration
+    from model.candidate_generation import EvaluationCandidateAdapter
+
+    attempt_id = _required("CORPUS_STAGING_ATTEMPT_ID")
+    corpus_version_id = _required("EVALUATION_CORPUS_VERSION_ID")
+    dispatch_owner_id = _required("EVALUATION_DISPATCH_OWNER_ID")
+    attempt = FirestoreCorpusStagingAttemptStore(client).get(attempt_id=attempt_id)
+    _validate_candidate_staging_attempt(attempt, attempt_id=attempt_id, corpus_version_id=corpus_version_id)
+    stage = EvaluationStageConfiguration.from_environment("GENERATOR")
+    fingerprint = candidate_generator_fingerprint(
+        stage.route, stage.model, stage.configuration_version
+    )
+    if _required("EVALUATION_GENERATOR_FINGERPRINT") != fingerprint:
+        raise EvaluationRunError("candidate generator configuration changed before preparation")
+    operation_key = CloudRunCandidateGenerationDispatcher.operation_key(corpus_version_id, fingerprint)
+    operation_claim_id = CloudRunCandidateGenerationDispatcher.claim_id(operation_key)
+    store = FirestoreEvaluationGenerationStore(client)
+    committed_head = store.operation_head(operation_key, corpus_version_id=corpus_version_id)
+    if committed_head is not None:
+        CandidateExplorationPublisher(store, _configured_evaluation_service()).launch(
+            attempt_id=attempt_id,
+            head=committed_head,
+            configuration_version_id=stage.configuration_version,
+            model_version_id=stage.model,
+        )
+        return
+    owner_id = uuid4().hex
+    if not store.claim_operation(
+        operation_key, corpus_version_id=corpus_version_id, owner_id=owner_id
+    ):
+        return
+    claims = EvaluationDispatchClaimStore(client)
+    allowances = FirestoreProviderAllowanceStore(client)
+    provider_id = "google-gemini" if stage.route == "vertex" else stage.route
+    capabilities = ProviderAccountCapabilities(
+        provider_id=provider_id,
+        account_id=stage.allowance_policy,
+        kind="generation",
+        max_units_per_operation=stage.allowance_max_units,
+        max_retries=1,
+    )
+    try:
+        reservation = allowances.stage_reservation(
+            capabilities, operation_key, stage.allowance_max_units, retries=0
+        )
+        if reservation.status != "staged":
+            store.release_operation(operation_key, owner_id=owner_id, status="awaiting_budget")
+            claims.release(operation_claim_id, owner_id=dispatch_owner_id)
+            print(json.dumps({"event": "candidate_generation_paused", "status": "awaiting_budget"}))
+            return
+        records = store.get_parse_derived_records(corpus_version_id=corpus_version_id)
+        if records is None:
+            raise EvaluationRunError("candidate corpus is not complete and validated")
+        parents, children = records
+        adapter = EvaluationCandidateAdapter(
+            route=stage.route,
+            model=stage.model,
+            timeout_ms=runtime_configuration.generation_timeout_ms,
+            max_output_tokens=runtime_configuration.output_token_cap,
+            api_key=os.environ.get("OPENROUTER_API_KEY") if stage.route == "openrouter" else None,
+            project=project,
+            location=runtime_configuration.runtime.location,
+        )
+        report = asyncio.run(generate_candidate_revision(
+            corpus_version_id=corpus_version_id,
+            children=children,
+            parents=parents,
+            corpus_store=FirestoreCorpusVersionStore(
+                client, vector_collection=runtime_configuration.vector_collection
+            ),
+            adapter=adapter,
+            generator_route=stage.route,
+            generator_model=stage.model,
+            generator_configuration_version=stage.configuration_version,
+            operation_key=operation_key,
+            operation_owner_id=owner_id,
+            allowance=reservation,
+            allowance_store=allowances,
+            allowance_capabilities=capabilities,
+            store=store,
+            target_count=200,
+        ))
+        if report.status == "awaiting_budget":
+            store.release_operation(operation_key, owner_id=owner_id, status="awaiting_budget")
+            claims.release(operation_claim_id, owner_id=dispatch_owner_id)
+            print(json.dumps({"event": "candidate_generation_paused", "status": "awaiting_budget"}))
+            return
+        if report.status != "published" or report.dataset_head is None:
+            raise EvaluationRunError("candidate dataset generation failed")
+        CandidateExplorationPublisher(store, _configured_evaluation_service()).launch(
+            attempt_id=attempt_id,
+            head=report.dataset_head,
+            configuration_version_id=stage.configuration_version,
+            model_version_id=stage.model,
+        )
+        print(json.dumps({
+            "event": "candidate_exploration_dispatched",
+            "status": "published",
+            "generated_count": report.generated_count,
+        }))
+    except Exception:
+        store.release_operation(operation_key, owner_id=owner_id, status="failed")
+        claims.release(operation_claim_id, owner_id=dispatch_owner_id)
+        raise
+
+
+def _configured_evaluation_service():
+    from app.main import get_evaluation_service
+
+    return get_evaluation_service()
+
+
+def _validate_candidate_staging_attempt(
+    attempt: dict[str, object] | None, *, attempt_id: str, corpus_version_id: str
+) -> None:
+    """Require the durable staged attempt to bind the independently supplied corpus ID."""
+    if (
+        attempt is None
+        or attempt.get("attempt_id") != attempt_id
+        or attempt.get("state") != "staged"
+        or attempt.get("staged_corpus_version_id") != corpus_version_id
+    ):
+        raise EvaluationRunError("candidate staging attempt does not match its validated corpus")
+
+
 
 
 def _pinned_answerer(project: str, run) -> RetrievedAnswerService:

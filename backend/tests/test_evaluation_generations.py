@@ -8,8 +8,8 @@ import pytest
 from google.api_core.exceptions import AlreadyExists
 
 from app.contracts import (
-    ChildDocumentChunk, CorpusServingBinding, CorpusVersion, DocumentChunk,
-    EvaluationDataset, EvaluationItem, EvaluationRun, GoldAnnotation,
+    CorpusServingBinding, CorpusVersion, DocumentChunk, EvaluationDataset,
+    EvaluationItem, EvaluationRun, GoldAnnotation,
 )
 from app.corpus.versions import hierarchical_validation_evidence
 from app.evaluation.generations import (

@@ -14,6 +14,7 @@ from typing import Any, Callable, Protocol, TypeVar
 
 from google.cloud import firestore
 from google.api_core.exceptions import AlreadyExists
+from google.cloud.firestore_v1.base_query import FieldFilter
 
 from app.contracts import (
     ActiveEvaluationGeneration,
@@ -27,7 +28,12 @@ from app.contracts import (
     EvaluationItem,
     EvaluationReportEligibility,
     GoldAnnotation,
+    ChildDocumentChunk,
+    CorpusVersion,
+    ParentChunk,
 )
+from app.corpus.indexing import PARENT_COLLECTION
+from app.corpus.versions import hierarchical_validation_evidence, validate_hierarchical_records
 from app.evaluation.dataset import (
     CandidateBindingError,
     CandidateGoldBinding,
@@ -481,6 +487,92 @@ class FirestoreEvaluationGenerationStore:
             )
         except (KeyError, TypeError, ValueError):
             raise GenerationIntegrityError("candidate chunk is invalid") from None
+
+    def get_parse_derived_records(
+        self, *, corpus_version_id: str
+    ) -> tuple[tuple[ParentChunk, ...], tuple[ChildDocumentChunk, ...]] | None:
+        """Load a complete, ready hierarchy bound to the selected corpus version."""
+        version_snapshot = self.client.collection("corpus_versions").document(corpus_version_id).get()
+        if not version_snapshot.exists:
+            return None
+        try:
+            version = CorpusVersion.model_validate(version_snapshot.to_dict())
+        except (TypeError, ValueError):
+            raise GenerationIntegrityError("selected corpus version is invalid") from None
+        evidence = version.validation_evidence
+        binding = version.serving_binding
+        if (
+            version.version_id != corpus_version_id
+            or version.status not in {"validated", "active"}
+            or binding is None
+            or binding.corpus_version_id != corpus_version_id
+            or evidence is None
+            or not evidence.index_ready
+            or not evidence.filter_ready
+        ):
+            return None
+
+        parent_records: list[ParentChunk] = []
+        parent_rows = self.client.collection(PARENT_COLLECTION).where(
+            filter=FieldFilter("corpus_version_id", "==", corpus_version_id)
+        ).stream()
+        for snapshot in parent_rows:
+            payload = snapshot.to_dict()
+            if not isinstance(payload, dict):
+                raise GenerationIntegrityError("selected corpus parent is invalid")
+            try:
+                parent_records.append(ParentChunk.model_validate({
+                    key: value for key, value in payload.items() if key != "metadata"
+                }))
+            except (TypeError, ValueError):
+                raise GenerationIntegrityError("selected corpus parent provenance is invalid") from None
+
+        child_records: list[ChildDocumentChunk] = []
+        child_rows = self.client.collection(binding.vector_collection).where(
+            filter=FieldFilter("metadata.corpus_version_id", "==", corpus_version_id)
+        ).stream()
+        for snapshot in child_rows:
+            payload = snapshot.to_dict()
+            metadata = payload.get("metadata") if isinstance(payload, dict) else None
+            if not isinstance(metadata, dict) or not {
+                "schema_version", "chunk_id", "corpus_version_id", "parent_id", "section_path",
+                "page_start", "page_end", "source_spans", "child_ordinal", "content_hash",
+                "token_count", "corpus_manifest_sha256", "derivation_sha256",
+            }.issubset(metadata):
+                raise GenerationIntegrityError("selected corpus child lacks bound provenance")
+            if (
+                metadata.get("corpus_manifest_sha256") != binding.ingestion_fingerprint
+                or metadata.get("derivation_sha256") != binding.configuration_fingerprint
+            ):
+                raise GenerationIntegrityError("selected corpus child has a conflicting corpus binding")
+            try:
+                child = ChildDocumentChunk.model_validate({
+                    **{key: metadata[key] for key in (
+                        "schema_version", "chunk_id", "corpus_version_id", "parent_id", "section_path",
+                        "page_start", "page_end", "source_spans", "source_text", "child_ordinal",
+                        "content_hash", "token_count",
+                    ) if key in metadata},
+                    "text": payload["text"],
+                })
+            except (KeyError, TypeError, ValueError):
+                raise GenerationIntegrityError("selected corpus child provenance is invalid") from None
+            snapshot_id = getattr(snapshot, "id", child.chunk_id)
+            if snapshot_id != child.chunk_id:
+                raise GenerationIntegrityError("selected corpus child ID is not deterministic")
+            child_records.append(child)
+
+        parents = tuple(parent_records)
+        children = tuple(child_records)
+        try:
+            validate_hierarchical_records(corpus_version_id, parents, children)
+            recomputed = hierarchical_validation_evidence(
+                version, parents, children, index_ready=True, filter_ready=True
+            )
+        except (TypeError, ValueError):
+            raise GenerationIntegrityError("selected corpus hierarchy is incomplete") from None
+        if recomputed != evidence:
+            raise GenerationIntegrityError("selected corpus hierarchy differs from readiness evidence")
+        return parents, children
 
     def bind_candidate_review(
         self,

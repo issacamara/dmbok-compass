@@ -2,11 +2,16 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 import pytest
 from google.api_core.exceptions import AlreadyExists
 
-from app.contracts import DocumentChunk, EvaluationDataset, EvaluationItem, EvaluationRun, GoldAnnotation
+from app.contracts import (
+    ChildDocumentChunk, CorpusServingBinding, CorpusVersion, DocumentChunk,
+    EvaluationDataset, EvaluationItem, EvaluationRun, GoldAnnotation,
+)
+from app.corpus.versions import hierarchical_validation_evidence
 from app.evaluation.generations import (
     ConcurrentActivationError,
     FirestoreEvaluationGenerationStore,
@@ -14,11 +19,13 @@ from app.evaluation.generations import (
 )
 from app.evaluation.dataset import CandidateGoldBinding, remap_gold_annotations
 from app.evaluation.job import EvaluationRunError, FirestoreEvaluationRunStore
+from test_candidate_generation import source_records
 
 
 @dataclass
 class FakeSnapshot:
     data: dict[str, object] | None
+    id: str | None = None
 
     @property
     def exists(self) -> bool:
@@ -56,17 +63,27 @@ class FakeDocument:
 class FakeCollection:
     client: "FakeFirestore"
     path: str
+    filters: tuple[tuple[str, object], ...] = ()
 
     def document(self, document_id: str) -> FakeDocument:
         return FakeDocument(self.client, f"{self.path}/{document_id}")
 
     def stream(self) -> list[FakeSnapshot]:
         depth = self.path.count("/") + 1
-        return [
-            FakeSnapshot(data)
-            for path, data in self.client.data.items()
-            if path.startswith(f"{self.path}/") and path.count("/") == depth
-        ]
+        rows = []
+        for path, data in self.client.data.items():
+            if not (path.startswith(f"{self.path}/") and path.count("/") == depth):
+                continue
+            if all(_field_value(data, field_path) == expected for field_path, expected in self.filters):
+                rows.append(FakeSnapshot(data, id=path.rsplit("/", 1)[-1]))
+        return rows
+
+    def where(self, *, filter):  # type: ignore[no-untyped-def]
+        return FakeCollection(
+            self.client,
+            self.path,
+            (*self.filters, (filter.field_path, filter.value)),
+        )
 
 
 @dataclass
@@ -110,6 +127,71 @@ class FakeFirestore:
 
     def transaction(self) -> FakeTransaction:
         return FakeTransaction(self, deepcopy(self.data))
+
+
+def _field_value(data: dict[str, object], field_path: str) -> object:
+    value: object = data
+    for part in field_path.split("."):
+        if not isinstance(value, dict):
+            return None
+        value = value.get(part)
+    return value
+
+
+def test_parse_derived_record_lookup_rechecks_corpus_binding_and_isolation() -> None:
+    children, parents = source_records()
+    corpus_id = parents[0].corpus_version_id
+    binding = CorpusServingBinding(
+        corpus_version_id=corpus_id,
+        vector_collection="document_chunks_v2",
+        vector_schema_version="2",
+        embedding_model="embedding-model",
+        embedding_dimensions=768,
+        ingestion_fingerprint="a" * 64,
+        configuration_fingerprint="b" * 64,
+    )
+    staged = CorpusVersion(
+        version_id=corpus_id,
+        source_uri="gs://corpus/source.pdf",
+        embedding_model="embedding-model",
+        created_at=datetime.now(timezone.utc),
+        status="validated",
+        serving_binding=binding,
+    )
+    ready = hierarchical_validation_evidence(staged, parents, children, index_ready=True, filter_ready=True)
+    version = staged.model_copy(update={"validation_evidence": ready})
+    firestore = FakeFirestore()
+    firestore.data[f"corpus_versions/{corpus_id}"] = version.model_dump(mode="json")
+    for parent in parents:
+        firestore.data[f"corpus_parent_chunks/{parent.parent_id}"] = parent.model_dump(mode="json")
+    for child in children:
+        firestore.data[f"document_chunks_v2/{child.chunk_id}"] = {
+            "text": child.text,
+            "embedding": [0.0] * 768,
+            "metadata": {
+                **child.model_dump(mode="json", exclude={"text"}),
+                "corpus_manifest_sha256": binding.ingestion_fingerprint,
+                "derivation_sha256": binding.configuration_fingerprint,
+            },
+        }
+    foreign = children[0].model_copy(update={"chunk_id": "foreign", "corpus_version_id": "other-corpus"})
+    firestore.data["document_chunks_v2/foreign"] = {
+        "text": foreign.text,
+        "embedding": [0.0] * 768,
+        "metadata": {
+            **foreign.model_dump(mode="json", exclude={"text"}),
+            "corpus_manifest_sha256": binding.ingestion_fingerprint,
+            "derivation_sha256": binding.configuration_fingerprint,
+        },
+    }
+
+    parents_found, children_found = FirestoreEvaluationGenerationStore(
+        firestore, transaction_runner=run_fake_transaction
+    ).get_parse_derived_records(corpus_version_id=corpus_id)
+
+    assert parents_found == parents
+    assert children_found == children
+    assert all(child.corpus_version_id == corpus_id for child in children_found)
 
 
 def run_fake_transaction(transaction: FakeTransaction, callback):  # type: ignore[no-untyped-def]

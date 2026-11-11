@@ -16,9 +16,11 @@ from app.evaluation import (
     EvaluationDispatchError,
     FirestoreEvaluationGenerationStore,
 )
+from app.evaluation.legacy_import_binding import bind_legacy_imports
 from app.identity import IdentityError, get_admin_user
 from app.main import app
 from test_evaluation_generations import FakeFirestore, run_fake_transaction
+from test_candidate_generation import source_records
 
 
 def _admin() -> UserProfile:
@@ -114,6 +116,66 @@ def test_imports_valid_records_and_reports_invalid_indices_without_content() -> 
     assert service.calls == 1
 
 
+def test_legacy_import_binds_unique_parse_span_and_keeps_unmatched_indexed() -> None:
+    children, parents = source_records()
+    records = (
+        (0, "import-0", "What is data quality?", "definitions", "Explain it.", "Data quality requires clear ownership."),
+        (1, "import-1", "What is governance?", "definitions", "Explain it.", "not present in this corpus"),
+    )
+    bound, errors = bind_legacy_imports(records, parents=parents, children=children)
+
+    assert [item.index for item in bound] == [0]
+    assert bound[0].row.source_spans[0].span_id == "span-21-0"
+    assert bound[0].row.source_spans[0].block_id == "block-21-0"
+    assert bound[0].row.source_spans[0].raw_text == "Data quality requires clear ownership."
+    assert bound[0].row.relevant_child_ids == (children[0].chunk_id,)
+    assert bound[0].row.parent_ids == (parents[0].parent_id,)
+    assert [(error.index, error.code) for error in errors] == [(1, "unmatched_supporting_passage")]
+
+
+def test_legacy_import_rejects_ambiguous_or_cross_corpus_matches() -> None:
+    children, parents = source_records()
+    duplicate = children[0].model_copy(update={"chunk_id": "another-child", "child_ordinal": 1})
+    other_corpus = children[0].model_copy(update={"chunk_id": "foreign-child", "corpus_version_id": "other-corpus"})
+    record = (0, "import-0", "What is data quality?", "definitions", "Explain it.", "Data quality requires clear ownership.")
+
+    ambiguous, errors = bind_legacy_imports((record,), parents=parents, children=(children[0], duplicate, other_corpus))
+
+    assert not ambiguous
+    assert [(error.index, error.code) for error in errors] == [(0, "ambiguous_supporting_passage")]
+
+
+def test_import_publishes_only_uniquely_bound_rows_to_row_v2() -> None:
+    firestore = FakeFirestore()
+    repository = _store(firestore)
+    children, parents = source_records()
+    repository.get_parse_derived_records = lambda *, corpus_version_id: (parents, children)
+    app.dependency_overrides[get_admin_user] = _admin
+    app.dependency_overrides[evaluation_generation_store] = lambda: repository
+    service = _service()
+    try:
+        response = _post(TestClient(app), [_record(supporting_passage="Data quality requires clear ownership."), _record(
+            question="No corpus match?", supporting_passage="not in the source"
+        )])
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == status.HTTP_201_CREATED
+    body = response.json()
+    assert body["row_v2_head"]["corpus_version_id"] == "uploaded-corpus"
+    assert body["row_v2_head"]["revision"] == 1
+    assert [(error["index"], error["code"]) for error in body["binding_errors"]] == [
+        (1, "unmatched_supporting_passage")
+    ]
+    revision = repository.get_revision(repository.corpus_head("uploaded-corpus"))
+    assert len(revision) == 1
+    assert revision[0].origin == "imported"
+    assert revision[0].source_spans[0].block_id == "block-21-0"
+    assert revision[0].relevant_child_ids == (children[0].chunk_id,)
+    assert revision[0].parent_ids == (parents[0].parent_id,)
+    assert service.calls == 1
+
+
 def test_rejections_and_storage_failures_leave_existing_active_generation_unchanged() -> None:
     firestore = FakeFirestore()
     repository = _store(firestore)
@@ -125,8 +187,13 @@ def test_rejections_and_storage_failures_leave_existing_active_generation_unchan
         created = _post(TestClient(app), [first])
         active_id = created.json()["generation_id"]
         rejected = _post(TestClient(app), [_record(question="")])
+        children, parents = source_records()
+        repository.get_parse_derived_records = lambda *, corpus_version_id: (parents, children)
         firestore.fail_next_batch = True
-        failed = _post(TestClient(app), [_record(question="A different question")])
+        failed = _post(TestClient(app), [_record(
+            question="A different question",
+            supporting_passage="Data quality requires clear ownership.",
+        )])
     finally:
         app.dependency_overrides.clear()
 
@@ -134,6 +201,7 @@ def test_rejections_and_storage_failures_leave_existing_active_generation_unchan
     assert rejected.json()["status"] == "rejected"
     assert failed.status_code == status.HTTP_503_SERVICE_UNAVAILABLE
     assert firestore.data["evaluation_dataset_state/active"]["generation_id"] == active_id
+    assert repository.corpus_head("uploaded-corpus") is None
 
 
 def test_dispatch_failure_exposes_only_bounded_provider_diagnostics() -> None:

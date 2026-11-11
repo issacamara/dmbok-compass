@@ -24,6 +24,7 @@ from app.contracts import (
     UserProfile,
     ReviewDecision,
     DocumentChunk,
+    DatasetHead,
 )
 from app.evaluation import (
     ConcurrentActivationError,
@@ -42,6 +43,7 @@ from app.evaluation.dataset import (
     CandidateGoldReview,
     GoldAnnotationRemap,
 )
+from app.evaluation.legacy_import_binding import bind_legacy_imports
 from app.identity import get_admin_user
 from app.corpus.selection import uploaded_corpus_version_id
 
@@ -57,6 +59,8 @@ class EvaluationUploadRunResponse(EvaluationImportResponse):
     """Import summary plus the asynchronously dispatched run identity."""
 
     run_id: str | None = Field(default=None, min_length=1, max_length=128)
+    row_v2_head: DatasetHead | None = None
+    binding_errors: list["ImportBindingValidationError"] = Field(default_factory=list, max_length=MAX_EVALUATION_IMPORT_ITEMS)
 
     @model_validator(mode="after")
     def validate_run_id(self) -> "EvaluationUploadRunResponse":
@@ -65,6 +69,14 @@ class EvaluationUploadRunResponse(EvaluationImportResponse):
         if self.status == "rejected" and self.run_id is not None:
             raise ValueError("rejected uploads cannot have a run_id")
         return self
+
+
+class ImportBindingValidationError(BaseModel):
+    """Content-free indexed guidance for a legacy passage that cannot be bound."""
+
+    index: int = Field(ge=0)
+    code: str = Field(min_length=1, max_length=64)
+    message: str = Field(min_length=1, max_length=500)
 
 
 class EvaluationGenerationStore(Protocol):
@@ -187,6 +199,7 @@ async def upload_and_run_evaluation(
     generation_id = f"generation-{uuid4().hex}"
     valid_items: list[EvaluationItem] = []
     valid_annotations: list[GoldAnnotation] = []
+    valid_imports: list[tuple[int, EvaluationItem, GoldAnnotation]] = []
     errors: list[ImportValidationError] = []
     for index, record in enumerate(submitted):
         parsed, error = _validate_record(record, index, generation_id)
@@ -196,6 +209,7 @@ async def upload_and_run_evaluation(
             item, annotation = parsed
             valid_items.append(item)
             valid_annotations.append(annotation)
+            valid_imports.append((index, item, annotation))
 
     if not valid_items:
         response.status_code = status.HTTP_200_OK
@@ -212,6 +226,45 @@ async def upload_and_run_evaluation(
         items=valid_items,
         gold_annotations=valid_annotations,
     )
+
+    # Keep the legacy exploratory dataset intact. Only uniquely matched rows
+    # enter the corpus-scoped row-v2 publication path.
+    binding_errors: list[ImportBindingValidationError] = []
+    row_v2_head: DatasetHead | None = None
+    bound_rows = ()
+    record_loader = getattr(store, "get_parse_derived_records", None)
+    if not callable(record_loader):
+        binding_errors = [ImportBindingValidationError(
+            index=index,
+            code="parse_evidence_unavailable",
+            message="Verified parse-derived evidence is unavailable for this selected corpus.",
+        ) for index, _, _ in valid_imports]
+    else:
+        try:
+            parsed_records = record_loader(corpus_version_id=_uploaded_corpus_version_id)
+        except Exception:
+            parsed_records = None
+        if parsed_records is None:
+            binding_errors = [ImportBindingValidationError(
+                index=index,
+                code="parse_evidence_unavailable",
+                message="Verified parse-derived evidence is unavailable for this selected corpus.",
+            ) for index, _, _ in valid_imports]
+        else:
+            parents, children = parsed_records
+            import_rows = tuple(
+                (index, item.item_id, item.question, item.category, annotation.expected_answer_or_rubric,
+                 annotation.supporting_passage or "")
+                for index, item, annotation in valid_imports
+            )
+            bound, unresolved = bind_legacy_imports(
+                import_rows, parents=tuple(parents), children=tuple(children)
+            )
+            binding_errors = [
+                ImportBindingValidationError(index=issue.index, code=issue.code, message=issue.message)
+                for issue in unresolved
+            ]
+            bound_rows = bound
     try:
         active = store.active()
         expected_active_id = active.generation_id if active is not None else None
@@ -227,6 +280,57 @@ async def upload_and_run_evaluation(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={"code": "evaluation_import_storage_failed", "message": "The evaluation import could not be stored."},
         ) from exc
+
+    # Publish v2 only after the compatible legacy import has committed, so a
+    # failed legacy write cannot leave a new v2 head behind.
+    if bound_rows:
+        revision_methods = (
+            getattr(store, "corpus_head", None),
+            getattr(store, "stage_revision", None),
+            getattr(store, "activate_revision", None),
+        )
+        if not all(callable(method) for method in revision_methods):
+            binding_errors.extend(
+                ImportBindingValidationError(
+                    index=entry.index,
+                    code="row_v2_publication_unavailable",
+                    message="The row-v2 revision store is unavailable; retry these indexed rows.",
+                )
+                for entry in bound_rows
+            )
+        else:
+            try:
+                previous = revision_methods[0](_uploaded_corpus_version_id)
+                next_revision = previous.revision + 1 if previous is not None else 1
+                staged_head = revision_methods[1](
+                    _uploaded_corpus_version_id,
+                    next_revision,
+                    tuple(entry.row for entry in bound_rows),
+                )
+                row_v2_head = revision_methods[2](
+                    staged_head,
+                    expected_revision=previous.revision if previous is not None else None,
+                )
+            except ConcurrentActivationError:
+                row_v2_head = None
+                binding_errors.extend(
+                    ImportBindingValidationError(
+                        index=entry.index,
+                        code="row_v2_revision_conflict",
+                        message="The row-v2 revision changed during import; retry these indexed rows.",
+                    )
+                    for entry in bound_rows
+                )
+            except Exception:
+                row_v2_head = None
+                binding_errors.extend(
+                    ImportBindingValidationError(
+                        index=entry.index,
+                        code="row_v2_publication_failed",
+                        message="The row-v2 revision could not be saved; retry these indexed rows.",
+                    )
+                    for entry in bound_rows
+                )
 
     try:
         run = service.launch(item_ids=None)
@@ -263,6 +367,8 @@ async def upload_and_run_evaluation(
         imported_count=len(valid_items),
         skipped_count=len(errors),
         validation_errors=errors,
+        row_v2_head=row_v2_head,
+        binding_errors=binding_errors,
     )
 
 

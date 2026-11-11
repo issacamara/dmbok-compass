@@ -234,7 +234,25 @@ def parent_chunk(version_id: str = "v1") -> ParentChunk:
 
 def test_firestore_parent_store_round_trips_source_spans_and_nested_manifest_metadata() -> None:
     client = FakeFirestore()
-    parent = parent_chunk("v2")
+    original = parent_chunk("v2")
+    spans = [
+        span.model_copy(update={
+            "span_id": f"span-{index}",
+            "block_id": f"block-{index}",
+            "block_order": index,
+            "printed_page_label": f"label-{span.page}",
+        })
+        for index, span in enumerate(original.source_spans)
+    ]
+    parent_text = "Section: Chapter > Section\n" + "\n".join(span.text for span in spans)
+    parent = original.model_copy(update={
+        "source_spans": spans,
+        "source_text": "\n".join(span.text for span in spans),
+        "table_header": "| Name | Value |\n| --- | --- |",
+        "text": parent_text,
+        "content_hash": sha256(parent_text.encode()).hexdigest(),
+        "token_count": _token_count(parent_text),
+    })
     metadata = {
         "source_uri": "gs://corpus/source.pdf#7",
         "corpus_manifest": {"derivation": {"version": "hierarchical-corpus-v1"}},
@@ -248,6 +266,9 @@ def test_firestore_parent_store_round_trips_source_spans_and_nested_manifest_met
     )
     assert restored == parent
     assert [span.page for span in restored.source_spans] == [1, 2]
+    assert [span.block_id for span in restored.source_spans] == ["block-0", "block-1"]
+    assert restored.source_text == "one\ntwo"
+    assert restored.table_header == "| Name | Value |\n| --- | --- |"
     assert record["metadata"] == metadata
     assert "embedding" not in record
 

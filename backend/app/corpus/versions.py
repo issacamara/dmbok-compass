@@ -316,7 +316,7 @@ def validate_hierarchical_records(
         if parent.parent_id in parent_by_id:
             raise CorpusCompletenessError("hierarchical corpus contains duplicate parent IDs")
         _validate_record_text(
-            parent.text, parent.source_spans, parent.content_hash, parent.token_count,
+            parent.text, parent.source_text, parent.source_spans, parent.content_hash, parent.token_count,
             PARENT_MAX_TOKENS, _token_count, "parent",
         )
         parent_by_id[parent.parent_id] = parent
@@ -339,7 +339,7 @@ def validate_hierarchical_records(
         ):
             raise CorpusCompletenessError("child provenance does not match its parent")
         _validate_record_text(
-            child.text, child.source_spans, child.content_hash, child.token_count,
+            child.text, child.source_text, child.source_spans, child.content_hash, child.token_count,
             CHILD_MAX_TOKENS, _token_count, "child",
         )
         children_by_parent.setdefault(parent.parent_id, []).append(child)
@@ -351,7 +351,7 @@ def validate_hierarchical_records(
         if [child.child_ordinal for child in linked] != list(range(len(linked))):
             raise CorpusCompletenessError("child ordinals must be contiguous within each parent")
         child_span_order = [
-            (span.page, span.start_offset, span.end_offset)
+            (span.page, span.block_order if span.block_order is not None else -1, span.start_offset, span.end_offset)
             for child in linked
             for span in child.source_spans
         ]
@@ -365,10 +365,11 @@ def validate_hierarchical_records(
                     for child in linked
                     for span in child.source_spans
                     if span.page == parent_span.page
+                    and span.block_id == parent_span.block_id
                     and parent_span.start_offset <= span.start_offset
                     and span.end_offset <= parent_span.end_offset
                 ),
-                key=lambda span: span.start_offset,
+                key=lambda span: (span.block_order if span.block_order is not None else -1, span.start_offset),
             )
             cursor = parent_span.start_offset
             text_parts: list[str] = []
@@ -387,6 +388,7 @@ def validate_hierarchical_records(
 
 def _validate_record_text(
     text: str,
+    source_text: str | None,
     spans: Sequence[Any],
     content_hash: str,
     token_count: int,
@@ -394,8 +396,10 @@ def _validate_record_text(
     count_tokens: Any,
     kind: str,
 ) -> None:
-    expected_text = "\n".join(span.text for span in spans)
-    if text != expected_text:
+    expected_source_text = "\n".join(span.text for span in spans)
+    if source_text is not None and source_text != expected_source_text:
+        raise CorpusCompletenessError(f"{kind} source text does not reconstruct from its source spans")
+    if source_text is None and text != expected_source_text:
         raise CorpusCompletenessError(f"{kind} text does not match its source spans")
     if sha256(text.encode("utf-8")).hexdigest() != content_hash:
         raise CorpusCompletenessError(f"{kind} content hash does not match its text")
@@ -421,7 +425,9 @@ def hierarchical_provenance_sha256(
             "section_path": list(parent.section_path),
             "page_start": parent.page_start,
             "page_end": parent.page_end,
-            "source_spans": [span.model_dump(mode="json") for span in parent.source_spans],
+            "source_text": parent.source_text,
+            "table_header": parent.table_header,
+            "source_spans": [span.model_dump(mode="json", exclude_none=True) for span in parent.source_spans],
         }
         for parent in sorted(parents, key=lambda item: item.parent_id)
     ] + [
@@ -433,7 +439,8 @@ def hierarchical_provenance_sha256(
             "page_start": child.page_start,
             "page_end": child.page_end,
             "child_ordinal": child.child_ordinal,
-            "source_spans": [span.model_dump(mode="json") for span in child.source_spans],
+            "source_text": child.source_text,
+            "source_spans": [span.model_dump(mode="json", exclude_none=True) for span in child.source_spans],
         }
         for child in sorted(children, key=lambda item: item.chunk_id)
     ]

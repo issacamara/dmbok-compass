@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.contracts import CorpusVersion, StructureMap, StructureMapEntry
+from app.contracts.v29 import ParsedBlock, ParsingArtifact
 from app.corpus import InMemoryCorpusVersionStore, TextChunk, create_source_manifest
 from app.ingestion import entrypoint
 from app.ingestion.extract import ExtractionReport, PageProvenance
@@ -260,6 +261,92 @@ def _candidate_args():
         "vector_collection": "document_chunks_v2",
         "extract": _report,
     }
+
+
+def _parsing_candidate_args():
+    parsing = ParsingArtifact(
+        source_generation="7",
+        source_sha256=SOURCE_SHA256,
+        output_sha256="f" * 64,
+        blocks=(
+            ParsedBlock(block_id="b1", physical_page=1, reading_order=0, kind="text", raw_text="# Chapter 1\nFirst reviewed passage."),
+            ParsedBlock(block_id="b2", physical_page=2, reading_order=1, kind="text", raw_text="Second reviewed passage."),
+        ),
+    )
+    structure_map = StructureMap(
+        map_id="reviewed-map",
+        source_sha256=SOURCE_SHA256,
+        parsing_output_sha256=parsing.output_sha256,
+        content_hash="b" * 64,
+        entries=[StructureMapEntry(
+            section_path=("Chapter 1",), page_start=1, page_end=2, block_ids=("b1", "b2")
+        )],
+    )
+    map_bytes = json.dumps(structure_map.model_dump(mode="json"), sort_keys=True).encode()
+    map_sha256 = hashlib.sha256(map_bytes).hexdigest()
+    approval = {
+        "schema_version": "corpus-owner-approval-v1",
+        "decision": "approved",
+        "source": {"uri": "gs://corpus/source/dmbok.pdf#7", "generation": 7, "sha256": SOURCE_SHA256},
+        "map": {
+            "artifact_uri": "gs://corpus/maps/reviewed.json", "content_hash": structure_map.content_hash,
+            "file_sha256": map_sha256, "generation": "12", "map_id": structure_map.map_id,
+            "schema_version": structure_map.schema_version,
+        },
+        "ingestion_gate": INGESTION_GATE,
+    }
+    approval_bytes = json.dumps(approval, sort_keys=True).encode()
+    return {
+        "source_manifest": _source_manifest(),
+        "map_bytes": map_bytes,
+        "map_uri": MAP_URI,
+        "expected_map_sha256": map_sha256,
+        "approval_bytes": approval_bytes,
+        "approval_uri": APPROVAL_URI,
+        "expected_approval_sha256": hashlib.sha256(approval_bytes).hexdigest(),
+        "vector_collection": "document_chunks_v2",
+        "parsing_artifact_bytes": parsing.model_dump_json().encode(),
+        "expected_parsing_artifact_sha256": hashlib.sha256(parsing.model_dump_json().encode()).hexdigest(),
+        "expected_parsing_output_sha256": parsing.output_sha256,
+        "extract": lambda: pytest.fail("pinned parsing artifact must be used"),
+    }
+
+
+def test_pinned_parsing_artifact_builds_candidate_from_reviewed_block_spans():
+    first = entrypoint.build_hierarchical_candidate(**_parsing_candidate_args())
+    second = entrypoint.build_hierarchical_candidate(**_parsing_candidate_args())
+
+    assert first.parents == second.parents
+    assert first.children == second.children
+    spans = first.parents[0].source_spans
+    assert [span.text for span in spans] == [
+        "# Chapter 1", "First reviewed passage.", "Second reviewed passage."
+    ]
+    assert [(span.page, span.start_offset, span.end_offset) for span in spans] == [
+        (1, 0, 11), (1, 12, 35), (2, 0, 24)
+    ]
+
+
+@pytest.mark.parametrize("field,value", [
+    ("expected_parsing_artifact_sha256", "0" * 64),
+    ("expected_parsing_output_sha256", "0" * 64),
+])
+def test_pinned_parsing_artifact_digest_mismatch_is_rejected(field, value):
+    args = _parsing_candidate_args()
+    args[field] = value
+
+    with pytest.raises(RuntimeError, match="SHA-256 verification failed"):
+        entrypoint.build_hierarchical_candidate(**args)
+
+
+def test_block_reviewed_map_cannot_fall_back_to_pdf_reextraction():
+    args = _parsing_candidate_args()
+    del args["parsing_artifact_bytes"]
+    del args["expected_parsing_artifact_sha256"]
+    del args["expected_parsing_output_sha256"]
+
+    with pytest.raises(RuntimeError, match="requires its pinned parsing artifact"):
+        entrypoint.build_hierarchical_candidate(**args)
 
 
 def test_source_download_is_pinned_to_reloaded_generation(tmp_path) -> None:

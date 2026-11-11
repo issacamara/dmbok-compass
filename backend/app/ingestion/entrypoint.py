@@ -18,11 +18,13 @@ from typing import Any
 from google.cloud import firestore, storage
 
 from app.contracts import ChildDocumentChunk, CorpusServingBinding, CorpusVersion, ParentChunk, StructureMap
-from app.corpus.chunking import ParentReviewException, segment_children, segment_parents
+from app.contracts.v29 import ParsingArtifact
+from app.corpus.chunking import ParentReviewException, build_llamaindex_nodes, segment_children, segment_parents
 from app.corpus.firestore import FirestoreCorpusVersionStore, FirestoreParentChunkStore
 from app.corpus.indexing import HierarchicalCorpusWriter, VECTOR_SCHEMA_VERSION
 from app.corpus.manifest import SourceManifest, create_source_manifest, hierarchical_derivation
 from app.corpus.staging import FirestoreCorpusStagingAttemptStore
+from app.corpus.structure_map import sections_from_parsing_artifact
 from app.ingestion.extract import ExtractionReport, extract_pdf, recover_logical_sections
 from app.ingestion.job import CorpusIngestionJob, IngestionInterrupted
 from app.rag import LangChainRagFactory, LangChainRagSettings
@@ -105,6 +107,16 @@ def _run(termination_requested: Callable[[], bool]) -> None:
                 "CORPUS_STRUCTURE_MAP_APPROVAL_URI",
                 "CORPUS_STRUCTURE_MAP_APPROVAL_SHA256",
             )
+            parsing_bytes = None
+            parsing_artifact_sha256 = None
+            parsing_output_sha256 = None
+            if os.environ.get("CORPUS_PARSING_ARTIFACT_URI"):
+                parsing_bytes, _, parsing_artifact_sha256 = _read_pinned_object(
+                    storage_client,
+                    "CORPUS_PARSING_ARTIFACT_URI",
+                    "CORPUS_PARSING_ARTIFACT_SHA256",
+                )
+                parsing_output_sha256 = _required("CORPUS_PARSING_OUTPUT_SHA256")
         except BaseException as error:
             if progress is not None:
                 progress(
@@ -122,6 +134,9 @@ def _run(termination_requested: Callable[[], bool]) -> None:
                 approval_bytes=approval_bytes,
                 approval_uri=approval_uri,
                 expected_approval_sha256=approval_sha256,
+                parsing_artifact_bytes=parsing_bytes,
+                expected_parsing_artifact_sha256=parsing_artifact_sha256,
+                expected_parsing_output_sha256=parsing_output_sha256,
                 vector_collection=configuration.vector_collection,
                 extract=lambda: extract_pdf(source_path, source_uri=source_manifest.object_uri),
                 termination_requested=termination_requested,
@@ -250,6 +265,7 @@ class HierarchicalCorpusCandidate:
     children: tuple[ChildDocumentChunk, ...]
     exceptions: tuple[ParentReviewException, ...]
     ingestion_gate: dict[str, Any]
+    llamaindex_nodes: tuple[object, ...] = ()
 
 
 def build_hierarchical_candidate(
@@ -262,6 +278,9 @@ def build_hierarchical_candidate(
     approval_uri: str,
     expected_approval_sha256: str,
     vector_collection: str,
+    parsing_artifact_bytes: bytes | None = None,
+    expected_parsing_artifact_sha256: str | None = None,
+    expected_parsing_output_sha256: str | None = None,
     extract: Callable[[], ExtractionReport],
 ) -> HierarchicalCorpusCandidate:
     """Verify immutable source/map approval and build deterministic parent/child data."""
@@ -280,10 +299,32 @@ def build_hierarchical_candidate(
         map_uri=map_uri,
         map_sha256=map_sha256,
     )
-    report = extract()
-    if report.source_uri != source_manifest.object_uri or report.source_sha256 != source_manifest.content_sha256:
-        raise RuntimeError("Extracted PDF identity does not match its immutable source manifest.")
-    sections = recover_logical_sections(report, structure_map)
+    if parsing_artifact_bytes is not None:
+        if expected_parsing_artifact_sha256 is None or expected_parsing_output_sha256 is None:
+            raise RuntimeError("Pinned parsing artifact digests are incomplete.")
+        _verify_digest(parsing_artifact_bytes, expected_parsing_artifact_sha256, "parsing artifact")
+        try:
+            parsing = ParsingArtifact.model_validate_json(parsing_artifact_bytes)
+        except ValueError as error:
+            raise RuntimeError("Pinned parsing artifact has invalid JSON or schema.") from error
+        if parsing.output_sha256 != expected_parsing_output_sha256:
+            raise RuntimeError("Pinned parsing output SHA-256 verification failed.")
+        try:
+            sections = sections_from_parsing_artifact(
+                structure_map,
+                parsing,
+                source_generation=source_manifest.generation,
+                source_sha256=source_manifest.content_sha256,
+            )
+        except ValueError as error:
+            raise RuntimeError("Pinned parsing artifact and reviewed structure map are inconsistent.") from error
+    else:
+        if structure_map.parsing_output_sha256 is not None:
+            raise RuntimeError("Reviewed block map requires its pinned parsing artifact.")
+        report = extract()
+        if report.source_uri != source_manifest.object_uri or report.source_sha256 != source_manifest.content_sha256:
+            raise RuntimeError("Extracted PDF identity does not match its immutable source manifest.")
+        sections = recover_logical_sections(report, structure_map)
     map_bucket, map_object, map_generation = _parse_gcs_uri(map_uri)
     approval_bucket, approval_object, approval_generation = _parse_gcs_uri(approval_uri)
     derivation = hierarchical_derivation(
@@ -309,6 +350,7 @@ def build_hierarchical_candidate(
     children = segment_children(segmented.parents)
     if not segmented.parents or not children:
         raise RuntimeError("The approved structure map produced no hierarchical chunks.")
+    llamaindex_nodes = build_llamaindex_nodes(segmented.parents, children)
     version = CorpusVersion(
         version_id=manifest.corpus_version_id,
         source_uri=manifest.object_uri,
@@ -332,6 +374,7 @@ def build_hierarchical_candidate(
         children=children,
         exceptions=segmented.exceptions,
         ingestion_gate=ingestion_gate,
+        llamaindex_nodes=llamaindex_nodes,
     )
 
 
@@ -355,6 +398,7 @@ def build_and_stage_hierarchical_candidate(
         children=candidate.children,
         exceptions=candidate.exceptions,
         ingestion_gate=candidate.ingestion_gate,
+        llamaindex_nodes=candidate.llamaindex_nodes,
     )
 
 

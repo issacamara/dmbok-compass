@@ -111,6 +111,55 @@ class LogicalSection:
         return "\n".join(span.text for span in self.source_spans)
 
 
+def sections_from_parsing_artifact(
+    structure_map: StructureMap,
+    parsing: ParsingArtifact,
+    *,
+    source_generation: int,
+    source_sha256: str,
+) -> tuple[LogicalSection, ...]:
+    """Build sections from the pinned parse blocks selected by the reviewed map."""
+
+    if (
+        parsing.source_sha256 != source_sha256
+        or str(parsing.source_generation) != str(source_generation)
+        or structure_map.source_sha256 != source_sha256
+        or structure_map.parsing_output_sha256 != parsing.output_sha256
+    ):
+        raise ValueError("reviewed structure map and parsing artifact do not match the pinned source")
+    validate_block_structure_map(parsing, structure_map)
+    reviewed_order = [block_id for entry in structure_map.entries for block_id in entry.block_ids]
+    parsed_order = [block.block_id for block in parsing.blocks]
+    if reviewed_order != parsed_order:
+        raise ValueError("reviewed structure map block order does not match the parsing artifact")
+    by_id = {block.block_id: block for block in parsing.blocks}
+    sections: list[LogicalSection] = []
+    for entry in structure_map.entries:
+        blocks = [by_id[block_id] for block_id in entry.block_ids]
+        if not blocks or entry.page_start != min(block.physical_page for block in blocks) or entry.page_end != max(
+            block.physical_page for block in blocks
+        ):
+            raise ValueError("reviewed structure map page bounds do not contain its blocks")
+        spans = tuple(
+            SourceSpan(
+                page=block.physical_page,
+                start_offset=0,
+                end_offset=len(block.raw_text),
+                text=block.raw_text,
+                span_id=block.block_id,
+                block_id=block.block_id,
+                block_order=block.reading_order,
+                printed_page_label=block.printed_page_label,
+                block_kind=block.kind,
+                table_rows=block.table_rows,
+                list_items=block.list_items,
+            )
+            for block in blocks
+        )
+        sections.append(LogicalSection(entry.section_path, spans))
+    return tuple(sections)
+
+
 def sections_from_pages(
     structure_map: StructureMap,
     *,

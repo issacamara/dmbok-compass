@@ -62,12 +62,16 @@ describe("frozen API contracts", () => {
         page_end: 3,
         match_status: "matched",
         correction_codes: [],
+        block_ids: ["block-1"],
+        excerpt: "Bounded source excerpt.",
       }],
       correction_codes: [],
       parent_count: 0,
       child_count: 0,
       chunk_count: 0,
       staged_corpus_version_id: null,
+      hosted_parsing_state: "awaiting_review",
+      parsing_output_sha256: "a".repeat(64),
       error: null,
     };
     expect(ADMIN_ROUTES.corpusStagingTemplate).toBe(API_ROUTES.corpusStagingTemplate);

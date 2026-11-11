@@ -10,9 +10,12 @@ from app.retrieval.search import (
     FirestorePassageRetriever,
     FirestoreParentChunkReader,
     MAX_PARENT_CONTEXT_TOKENS,
+    GENERATION_PROVIDER_OVERHEAD_TOKENS,
     RetrievalEvidence,
+    RetrievalProvenanceError,
     select_parent_context,
 )
+from app.corpus.tokenization import count_tokens
 
 
 class FakeVectorStore:
@@ -35,14 +38,20 @@ class FakeParentReader:
         return self.parents
 
 
-def parent(parent_id: str, corpus: str, text: str) -> ParentChunk:
+def parent(
+    parent_id: str, corpus: str, text: str,
+    section_path: tuple[str, ...] = ("Governance",),
+) -> ParentChunk:
     return ParentChunk(
         parent_id=parent_id,
         corpus_version_id=corpus,
-        section_path=("Governance",),
+        section_path=section_path,
         page_start=1,
         page_end=1,
-        source_spans=[SourceSpan(page=1, start_offset=0, end_offset=len(text), text=text)],
+        source_spans=[SourceSpan(
+            page=1, start_offset=0, end_offset=len(text), text=text,
+            span_id=f"{parent_id}:span:0", block_id=f"{parent_id}:block:0",
+        )],
         content_hash="a" * 64,
         token_count=max(1, len(text.split())),
         text=text,
@@ -57,7 +66,10 @@ def child(chunk_id: str, parent_id: str, corpus: str, text: str, page: int = 1):
         section_path=("Governance",),
         page_start=page,
         page_end=page,
-        source_spans=[SourceSpan(page=page, start_offset=0, end_offset=len(text), text=text)],
+        source_spans=[SourceSpan(
+            page=page, start_offset=0, end_offset=len(text), text=text,
+            span_id=f"{chunk_id}:span:0", block_id=f"{chunk_id}:block:0",
+        )],
         child_ordinal=0,
         content_hash="b" * 64,
         token_count=max(1, len(text.split())),
@@ -115,6 +127,21 @@ def test_retriever_rejects_invalid_limits_and_empty_active_version() -> None:
         retriever.retrieve("question", active_corpus_version_id="v1", limit=6)
 
 
+def test_retriever_raises_typed_error_for_malformed_hierarchical_provenance() -> None:
+    malformed = Document(
+        page_content="Child passage",
+        metadata={"metadata": {
+            "schema_version": "child-document-chunk-v1",
+            "chunk_id": "v1:child:bad",
+            "corpus_version_id": "v1",
+        }},
+    )
+    retriever = FirestorePassageRetriever(FakeVectorStore([(malformed, .9)]))
+
+    with pytest.raises(RetrievalProvenanceError, match="invalid source provenance"):
+        retriever.retrieve("question", active_corpus_version_id="v1")
+
+
 def test_parent_context_deduplicates_parents_of_top_five_children() -> None:
     results = [
         (
@@ -150,7 +177,7 @@ def test_parent_context_deduplicates_parents_of_top_five_children() -> None:
     assert [item.parent_id for item in evidence.selected_parents] == ["v1:parent:0"]
 
 
-def test_parent_context_ignores_missing_and_wrong_corpus_parents() -> None:
+def test_parent_context_rejects_missing_and_wrong_corpus_parents() -> None:
     results = [
         (
             Document(
@@ -170,13 +197,10 @@ def test_parent_context_ignores_missing_and_wrong_corpus_parents() -> None:
     reader = FakeParentReader([parent("v1:parent:wrong", "v2", "Other corpus context")])
     retriever = FirestorePassageRetriever(FakeVectorStore(results), reader)
 
-    evidence = retriever.retrieve_with_parent_context(
-        "What is governance?", active_corpus_version_id="v1"
-    )
-
-    assert len(evidence.passages) == 2
-    assert evidence.parent_context == ()
-    assert evidence.selected_parents == ()
+    with pytest.raises(RetrievalProvenanceError, match="missing or cross-corpus parents"):
+        retriever.retrieve_with_parent_context(
+            "What is governance?", active_corpus_version_id="v1"
+        )
 
 
 def test_firestore_parent_reader_gets_only_requested_documents_and_filters_corpus() -> None:
@@ -265,6 +289,81 @@ def test_parent_context_never_exceeds_token_budget() -> None:
     assert all(item.token_count <= MAX_PARENT_CONTEXT_TOKENS for item in selected)
 
 
+def test_retrieval_context_reserves_ranked_children_and_provider_overhead() -> None:
+    child_text = "child evidence " * 100
+    parent_text = "parent context " * 500
+    item = child("v1:child:0", "v1:parent:0", "v1", child_text)
+    results = [(Document(
+        page_content=child_text,
+        metadata={"metadata": child_metadata(item)},
+    ), .9)]
+    retriever = FirestorePassageRetriever(
+        FakeVectorStore(results), FakeParentReader([parent("v1:parent:0", "v1", parent_text)])
+    )
+
+    evidence = retriever.retrieve_with_parent_context(
+        "Explain this evidence", active_corpus_version_id="v1"
+    )
+
+    total = (
+        count_tokens("Explain this evidence")
+        + GENERATION_PROVIDER_OVERHEAD_TOKENS
+        + sum(count_tokens(p.excerpt) + count_tokens(p.section) for p in evidence.passages)
+        + sum(
+            count_tokens(p.text) + count_tokens(" / ".join(p.section_path)[:500])
+            for p in evidence.parent_context
+        )
+    )
+    assert total <= MAX_PARENT_CONTEXT_TOKENS
+    assert evidence.generation_context is not None
+    assert evidence.generation_context.parents[0].backing_child_ids == (item.chunk_id,)
+    assert evidence.generation_context.parents[0].spans[0].physical_page == 1
+
+
+def test_long_parent_section_is_counted_against_generation_context_budget() -> None:
+    parent_text = "content " * 80
+    section_path = ("Topic " + "long section " * 80,)
+    parent_record = parent(
+        "v1:parent:long-section", "v1", parent_text, section_path=section_path
+    )
+    passage = RetrievedPassage(
+        chunk_id="v1:child:long-section", page=1, section="Governance",
+        excerpt="Child passage", relevance_score=.9,
+    )
+    budget = count_tokens(parent_text)
+
+    context, selected = select_parent_context(
+        "Explain this", ((passage, parent_record.parent_id),), (parent_record,),
+        max_tokens=budget,
+    )
+
+    assert context == ()
+    assert selected == ()
+
+
+def test_retrieval_raises_typed_error_when_ranked_evidence_leaves_no_parent_budget() -> None:
+    results = []
+    parents = []
+    for index in range(5):
+        child_text = "x " * 2_500
+        item = child(
+            f"v1:child:{index}", f"v1:parent:{index}", "v1", child_text
+        )
+        results.append((Document(
+            page_content=child_text,
+            metadata={"metadata": child_metadata(item)},
+        ), .9 - index / 100))
+        parents.append(parent(f"v1:parent:{index}", "v1", "Parent context"))
+    retriever = FirestorePassageRetriever(
+        FakeVectorStore(results), FakeParentReader(parents)
+    )
+
+    with pytest.raises(RetrievalProvenanceError, match="leave no budget for parent context"):
+        retriever.retrieve_with_parent_context(
+            "Explain this evidence", active_corpus_version_id="v1"
+        )
+
+
 def test_comparison_subjects_are_reserved_before_higher_ranked_other_context() -> None:
     children = (
         (RetrievedPassage(chunk_id="v1:other", page=1, section="S", excerpt="Other", relevance_score=.99), "v1:other"),
@@ -276,7 +375,7 @@ def test_comparison_subjects_are_reserved_before_higher_ranked_other_context() -
         parent("v1:a", "v1", "A subject detail"),
         parent("v1:b", "v1", "B subject detail"),
     )
-    budget = 6
+    budget = 12
 
     context, selected = select_parent_context(
         "Compare A subject and B subject in terms of accountability.",

@@ -23,6 +23,7 @@ from app.contracts import (
     ApiError,
     ChildDocumentChunk,
     CorpusVersion,
+    GenerationContext,
     OPERATIONAL_ERROR_STATUS,
     ParentChunk,
     QuotaStatus,
@@ -190,6 +191,7 @@ class GroundedAnswerPolicy:
         parent_context: Iterable[ParentChunk] = (),
         child_sources: Sequence[ChildDocumentChunk] | None = None,
         source_parents: Sequence[ParentChunk] = (),
+        generation_context: GenerationContext | None = None,
         corpus_version_id: str | None = None,
         deadline: RequestDeadline | None = None,
     ) -> AnswerResponse:
@@ -218,7 +220,32 @@ class GroundedAnswerPolicy:
                 deadline,
             )
 
-        bounded_parent_context = bound_parent_context(tuple(parent_context))
+        try:
+            available_parents = tuple(parent_context)
+            if generation_context is None:
+                bounded_parent_context = bound_parent_context(available_parents)
+            else:
+                parent_by_id = {parent.parent_id: parent for parent in available_parents}
+                if len(parent_by_id) != len(available_parents):
+                    raise CitationValidationError("generation context has duplicate parent records")
+                bounded_parent_context = tuple(
+                    parent_by_id[context_parent.parent_id]
+                    for context_parent in generation_context.parents
+                    if context_parent.parent_id in parent_by_id
+                    and parent_by_id[context_parent.parent_id].text == context_parent.embedding_text
+                )
+                if len(bounded_parent_context) != len(generation_context.parents):
+                    raise CitationValidationError(
+                        "generation context does not match the parent passages supplied to the model"
+                    )
+        except CitationValidationError as exc:
+            return self._finalize(
+                self._policy_refusal(
+                    trace, quota, f"Retrieved source context failed validation: {exc.message}",
+                    code="answer_output_validation",
+                ),
+                deadline,
+            )
         context_passages = tuple(
             _parent_context_passage(parent) for parent in bounded_parent_context
         )
@@ -304,6 +331,7 @@ class GroundedAnswerPolicy:
                 evidence.passages,
                 child_sources=child_sources,
                 source_parents=source_parents,
+                generation_context=generation_context,
                 corpus_version_id=corpus_version_id,
             )
         except CitationValidationError as exc:
@@ -576,11 +604,13 @@ class LangChainRagPipeline(Runnable[AnswerInvocation, AnswerResponse]):
                 parent_context = retrieved.parent_context
                 child_sources = retrieved.child_sources
                 source_parents = retrieved.source_parents
+                generation_context = retrieved.generation_context
             else:
                 passages = retrieved
                 parent_context = ()
                 child_sources = None
                 source_parents = ()
+                generation_context = None
         except TimeoutError:
             return self._policy.service_refusal(
                 input.quota,
@@ -603,6 +633,7 @@ class LangChainRagPipeline(Runnable[AnswerInvocation, AnswerResponse]):
             parent_context=parent_context,
             child_sources=child_sources,
             source_parents=source_parents,
+            generation_context=generation_context,
             corpus_version_id=active.version_id,
             deadline=deadline,
         )

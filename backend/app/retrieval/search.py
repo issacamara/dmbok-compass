@@ -15,12 +15,17 @@ from langchain_core.documents import Document
 from langchain_google_firestore import FirestoreVectorStore
 from pydantic import ValidationError
 
-from app.contracts import ChildDocumentChunk, ParentChunk, RetrievedPassage, SelectedParent
+from app.contracts import (
+    ChildDocumentChunk, GenerationContext, GenerationContextParent, ParentChunk,
+    RawSourceSpan, RetrievedPassage, SelectedParent,
+)
 from app.corpus.indexing import PARENT_COLLECTION
 from app.corpus.tokenization import count_tokens
 
 DEFAULT_LIMIT = 5
 MAX_PARENT_CONTEXT_TOKENS = 6_000
+# Reserve for the answer prompt, provider framing, and serialized request fields.
+GENERATION_PROVIDER_OVERHEAD_TOKENS = 512
 
 T = TypeVar("T")
 
@@ -34,6 +39,11 @@ class RetrievalEvidence:
     selected_parents: tuple[SelectedParent, ...]
     child_sources: tuple[ChildDocumentChunk, ...] = ()
     source_parents: tuple[ParentChunk, ...] = ()
+    generation_context: GenerationContext | None = None
+
+
+class RetrievalProvenanceError(RuntimeError):
+    """Raised when a retrieved child cannot be bound to valid parent sources."""
 
 
 class ParentChunkReader(Protocol):
@@ -151,11 +161,14 @@ class FirestorePassageRetriever:
                 active_corpus_version_id=active_corpus_version_id,
                 limit=limit,
             )
+            children = tuple(child for _, _, child in ranked if child is not None)
+            if children:
+                raise RetrievalProvenanceError("hierarchical retrieval requires a parent reader")
             return RetrievalEvidence(
                 tuple(passage for passage, _, _ in ranked),
                 (),
                 (),
-                tuple(child for _, _, child in ranked if child is not None),
+                children,
             )
         ranked = self._ranked_children(
             question,
@@ -174,24 +187,52 @@ class FirestorePassageRetriever:
             if parent.corpus_version_id == active_corpus_version_id
             and parent.parent_id in parent_ids
         )
+        if len({parent.parent_id for parent in parents}) != len(parent_ids):
+            missing = sorted(set(parent_ids) - {parent.parent_id for parent in parents})
+            raise RetrievalProvenanceError(
+                "retrieved children have missing or cross-corpus parents: " + ", ".join(missing)
+            )
         child_scores: dict[str, float] = {}
         for passage, parent_id, _ in ranked:
             if parent_id and passage.relevance_score is not None:
                 child_scores[parent_id] = max(
                     child_scores.get(parent_id, float("-inf")), passage.relevance_score
                 )
+        prompt_and_provider_reserve = (
+            count_tokens(question)
+            + GENERATION_PROVIDER_OVERHEAD_TOKENS
+        )
+        child_context_tokens = sum(
+            count_tokens(passage.excerpt) + count_tokens(passage.section)
+            for passage, _, _ in ranked
+        )
+        parent_budget = MAX_PARENT_CONTEXT_TOKENS - prompt_and_provider_reserve - child_context_tokens
+        if parent_budget <= 0:
+            raise RetrievalProvenanceError(
+                "question and ranked child evidence leave no budget for parent context"
+            )
         context, selected = select_parent_context(
             question,
             tuple((passage, parent_id) for passage, parent_id, _ in ranked),
             parents,
             child_scores=child_scores,
+            max_tokens=parent_budget,
+        )
+        if not context:
+            raise RetrievalProvenanceError(
+                "no ranked parent fits the bounded generation context"
+            )
+        children = tuple(child for _, _, child in ranked if child is not None)
+        generation_context = _generation_context(
+            active_corpus_version_id, context, children
         )
         return RetrievalEvidence(
             tuple(passage for passage, _, _ in ranked),
             context,
             selected,
-            tuple(child for _, _, child in ranked if child is not None),
+            children,
             parents,
+            generation_context,
         )
 
     def _ranked_children(
@@ -262,7 +303,7 @@ def select_parent_context(
         key=lambda parent_id: (-scores.get(parent_id, 0.0), parent_id),
     ))
     token_counts = {
-        parent_id: count_tokens(parent_by_id[parent_id].text)
+        parent_id: _parent_passage_tokens(parent_by_id[parent_id])
         for parent_id in ordered_ids
     }
     subjects = _comparison_subjects(question)
@@ -319,12 +360,19 @@ def bound_parent_context(
         if parent.parent_id in seen or len(selected) >= DEFAULT_LIMIT:
             continue
         seen.add(parent.parent_id)
-        needed = count_tokens(parent.text)
+        needed = _parent_passage_tokens(parent)
         if used_tokens + needed > max_tokens:
             continue
         selected.append(parent)
         used_tokens += needed
     return tuple(selected)
+
+
+def _parent_passage_tokens(parent: ParentChunk) -> int:
+    """Count both text fields that `_parent_context_passage` sends upstream."""
+
+    section = " / ".join(parent.section_path)[:500]
+    return count_tokens(parent.text) + count_tokens(section)
 
 
 def _comparison_subjects(question: str) -> tuple[str, ...]:
@@ -377,6 +425,55 @@ def _parent_id_from_document(document: Document) -> str | None:
     return str(parent_id) if isinstance(parent_id, str) and parent_id else None
 
 
+def _generation_context(
+    corpus_version_id: str,
+    parents: tuple[ParentChunk, ...],
+    children: tuple[ChildDocumentChunk, ...],
+) -> GenerationContext:
+    """Bind exactly the selected parent context to page-addressable sources."""
+
+    child_ids_by_parent: dict[str, list[str]] = {}
+    for child in children:
+        child_ids_by_parent.setdefault(child.parent_id, []).append(child.chunk_id)
+    records = []
+    for parent in parents:
+        children_for_parent = tuple(sorted(set(child_ids_by_parent.get(parent.parent_id, ()))))
+        if not children_for_parent:
+            raise RetrievalProvenanceError(
+                f"selected parent has no ranked backing child: {parent.parent_id}"
+            )
+        spans = []
+        for span in parent.source_spans:
+            if not span.span_id or not span.block_id:
+                raise RetrievalProvenanceError(
+                    f"selected parent has incomplete source span identity: {parent.parent_id}"
+                )
+            spans.append(RawSourceSpan(
+                span_id=span.span_id,
+                block_id=span.block_id,
+                physical_page=span.page,
+                printed_page_label=span.printed_page_label,
+                start_offset=span.start_offset,
+                end_offset=span.end_offset,
+                raw_text=span.text,
+            ))
+        try:
+            records.append(GenerationContextParent(
+                parent_id=parent.parent_id,
+                spans=tuple(spans),
+                backing_child_ids=children_for_parent,
+                embedding_text=parent.text,
+            ))
+        except ValueError as error:
+            raise RetrievalProvenanceError(
+                f"selected parent provenance is invalid: {parent.parent_id}"
+            ) from error
+    try:
+        return GenerationContext(corpus_version_id=corpus_version_id, parents=tuple(records))
+    except ValueError as error:
+        raise RetrievalProvenanceError("generation context provenance is invalid") from error
+
+
 def _child_source_from_document(document: Document) -> ChildDocumentChunk | None:
     metadata = document.metadata.get("metadata", document.metadata)
     if not isinstance(metadata, dict):
@@ -394,7 +491,7 @@ def _child_source_from_document(document: Document) -> ChildDocumentChunk | None
             "text": document.page_content,
         })
     except ValidationError:
-        return None
+        raise RetrievalProvenanceError("retrieved child has invalid source provenance") from None
 
 
 def _passage_from_result(

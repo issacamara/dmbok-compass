@@ -16,6 +16,7 @@ from app.contracts import (
     ChildDocumentChunk,
     Citation,
     CitationEvidence,
+    GenerationContext,
     ParentChunk,
     RetrievedPassage,
     SourceSpan,
@@ -74,6 +75,7 @@ def validated_citations(
     *,
     child_sources: Sequence[ChildDocumentChunk] | None = None,
     source_parents: Sequence[ParentChunk] = (),
+    generation_context: GenerationContext | None = None,
     corpus_version_id: str | None = None,
 ) -> list[Citation]:
     """Validate every provider citation and return server-owned metadata.
@@ -89,6 +91,7 @@ def validated_citations(
             by_id,
             child_sources,
             source_parents,
+            generation_context,
             corpus_version_id=corpus_version_id,
         )
     citations: list[Citation] = []
@@ -127,6 +130,7 @@ def _validated_child_citations(
     passages: Mapping[str, RetrievedPassage],
     children: Sequence[ChildDocumentChunk],
     parents: Sequence[ParentChunk],
+    generation_context: GenerationContext | None,
     *,
     corpus_version_id: str | None,
 ) -> list[Citation]:
@@ -136,6 +140,46 @@ def _validated_child_citations(
     parent_by_id = {parent.parent_id: parent for parent in parents}
     if len(child_by_id) != len(children) or len(parent_by_id) != len(parents):
         raise CitationValidationError("retrieved source provenance contains duplicate IDs")
+    supplied_child_ids: set[str] | None = None
+    supplied_parent_ids: set[str] | None = None
+    if generation_context is not None:
+        if generation_context.corpus_version_id != corpus_version_id:
+            raise CitationValidationError("generation context belongs to another corpus")
+        supplied_parent_ids = {parent.parent_id for parent in generation_context.parents}
+        supplied_child_ids = {
+            child_id
+            for parent in generation_context.parents
+            for child_id in parent.backing_child_ids
+        }
+        if not supplied_parent_ids or not supplied_child_ids:
+            raise CitationValidationError("generation context has no source allowlist")
+        for context_parent in generation_context.parents:
+            parent = parent_by_id.get(context_parent.parent_id)
+            if parent is None:
+                raise CitationValidationError(
+                    f"generation context parent is unavailable: {context_parent.parent_id}"
+                )
+            expected_spans = tuple(
+                (span.span_id, span.block_id, span.page, span.printed_page_label,
+                 span.start_offset, span.end_offset, span.text)
+                for span in parent.source_spans
+            )
+            supplied_spans = tuple(
+                (span.span_id, span.block_id, span.physical_page, span.printed_page_label,
+                 span.start_offset, span.end_offset, span.raw_text)
+                for span in context_parent.spans
+            )
+            actual_child_ids = {
+                child.chunk_id for child in children if child.parent_id == parent.parent_id
+            }
+            if (
+                context_parent.embedding_text != parent.text
+                or supplied_spans != expected_spans
+                or not set(context_parent.backing_child_ids).issubset(actual_child_ids)
+            ):
+                raise CitationValidationError(
+                    f"generation context does not match stored parent provenance: {parent.parent_id}"
+                )
 
     citations: list[Citation] = []
     seen: set[str] = set()
@@ -148,6 +192,10 @@ def _validated_child_citations(
         if child is None or child.chunk_id not in passages:
             raise CitationValidationError(
                 f"candidate cites evidence outside the retrieved child set: {citation.citation_id}"
+            )
+        if supplied_child_ids is not None and child.chunk_id not in supplied_child_ids:
+            raise CitationValidationError(
+                f"candidate cites a child outside supplied generation context: {child.chunk_id}"
             )
         passage = passages[child.chunk_id]
         if (
@@ -162,6 +210,10 @@ def _validated_child_citations(
         if parent is None:
             raise CitationValidationError(
                 f"retrieved child has no request-local parent: {child.chunk_id}"
+            )
+        if supplied_parent_ids is not None and parent.parent_id not in supplied_parent_ids:
+            raise CitationValidationError(
+                f"retrieved child parent is outside supplied generation context: {child.chunk_id}"
             )
         if child.corpus_version_id != corpus_version_id or parent.corpus_version_id != corpus_version_id:
             raise CitationValidationError(

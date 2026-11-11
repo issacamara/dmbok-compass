@@ -733,7 +733,9 @@ def test_candidate_exploration_publishes_inactive_dataset_and_dispatches_one_ful
     assert served_snapshot.binding.corpus_version_id == manifest.corpus_version_id
     assert served_snapshot.selection == "subset"
     served_full = serving_jobs.launch(item_ids=None)
+    served_full_replay = serving_jobs.launch(item_ids=None)
     full_snapshot, _ = repository.get_run_snapshot(served_full.run_id)
+    assert served_full == served_full_replay
     assert served_full.run_id != served_subset.run_id
     assert full_snapshot.selection == "full"
     assert set(dispatcher.dispatched) == {

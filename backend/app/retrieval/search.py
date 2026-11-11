@@ -303,7 +303,7 @@ def select_parent_context(
         key=lambda parent_id: (-scores.get(parent_id, 0.0), parent_id),
     ))
     token_counts = {
-        parent_id: count_tokens(parent_by_id[parent_id].text)
+        parent_id: _parent_passage_tokens(parent_by_id[parent_id])
         for parent_id in ordered_ids
     }
     subjects = _comparison_subjects(question)
@@ -360,12 +360,19 @@ def bound_parent_context(
         if parent.parent_id in seen or len(selected) >= DEFAULT_LIMIT:
             continue
         seen.add(parent.parent_id)
-        needed = count_tokens(parent.text)
+        needed = _parent_passage_tokens(parent)
         if used_tokens + needed > max_tokens:
             continue
         selected.append(parent)
         used_tokens += needed
     return tuple(selected)
+
+
+def _parent_passage_tokens(parent: ParentChunk) -> int:
+    """Count both text fields that `_parent_context_passage` sends upstream."""
+
+    section = " / ".join(parent.section_path)[:500]
+    return count_tokens(parent.text) + count_tokens(section)
 
 
 def _comparison_subjects(question: str) -> tuple[str, ...]:

@@ -38,11 +38,14 @@ class FakeParentReader:
         return self.parents
 
 
-def parent(parent_id: str, corpus: str, text: str) -> ParentChunk:
+def parent(
+    parent_id: str, corpus: str, text: str,
+    section_path: tuple[str, ...] = ("Governance",),
+) -> ParentChunk:
     return ParentChunk(
         parent_id=parent_id,
         corpus_version_id=corpus,
-        section_path=("Governance",),
+        section_path=section_path,
         page_start=1,
         page_end=1,
         source_spans=[SourceSpan(
@@ -306,12 +309,37 @@ def test_retrieval_context_reserves_ranked_children_and_provider_overhead() -> N
         count_tokens("Explain this evidence")
         + GENERATION_PROVIDER_OVERHEAD_TOKENS
         + sum(count_tokens(p.excerpt) + count_tokens(p.section) for p in evidence.passages)
-        + sum(count_tokens(p.text) for p in evidence.parent_context)
+        + sum(
+            count_tokens(p.text) + count_tokens(" / ".join(p.section_path)[:500])
+            for p in evidence.parent_context
+        )
     )
     assert total <= MAX_PARENT_CONTEXT_TOKENS
     assert evidence.generation_context is not None
     assert evidence.generation_context.parents[0].backing_child_ids == (item.chunk_id,)
     assert evidence.generation_context.parents[0].spans[0].physical_page == 1
+
+
+def test_long_parent_section_is_counted_against_generation_context_budget() -> None:
+    parent_text = "content " * 80
+    section_path = ("Topic " + "long section " * 80,)
+    parent_record = parent(
+        "v1:parent:long-section", "v1", parent_text, section_path=section_path
+    )
+    passage = RetrievedPassage(
+        chunk_id="v1:child:long-section", page=1, section="Governance",
+        excerpt="Child passage", relevance_score=.9,
+    )
+    sent_section = " / ".join(section_path)[:500]
+    budget = count_tokens(parent_text)
+
+    context, selected = select_parent_context(
+        "Explain this", ((passage, parent_record.parent_id),), (parent_record,),
+        max_tokens=budget,
+    )
+
+    assert context == ()
+    assert selected == ()
 
 
 def test_retrieval_raises_typed_error_when_ranked_evidence_leaves_no_parent_budget() -> None:
@@ -348,7 +376,7 @@ def test_comparison_subjects_are_reserved_before_higher_ranked_other_context() -
         parent("v1:a", "v1", "A subject detail"),
         parent("v1:b", "v1", "B subject detail"),
     )
-    budget = 6
+    budget = 12
 
     context, selected = select_parent_context(
         "Compare A subject and B subject in terms of accountability.",

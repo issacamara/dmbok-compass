@@ -110,6 +110,7 @@ select, .quota-form input { padding: .55rem; border: 1px solid #aaa397; border-r
 .staging-entry-list { list-style: none; margin: .5rem 0 1rem; padding: 0; }
 .staging-entry-list li { display: grid; gap: .35rem; padding: .75rem 0; border-top: 1px solid #ebe6dd; }
 .staging-entry-list .error { margin: 0; }
+.staging-excerpt { margin: .25rem 0; max-width: 72ch; border-left: 3px solid #c9c1b4; padding: .25rem .75rem; color: #5d584f; overflow-wrap: anywhere; }
 @media (max-width: 520px) { .staging-form { grid-template-columns: 1fr; } }
 .question-card, .trace-card { border: 1px solid #ddd7cc; border-radius: 1rem; background: #fffefa; }
 .question-card-header { display: flex; justify-content: space-between; align-items: center; padding: 1rem 1.25rem; border-bottom: 1px solid #ebe6dd; }

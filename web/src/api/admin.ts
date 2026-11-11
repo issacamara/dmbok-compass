@@ -1,4 +1,4 @@
-import { ADMIN_ROUTES, type AggregateMetric, type ApprovalState, type CorpusStagingAttemptStatus, type QuotaPolicy, type StructureTemplate, type UserProfile } from "./contracts";
+import { ADMIN_ROUTES, type AggregateMetric, type ApprovalState, type CorpusStagingAttemptStatus, type CorpusStagingStructureCorrectionEntry, type QuotaPolicy, type StructureTemplate, type UserProfile } from "./contracts";
 
 export class AdminApiError extends Error {
   constructor(readonly status: number, message: string) {
@@ -25,6 +25,27 @@ async function adminRequest<T>(path: string, token: string, init?: RequestInit):
 
 export function getCorpusStagingTemplate(token: string): Promise<StructureTemplate> {
   return adminRequest<StructureTemplate>(ADMIN_ROUTES.corpusStagingTemplate, token);
+}
+
+export async function submitPdfOnlyCorpusStagingAttempt(token: string, sourcePdf: File): Promise<CorpusStagingAttemptStatus> {
+  const body = new FormData();
+  body.append("source_pdf", sourcePdf);
+  return adminRequest<CorpusStagingAttemptStatus>(`${ADMIN_ROUTES.corpusStagingAttempts}/pdf`, token, { method: "POST", body });
+}
+
+export function startCorpusStagingParse(token: string, attemptId: string): Promise<CorpusStagingAttemptStatus> {
+  return adminRequest<CorpusStagingAttemptStatus>(`${ADMIN_ROUTES.corpusStagingAttempts}/${encodeURIComponent(attemptId)}/parse`, token, { method: "POST" });
+}
+
+export function proposeCorpusStagingStructure(token: string, attemptId: string): Promise<CorpusStagingAttemptStatus> {
+  return adminRequest<CorpusStagingAttemptStatus>(`${ADMIN_ROUTES.corpusStagingAttempts}/${encodeURIComponent(attemptId)}/structure/propose`, token, { method: "POST" });
+}
+
+export function correctCorpusStagingStructure(token: string, attemptId: string, expectedRevision: number, entries: CorpusStagingStructureCorrectionEntry[]): Promise<CorpusStagingAttemptStatus> {
+  return adminRequest<CorpusStagingAttemptStatus>(`${ADMIN_ROUTES.corpusStagingAttempts}/${encodeURIComponent(attemptId)}/structure`, token, {
+    method: "PUT",
+    body: JSON.stringify({ expected_revision: expectedRevision, entries }),
+  });
 }
 
 export async function submitCorpusStagingAttempt(token: string, sourcePdf: File, structureJson: File): Promise<CorpusStagingAttemptStatus> {

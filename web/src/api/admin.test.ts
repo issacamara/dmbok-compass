@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { approveCorpusStagingAttempt, getConfiguration, getCorpusStagingStatus, getCorpusStagingTemplate, listAggregateMetrics, listUsers, submitCorpusStagingAttempt, updateConfiguration, updateUser, validateCorpusStagingAttempt } from "./admin";
+import { approveCorpusStagingAttempt, correctCorpusStagingStructure, getConfiguration, getCorpusStagingStatus, getCorpusStagingTemplate, listAggregateMetrics, listUsers, proposeCorpusStagingStructure, startCorpusStagingParse, submitPdfOnlyCorpusStagingAttempt, submitCorpusStagingAttempt, updateConfiguration, updateUser, validateCorpusStagingAttempt } from "./admin";
 
 describe("administrator API", () => {
   beforeEach(() => vi.restoreAllMocks());
@@ -61,5 +61,27 @@ describe("administrator API", () => {
     expect(upload?.headers).toEqual({ Authorization: "Bearer token" });
     expect(upload?.body).toBeInstanceOf(FormData);
     expect(fetchMock.mock.calls[3][1]).toEqual(expect.objectContaining({ method: "POST" }));
+  });
+
+  it("uses PDF-only parsing and revision-bound generated-outline endpoints", async () => {
+    const response = { attempt_id: "attempt/2", revision: 4, state: "awaiting_review" };
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify(response), { status: 200 }));
+    const pdf = new File(["pdf"], "source.pdf", { type: "application/pdf" });
+    await submitPdfOnlyCorpusStagingAttempt("token", pdf);
+    await startCorpusStagingParse("token", "attempt/2");
+    await proposeCorpusStagingStructure("token", "attempt/2");
+    await correctCorpusStagingStructure("token", "attempt/2", 4, [{ section_path: ["Chapter 1", "Overview"], block_ids: ["block-1"] }]);
+
+    expect(fetchMock.mock.calls.map(([input]) => input)).toEqual([
+      "/api/admin/corpus-staging/attempts/pdf",
+      "/api/admin/corpus-staging/attempts/attempt%2F2/parse",
+      "/api/admin/corpus-staging/attempts/attempt%2F2/structure/propose",
+      "/api/admin/corpus-staging/attempts/attempt%2F2/structure",
+    ]);
+    expect(fetchMock.mock.calls[0][1]).toEqual(expect.objectContaining({ method: "POST", body: expect.any(FormData) }));
+    expect(fetchMock.mock.calls[3][1]).toEqual(expect.objectContaining({
+      method: "PUT",
+      body: JSON.stringify({ expected_revision: 4, entries: [{ section_path: ["Chapter 1", "Overview"], block_ids: ["block-1"] }] }),
+    }));
   });
 });

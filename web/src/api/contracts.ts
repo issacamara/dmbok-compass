@@ -38,6 +38,7 @@ export type StageStatus = "pending" | "running" | "succeeded" | "failed" | "unav
 export type RetrievalStrategy = "dense" | "hybrid" | "reranked";
 export type RetrievalScoreSemantics = "cosine_similarity" | "distance" | "calibrated";
 export type CorpusStagingState = "validating" | "awaiting_review" | "queued" | "running" | "staged" | "failed";
+export type HostedParsingState = "queued" | "awaiting_budget" | "parsing" | "awaiting_review" | "failed";
 export type CorpusStagingMatchStatus = "matched" | "ambiguous" | "unmatched";
 export type CorpusStagingCorrectionCode =
   | "invalid_structure"
@@ -69,6 +70,8 @@ export interface CorpusStagingPreviewEntry {
   page_end: number;
   match_status: CorpusStagingMatchStatus;
   correction_codes: CorpusStagingCorrectionCode[];
+  block_ids: string[];
+  excerpt?: string | null;
 }
 
 export interface CorpusStagingAttemptStatus {
@@ -82,7 +85,14 @@ export interface CorpusStagingAttemptStatus {
   child_count: number | null;
   chunk_count: number | null;
   staged_corpus_version_id: string | null;
+  hosted_parsing_state?: HostedParsingState | null;
+  parsing_output_sha256?: string | null;
   error: ApiError | null;
+}
+
+export interface CorpusStagingStructureCorrectionEntry {
+  section_path: string[];
+  block_ids: string[];
 }
 
 export const OPERATIONAL_ERROR_STATUS = {

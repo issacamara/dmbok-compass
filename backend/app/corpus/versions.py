@@ -129,6 +129,10 @@ class InMemoryCorpusVersionStore:
             or evidence.complete.observed_at.tzinfo is None
         ):
             raise CorpusVersionError("search readiness evidence has invalid identity or timestamp")
+        if evidence.complete.status == "complete" and version.validation_evidence is None:
+            raise CorpusVersionError(
+                "complete search readiness requires persisted corpus completeness validation"
+            )
         if evidence.search_ready is not None and (
             evidence.search_ready.corpus_version_id != version_id
             or evidence.search_ready.candidate_chunk_id != evidence.complete.candidate_chunk_id
@@ -236,7 +240,35 @@ class InMemoryCorpusVersionStore:
                 for chunk in chunk_list
             ):
                 raise CorpusCompletenessError("every persisted embedding must have 768 dimensions")
-            updated = version.model_copy(update={"status": "validated"}, deep=True)
+            ordered = sorted(chunk_list, key=lambda chunk: chunk.chunk_id)
+            content = [
+                {"chunk_id": chunk.chunk_id, "content_hash": chunk.content_hash}
+                for chunk in ordered
+            ]
+            provenance = [
+                {
+                    "chunk_id": chunk.chunk_id,
+                    "page": getattr(chunk, "page", None),
+                    "section": getattr(chunk, "section", None),
+                    "chunk_ordinal": getattr(chunk, "chunk_ordinal", None),
+                }
+                for chunk in ordered
+            ]
+            evidence = CorpusValidationEvidence(
+                chunk_count=len(chunk_list),
+                content_hashes_sha256=sha256(
+                    json.dumps(content, sort_keys=True, separators=(",", ":")).encode()
+                ).hexdigest(),
+                provenance_sha256=sha256(
+                    json.dumps(provenance, sort_keys=True, separators=(",", ":")).encode()
+                ).hexdigest(),
+                embedding_dimensions=version.embedding_dimensions,
+                index_ready=False,
+                filter_ready=False,
+            )
+            updated = version.model_copy(
+                update={"status": "validated", "validation_evidence": evidence}, deep=True
+            )
             self._versions[version_id] = updated
             return deepcopy(updated)
 

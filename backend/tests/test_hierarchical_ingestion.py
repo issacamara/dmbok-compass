@@ -312,12 +312,18 @@ def _parsing_candidate_args():
     }
 
 
-def test_pinned_parsing_artifact_builds_candidate_from_reviewed_block_spans():
+def test_pinned_parsing_artifact_builds_candidate_from_reviewed_block_spans(monkeypatch):
+    monkeypatch.setattr(entrypoint, "build_llamaindex_nodes", lambda *_: ())
     first = entrypoint.build_hierarchical_candidate(**_parsing_candidate_args())
     second = entrypoint.build_hierarchical_candidate(**_parsing_candidate_args())
 
     assert first.parents == second.parents
     assert first.children == second.children
+    assert first.version.version_id == second.version.version_id
+    assert first.manifest.manifest_sha256 == second.manifest.manifest_sha256
+    assert first.manifest.manifest["derivation"]["parsing"]["output_sha256"] == "f" * 64
+    assert first.parents[0].parent_id.startswith(f"{first.version.version_id}:parent:")
+    assert first.children[0].chunk_id.startswith(f"{first.version.version_id}:child:")
     spans = first.parents[0].source_spans
     assert [span.text for span in spans] == [
         "# Chapter 1", "First reviewed passage.", "Second reviewed passage."

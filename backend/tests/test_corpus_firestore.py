@@ -355,6 +355,23 @@ def test_hierarchical_validation_reads_back_parents_children_and_gates_activatio
     assert client.data["corpus_search_readiness/v2"]["search_ready"]["index_id"] == "index-v2"
 
 
+def test_complete_search_signal_is_rejected_before_persisted_coverage_validation() -> None:
+    client = FakeFirestore()
+    candidate_binding = binding("v2")
+    persist(client, version("v2", "staged", serving_binding=candidate_binding))
+    complete = ReadinessSignal(
+        "complete", datetime.now(timezone.utc), candidate_binding.vector_collection,
+        "index-v2", "v2:child:1", "v2",
+    )
+
+    with pytest.raises(CorpusVersionError, match="requires persisted corpus completeness validation"):
+        store(client).persist_search_readiness(
+            "v2", SearchReadinessEvidence(complete, None, 0)
+        )
+
+    assert "corpus_search_readiness/v2" not in client.data
+
+
 def test_hierarchical_validation_rejects_missing_or_tampered_persisted_child() -> None:
     client = FakeFirestore()
     candidate = version("v2", "staged", serving_binding=binding("v2"))

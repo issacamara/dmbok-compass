@@ -5,7 +5,10 @@ from hashlib import sha256
 import pytest
 
 from app.answering.citations import CitationValidationError, validated_citations
-from app.contracts import ChildDocumentChunk, Citation, ParentChunk, RetrievedPassage, SourceSpan
+from app.contracts import (
+    ChildDocumentChunk, Citation, GenerationContext, GenerationContextParent,
+    ParentChunk, RawSourceSpan, RetrievedPassage, SourceSpan,
+)
 from model.protocol import GenerationCandidate
 
 
@@ -94,11 +97,35 @@ def test_citations_reconstruct_page_section_and_excerpt_from_child_source_spans(
 
 
 def test_cross_child_citations_keep_each_child_page_and_source_excerpt() -> None:
-    first = SourceSpan(page=1, start_offset=0, end_offset=16, text="First child span")
-    second = SourceSpan(page=2, start_offset=0, end_offset=17, text="Second child span")
+    first = SourceSpan(
+        page=1, start_offset=0, end_offset=16, text="First child span",
+        span_id="span-first", block_id="block-first",
+    )
+    second = SourceSpan(
+        page=2, start_offset=0, end_offset=17, text="Second child span",
+        span_id="span-second", block_id="block-second",
+    )
     parent = source_parent([first, second])
     first_child = source_child([first], chunk_id="v1:child:first")
     second_child = source_child([second], chunk_id="v1:child:second")
+    context = GenerationContext(
+        corpus_version_id="v1",
+        parents=(GenerationContextParent(
+            parent_id=parent.parent_id,
+            spans=(
+                RawSourceSpan(
+                    span_id="span-first", block_id="block-first", physical_page=1,
+                    start_offset=0, end_offset=16, raw_text=first.text,
+                ),
+                RawSourceSpan(
+                    span_id="span-second", block_id="block-second", physical_page=2,
+                    start_offset=0, end_offset=17, raw_text=second.text,
+                ),
+            ),
+            backing_child_ids=(first_child.chunk_id, second_child.chunk_id),
+            embedding_text=parent.text,
+        ),),
+    )
     answer = GenerationCandidate(
         outcome="answer",
         answer_text="A claim supported across children.",
@@ -113,6 +140,7 @@ def test_cross_child_citations_keep_each_child_page_and_source_excerpt() -> None
         retrieved(first_child) + retrieved(second_child),
         child_sources=(first_child, second_child),
         source_parents=(parent,),
+        generation_context=context,
         corpus_version_id="v1",
     )
 
@@ -120,6 +148,80 @@ def test_cross_child_citations_keep_each_child_page_and_source_excerpt() -> None
         (1, "Data Management / Governance", first.text),
         (2, "Data Management / Governance", second.text),
     ]
+    assert all(item.excerpt in {first.text, second.text} and len(item.excerpt) <= 500 for item in citations)
+
+
+def test_context_allowlist_preserves_physical_page_and_table_header_source_text() -> None:
+    text = "Column | Value\nMetric | 42"
+    span = SourceSpan(
+        page=25, start_offset=100, end_offset=100 + len(text), text=text,
+        span_id="table-span", block_id="table-block", block_order=3,
+        block_kind="table", table_header_text="Column | Value", table_header_row_count=1,
+        table_row_index=1,
+    )
+    parent = source_parent([span], parent_id="v1:parent:table")
+    child = source_child([span], chunk_id="v1:child:table", parent_id=parent.parent_id)
+    context = GenerationContext(
+        corpus_version_id="v1",
+        parents=(GenerationContextParent(
+            parent_id=parent.parent_id,
+            spans=(RawSourceSpan(
+                span_id=span.span_id, block_id=span.block_id,
+                physical_page=span.page, printed_page_label=span.printed_page_label,
+                start_offset=span.start_offset, end_offset=span.end_offset,
+                raw_text=span.text,
+            ),),
+            backing_child_ids=(child.chunk_id,),
+            embedding_text=parent.text,
+        ),),
+    )
+
+    citation = validated_citations(
+        candidate(child.chunk_id, "Metric | 42", page=1),
+        retrieved(child), child_sources=(child,), source_parents=(parent,),
+        generation_context=context, corpus_version_id="v1",
+    )[0]
+
+    assert citation.page == 25
+    assert citation.excerpt == "Metric | 42"
+    assert len(citation.excerpt) <= 500
+
+
+def test_citation_cannot_use_a_ranked_child_outside_supplied_context_allowlist() -> None:
+    first_span = SourceSpan(
+        page=1, start_offset=0, end_offset=10, text="First text",
+        span_id="span-first", block_id="block-first",
+    )
+    second_span = SourceSpan(
+        page=2, start_offset=0, end_offset=11, text="Second text",
+        span_id="span-second", block_id="block-second",
+    )
+    first_parent = source_parent([first_span], parent_id="v1:parent:first")
+    second_parent = source_parent([second_span], parent_id="v1:parent:second")
+    first_child = source_child([first_span], chunk_id="v1:child:first", parent_id=first_parent.parent_id)
+    second_child = source_child([second_span], chunk_id="v1:child:second", parent_id=second_parent.parent_id)
+    context = GenerationContext(
+        corpus_version_id="v1",
+        parents=(GenerationContextParent(
+            parent_id=first_parent.parent_id,
+            spans=(RawSourceSpan(
+                span_id="span-first", block_id="block-first", physical_page=1,
+                start_offset=0, end_offset=10, raw_text="First text",
+            ),),
+            backing_child_ids=(first_child.chunk_id,),
+            embedding_text=first_parent.text,
+        ),),
+    )
+
+    with pytest.raises(CitationValidationError, match="outside supplied generation context"):
+        validated_citations(
+            candidate(second_child.chunk_id, second_span.text),
+            retrieved(first_child) + retrieved(second_child),
+            child_sources=(first_child, second_child),
+            source_parents=(first_parent, second_parent),
+            generation_context=context,
+            corpus_version_id="v1",
+        )
 
 
 def test_citations_reject_parent_only_unknown_and_missing_parent_evidence() -> None:

@@ -18,8 +18,11 @@ from app.contracts import (
     ChildDocumentChunk,
     CorpusServingBinding,
     CorpusVersion,
+    GenerationContext,
+    GenerationContextParent,
     ParentChunk,
     QuotaStatus,
+    RawSourceSpan,
     RetrievedPassage,
     SourceSpan,
 )
@@ -175,7 +178,10 @@ def test_pipeline_generates_with_parent_context_but_traces_child_evidence() -> N
         section_path=("Governance",),
         page_start=4,
         page_end=4,
-        source_spans=[SourceSpan(page=4, start_offset=0, end_offset=len(parent_text), text=parent_text)],
+        source_spans=[SourceSpan(
+            page=4, start_offset=0, end_offset=len(parent_text), text=parent_text,
+            span_id="parent-span", block_id="parent-block",
+        )],
         content_hash=sha256(parent_text.encode()).hexdigest(),
         token_count=8,
         text=parent_text,
@@ -192,11 +198,25 @@ def test_pipeline_generates_with_parent_context_but_traces_child_evidence() -> N
             start_offset=child_start,
             end_offset=child_start + len(child_source_text),
             text=child_source_text,
+            span_id="child-span",
+            block_id="parent-block",
         )],
         child_ordinal=0,
         content_hash=sha256(child_source_text.encode()).hexdigest(),
         token_count=4,
         text=child_source_text,
+    )
+    generation_context = GenerationContext(
+        corpus_version_id="v1",
+        parents=(GenerationContextParent(
+            parent_id=parent.parent_id,
+            spans=(RawSourceSpan(
+                span_id="parent-span", block_id="parent-block", physical_page=4,
+                start_offset=0, end_offset=len(parent_text), raw_text=parent_text,
+            ),),
+            backing_child_ids=(child_source.chunk_id,),
+            embedding_text=parent.text,
+        ),),
     )
     oversized_text = "x " * 6_001
     oversized_parent = ParentChunk(
@@ -219,7 +239,8 @@ def test_pipeline_generates_with_parent_context_but_traces_child_evidence() -> N
     class ContextRetriever(FakeRetriever):
         def retrieve_with_parent_context(self, question, *, active_corpus_version_id, limit=5):
             return RetrievalEvidence(
-                (child,), (parent, oversized_parent), (), (child_source,), (parent,)
+                (child,), (parent, oversized_parent), (), (child_source,), (parent,),
+                generation_context,
             )
 
     adapter = CapturingAdapter()

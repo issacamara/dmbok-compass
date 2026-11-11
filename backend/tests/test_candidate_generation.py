@@ -22,7 +22,12 @@ from app.evaluation.candidate_generation import (
     _validate_sources,
     generate_candidate_revision,
 )
-from app.provider_allowance import AllowanceStageResult
+from app.provider_allowance import (
+    AllowanceStageResult,
+    InMemoryProviderAllowanceStore,
+    ProviderAccountCapabilities,
+    ProviderAllowanceObservation,
+)
 from model.candidate_generation import CandidateDraft, CandidateGenerationResult
 from model.protocol import (
     GenerationError,
@@ -120,6 +125,7 @@ class FakeAdapter:
     def __init__(self, responses):
         self.responses = list(responses)
         self.calls = 0
+        self.max_output_tokens = 512
 
     async def generate(self, request):
         self.calls += 1
@@ -165,7 +171,17 @@ class FakeStore:
         return head
 
 
-def allowance(status="staged", *, kind="generation", units=200):
+class FakeAllowanceStore:
+    def __init__(self, reservation):
+        self.reservation = reservation
+        self.reconciliations = []
+
+    def reconcile_usage(self, capabilities, operation_key, actual_units):
+        self.reconciliations.append((capabilities, operation_key, actual_units))
+        status = "staged" if actual_units is not None else "awaiting_budget"
+        return AllowanceStageResult(status, self.reservation)
+
+def allowance(status="staged", *, kind="generation", units=1_000_000):
     reservation = None if status != "staged" else AllowanceReservation(
         reservation_id="reservation-1",
         operation_key="generation-1",
@@ -175,6 +191,25 @@ def allowance(status="staged", *, kind="generation", units=200):
         reserved_units=units,
     )
     return AllowanceStageResult(status=status, reservation=reservation, reason="refresh account allowance")
+
+
+def reserved_generation(estimated_units):
+    capabilities = ProviderAccountCapabilities(
+        "openrouter", "generator", "generation", max_units_per_operation=2_000_000, max_retries=1
+    )
+    store = InMemoryProviderAllowanceStore()
+    store.observe(
+        capabilities,
+        ProviderAllowanceObservation(
+            4_000_000,
+            NOW - timedelta(minutes=1),
+            NOW + timedelta(minutes=10),
+        ),
+    )
+    budget = store.stage_reservation(
+        capabilities, "generation-1", estimated_units, retries=1, now=NOW
+    )
+    return store, budget, capabilities
 
 
 def existing_row():
@@ -221,10 +256,17 @@ def generate(
     children=None,
     parents=None,
     corpus_store=None,
+    allowance_store=None,
+    allowance_capabilities=None,
 ):
     if children is None or parents is None:
         children, parents = source_records()
     corpus_store = corpus_store or ready_corpus_store(children, parents)
+    budget = budget or allowance()
+    allowance_store = allowance_store or FakeAllowanceStore(budget.reservation)
+    allowance_capabilities = allowance_capabilities or ProviderAccountCapabilities(
+        "openrouter", "generator", "generation"
+    )
     return asyncio.run(generate_candidate_revision(
         corpus_version_id=CORPUS,
         children=children,
@@ -234,7 +276,9 @@ def generate(
         generator_route="openrouter",
         generator_model="generator-v1",
         generator_configuration_version="generator-config-v1",
-        allowance=budget or allowance(),
+        allowance=budget,
+        allowance_store=allowance_store,
+        allowance_capabilities=allowance_capabilities,
         store=store,
         target_count=target_count,
         now=NOW,
@@ -263,6 +307,71 @@ def test_generation_covers_categories_outcomes_and_reports_usage_and_gaps():
     assert report.usage_tokens == 12
     assert report.generator_configuration_version == "generator-config-v1"
     assert report.dataset_head == store.head
+
+
+def test_generation_reconciles_known_usage_and_holds_unknown_usage():
+    known_allowances, budget, capabilities = reserved_generation(500_000)
+    known_adapter = FakeAdapter([result([answer_candidate("Define data quality.")], usage=17)])
+    known_report = generate(
+        known_adapter,
+        FakeStore(),
+        budget=budget,
+        allowance_store=known_allowances,
+        allowance_capabilities=capabilities,
+        target_count=1,
+    )
+    assert known_report.status == "published"
+    account_key = (capabilities.provider_id, capabilities.account_id, capabilities.kind)
+    assert known_allowances.spent_units[account_key] == 17
+    assert known_allowances.reserved_units[account_key] == 0
+
+    unknown_allowances, unknown_budget, unknown_capabilities = reserved_generation(500_000)
+    unknown_adapter = FakeAdapter([
+        GenerationError(GenerationErrorCode.UNAVAILABLE, "uncertain", retryable=False)
+    ])
+    unknown_report = generate(
+        unknown_adapter,
+        FakeStore(),
+        budget=unknown_budget,
+        allowance_store=unknown_allowances,
+        allowance_capabilities=unknown_capabilities,
+        target_count=1,
+    )
+    assert unknown_report.status == "failed"
+    unknown_key = (
+        unknown_capabilities.provider_id,
+        unknown_capabilities.account_id,
+        unknown_capabilities.kind,
+    )
+    assert unknown_allowances.reserved_units[unknown_key] == unknown_budget.reservation.reserved_units
+    assert unknown_allowances.stage_reservation(
+        unknown_capabilities, "generation-1", 1, now=NOW
+    ).status == "awaiting_budget"
+
+
+def test_insufficient_generation_reservation_reconciles_zero_without_calls():
+    allowances, budget, capabilities = reserved_generation(1)
+    adapter = FakeAdapter([result([answer_candidate("Must not run")])])
+    store = FakeStore()
+
+    report = generate(
+        adapter,
+        store,
+        budget=budget,
+        allowance_store=allowances,
+        allowance_capabilities=capabilities,
+        target_count=1,
+    )
+
+    assert report.status == "awaiting_budget"
+    assert "bounded operation estimate" in (report.error or "")
+    assert adapter.calls == 0
+    assert store.head_reads == 0
+    assert store.revision_reads == 0
+    assert store.staged == 0
+    account_key = (capabilities.provider_id, capabilities.account_id, capabilities.kind)
+    assert allowances.reserved_units[account_key] == 0
+    assert allowances.spent_units[account_key] == 0
 
 
 def test_candidates_bind_exact_corpus_spans_and_remain_unapproved():

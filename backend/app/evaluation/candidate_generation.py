@@ -27,7 +27,12 @@ from app.corpus.versions import (
     hierarchical_validation_evidence,
     validate_hierarchical_records,
 )
-from app.provider_allowance import AllowanceStageResult
+from app.corpus.chunking import _token_count
+from app.provider_allowance import (
+    AllowanceStageResult,
+    ProviderAccountCapabilities,
+    ProviderAllowanceStore,
+)
 from model.candidate_generation import CandidateDraft, CandidateGenerationAdapter, PROMPT_VERSION
 from model.protocol import GenerationError, GenerationRequest, Passage
 
@@ -37,6 +42,9 @@ _OUTCOMES = ("answer", "qualified", "evidence_refusal")
 _BATCH_SIZE = 8
 _MAX_BATCHES = 50
 _MAX_RETRIES = 1
+_GENERATION_PROMPT_OVERHEAD_TOKENS = 256
+_GENERATION_PASSAGE_OVERHEAD_TOKENS = 32
+_TOKEN_ESTIMATE_SAFETY_FACTOR = 2
 _MODEL_PROVIDER = {"openrouter": "openrouter", "vertex": "google-gemini"}
 _QUESTION_FILLER = frozenset(
     {
@@ -85,6 +93,13 @@ class CandidateGenerationReport:
     error: str | None = None
 
 
+@dataclass
+class _UsageAccumulator:
+    tokens: int = 0
+    known: bool = True
+    request_in_flight: bool = False
+
+
 class CandidateSourceError(ValueError):
     """Raised when the supplied ready-corpus source set is not self-consistent."""
 
@@ -100,34 +115,110 @@ async def generate_candidate_revision(
     generator_model: str,
     generator_configuration_version: str,
     allowance: AllowanceStageResult,
+    allowance_store: ProviderAllowanceStore,
+    allowance_capabilities: ProviderAccountCapabilities,
     store: CandidateRevisionStore,
     target_count: int = 200,
     now: datetime | None = None,
 ) -> CandidateGenerationReport:
     """Generate, validate, then atomically publish one candidate dataset revision."""
-    if target_count < 1:
-        raise ValueError("target_count must be positive")
-    if target_count > 200:
-        raise ValueError("target_count cannot exceed the initial 200-row candidate target")
-    if generator_route not in _MODEL_PROVIDER or not generator_model.strip() or not generator_configuration_version.strip():
-        raise ValueError("candidate generation requires a pinned supported route, model, and configuration")
-    _validate_ready_corpus(corpus_version_id, corpus_store, children, parents)
-    source_map = _validate_sources(corpus_version_id, children, parents)
-    if not source_map:
-        raise CandidateSourceError("candidate generation requires verified child sources")
     if allowance.status != "staged" or allowance.reservation is None:
+        if target_count < 1:
+            raise ValueError("target_count must be positive")
+        if target_count > 200:
+            raise ValueError("target_count cannot exceed the initial 200-row candidate target")
         return _report(
             "awaiting_budget", corpus_version_id, generator_configuration_version,
             generator_model, target_count, (), 0, None, error=allowance.reason,
         )
     reservation = allowance.reservation
-    if not _reservation_is_current(reservation, now=now):
-        return _report(
-            "awaiting_budget", corpus_version_id, generator_configuration_version,
-            generator_model, target_count, (), 0, None, error="generation allowance is unavailable",
-        )
-    if reservation.kind != "generation":
+    if reservation.kind != "generation" or allowance_capabilities.kind != "generation":
         raise ValueError("candidate generation requires a generation allowance reservation")
+    usage = _UsageAccumulator()
+    try:
+        if target_count < 1:
+            raise ValueError("target_count must be positive")
+        if target_count > 200:
+            raise ValueError("target_count cannot exceed the initial 200-row candidate target")
+        if not _reservation_is_current(reservation, now=now):
+            usage.known = False
+            return _report(
+                "awaiting_budget", corpus_version_id, generator_configuration_version,
+                generator_model, target_count, (), 0, None, error="generation allowance is unavailable",
+            )
+        if generator_route not in _MODEL_PROVIDER or not generator_model.strip() or not generator_configuration_version.strip():
+            raise ValueError("candidate generation requires a pinned supported route, model, and configuration")
+        _validate_ready_corpus(corpus_version_id, corpus_store, children, parents)
+        source_map = _validate_sources(corpus_version_id, children, parents)
+        if not source_map:
+            raise CandidateSourceError("candidate generation requires verified child sources")
+        required_units = _required_reservation_units(target_count, children, adapter)
+        if reservation.reserved_units < required_units:
+            return _report(
+                "awaiting_budget", corpus_version_id, generator_configuration_version,
+                generator_model, target_count, (), 0, 0,
+                error="generation reservation is smaller than the bounded operation estimate",
+            )
+        return await _generate_candidate_revision(
+            corpus_version_id=corpus_version_id,
+            children=children,
+            source_map=source_map,
+            adapter=adapter,
+            generator_route=generator_route,
+            generator_model=generator_model,
+            generator_configuration_version=generator_configuration_version,
+            store=store,
+            target_count=target_count,
+            usage=usage,
+        )
+    finally:
+        actual_units = None if not usage.known or usage.request_in_flight else usage.tokens
+        allowance_store.reconcile_usage(
+            allowance_capabilities, reservation.operation_key, actual_units
+        )
+
+
+def _required_reservation_units(
+    target_count: int,
+    children: tuple[ChildDocumentChunk, ...],
+    adapter: CandidateGenerationAdapter,
+) -> int:
+    calls = _generation_call_limit(target_count)
+    max_output_tokens = getattr(adapter, "max_output_tokens", None)
+    if type(max_output_tokens) is not int or max_output_tokens < 1:
+        raise ValueError("candidate generator must expose a positive max_output_tokens limit")
+    prompt_tokens = _token_count(_prompt(target_count, [])) + _GENERATION_PROMPT_OVERHEAD_TOKENS
+    max_passage_tokens = 0
+    for batch_index in range(calls):
+        batch = _select_sources(children, batch_index)
+        token_count = sum(
+            _token_count((child.source_text or "\n".join(span.text for span in child.source_spans))[:1600])
+            + _GENERATION_PASSAGE_OVERHEAD_TOKENS
+            for child in batch
+        )
+        max_passage_tokens = max(max_passage_tokens, token_count)
+    input_estimate = (prompt_tokens + max_passage_tokens) * _TOKEN_ESTIMATE_SAFETY_FACTOR
+    units_per_attempt = input_estimate + max_output_tokens
+    return calls * units_per_attempt * (1 + _MAX_RETRIES)
+
+
+def _generation_call_limit(target_count: int) -> int:
+    return min(_MAX_BATCHES, max(1, (target_count + _BATCH_SIZE - 1) // _BATCH_SIZE * 2))
+
+
+async def _generate_candidate_revision(
+    *,
+    corpus_version_id: str,
+    children: tuple[ChildDocumentChunk, ...],
+    source_map: dict[str, ChildDocumentChunk],
+    adapter: CandidateGenerationAdapter,
+    generator_route: str,
+    generator_model: str,
+    generator_configuration_version: str,
+    store: CandidateRevisionStore,
+    target_count: int,
+    usage: _UsageAccumulator,
+) -> CandidateGenerationReport:
 
     head = store.corpus_head(corpus_version_id)
     current_rows = store.get_revision(head) if head else ()
@@ -135,9 +226,7 @@ async def generate_candidate_revision(
     seen_questions = {_normalize_question_key(row.question) for row in current_rows}
     rows: list[EvaluationRowV2] = []
     rejected = 0
-    usage_tokens = 0
-    usage_known = True
-    calls = min(_MAX_BATCHES, max(1, (target_count + _BATCH_SIZE - 1) // _BATCH_SIZE * 2))
+    calls = _generation_call_limit(target_count)
 
     for batch_index in range(calls):
         if len(rows) >= target_count:
@@ -163,35 +252,39 @@ async def generate_candidate_revision(
         result = None
         for attempt in range(_MAX_RETRIES + 1):
             try:
+                usage.request_in_flight = True
                 result = await adapter.generate(GenerationRequest(prompt=prompt, passages=passages))
+                usage.request_in_flight = False
                 break
             except GenerationError as exc:
-                usage_known = False
+                usage.request_in_flight = False
+                usage.known = False
                 if not exc.retryable or attempt >= _MAX_RETRIES:
                     return _report(
                         "failed", corpus_version_id, generator_configuration_version,
-                        generator_model, target_count, tuple(rows), rejected, _usage(usage_tokens, usage_known),
+                        generator_model, target_count, tuple(rows), rejected, _usage(usage.tokens, usage.known),
                         error="candidate generation failed",
                     )
             except Exception:
-                usage_known = False
+                usage.request_in_flight = False
+                usage.known = False
                 return _report(
                     "failed", corpus_version_id, generator_configuration_version, generator_model,
-                    target_count, tuple(rows), rejected, _usage(usage_tokens, usage_known),
+                    target_count, tuple(rows), rejected, _usage(usage.tokens, usage.known),
                     error="candidate generation failed",
                 )
         assert result is not None
         if result.usage.total_tokens is None:
-            usage_known = False
-        elif usage_known:
-            usage_tokens += result.usage.total_tokens
+            usage.known = False
+        elif usage.known:
+            usage.tokens += result.usage.total_tokens
         if (
             result.usage.provider != _MODEL_PROVIDER[generator_route]
             or result.usage.model != generator_model
         ):
             return _report(
                 "failed", corpus_version_id, generator_configuration_version, generator_model,
-                target_count, tuple(rows), rejected, _usage(usage_tokens, usage_known),
+                target_count, tuple(rows), rejected, _usage(usage.tokens, usage.known),
                 error="generator response did not match the pinned model route",
             )
         try:
@@ -216,7 +309,7 @@ async def generate_candidate_revision(
     if not rows:
         return _report(
             "failed", corpus_version_id, generator_configuration_version, generator_model,
-            target_count, (), rejected, _usage(usage_tokens, usage_known), error="no valid candidates were generated",
+            target_count, (), rejected, _usage(usage.tokens, usage.known), error="no valid candidates were generated",
         )
     if store.corpus_head(corpus_version_id) != old_head:
         raise ConcurrentActivationError("corpus dataset changed during candidate generation")
@@ -226,7 +319,7 @@ async def generate_candidate_revision(
     activated = store.activate_revision(staged, expected_revision=old_head.revision if old_head else None)
     return _report(
         "published", corpus_version_id, generator_configuration_version, generator_model,
-        target_count, tuple(rows), rejected, _usage(usage_tokens, usage_known), dataset_head=activated,
+        target_count, tuple(rows), rejected, _usage(usage.tokens, usage.known), dataset_head=activated,
     )
 
 

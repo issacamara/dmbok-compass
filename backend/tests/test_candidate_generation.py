@@ -3,17 +3,25 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 import hashlib
+import pytest
 
 from app.contracts import (
     AllowanceReservation,
     ChildDocumentChunk,
+    CorpusVersion,
     DatasetHead,
     EvaluationRowV2,
     ParentChunk,
     RawSourceSpan,
     SourceSpan,
 )
-from app.evaluation.candidate_generation import generate_candidate_revision
+from app.corpus.chunking import _token_count
+from app.corpus.versions import hierarchical_validation_evidence
+from app.evaluation.candidate_generation import (
+    CandidateSourceError,
+    _validate_sources,
+    generate_candidate_revision,
+)
 from app.provider_allowance import AllowanceStageResult
 from model.candidate_generation import CandidateDraft, CandidateGenerationResult
 from model.protocol import (
@@ -45,8 +53,8 @@ def source_records():
         page_end=21,
         source_spans=[span],
         source_text=QUOTE,
-        content_hash=hashlib.sha256(QUOTE.encode()).hexdigest(),
-        token_count=8,
+        content_hash=hashlib.sha256(("Data Quality\n" + QUOTE).encode()).hexdigest(),
+        token_count=_token_count("Data Quality\n" + QUOTE),
         text="Data Quality\n" + QUOTE,
     )
     child = ChildDocumentChunk(
@@ -59,8 +67,8 @@ def source_records():
         source_spans=[span],
         source_text=QUOTE,
         child_ordinal=0,
-        content_hash=hashlib.sha256(QUOTE.encode()).hexdigest(),
-        token_count=8,
+        content_hash=hashlib.sha256(parent.text.encode()).hexdigest(),
+        token_count=_token_count(parent.text),
         text=parent.text,
     )
     return (child,), (parent,)
@@ -96,6 +104,18 @@ def result(candidates, *, provider="openrouter", model="generator-v1", usage=12)
     )
 
 
+class FakeCorpusStore:
+    def __init__(self, version):
+        self.version = version
+        self.reads = 0
+
+    def get(self, version_id):
+        self.reads += 1
+        if self.version is not None and self.version.version_id != version_id:
+            return None
+        return self.version
+
+
 class FakeAdapter:
     def __init__(self, responses):
         self.responses = list(responses)
@@ -114,11 +134,15 @@ class FakeStore:
         self.rows = tuple(rows)
         self.head = None
         self.staged = 0
+        self.head_reads = 0
+        self.revision_reads = 0
 
     def corpus_head(self, corpus_version_id):
+        self.head_reads += 1
         return self.head
 
     def get_revision(self, head):
+        self.revision_reads += 1
         assert head == self.head
         return self.rows
 
@@ -171,12 +195,41 @@ def existing_row():
     )
 
 
-def generate(adapter, store, *, value=None, budget=None, target_count=8):
-    children, parents = source_records()
+def ready_corpus_store(children, parents, *, status="validated", evidence_update=None):
+    version = CorpusVersion(
+        version_id=CORPUS,
+        source_uri="gs://corpus/dmbok.pdf",
+        embedding_model="text-embedding-005",
+        status=status,
+        created_at=NOW,
+    )
+    evidence = hierarchical_validation_evidence(
+        version, parents, children, index_ready=True, filter_ready=True
+    )
+    if evidence_update:
+        evidence = evidence.model_copy(update=evidence_update)
+    return FakeCorpusStore(version.model_copy(update={"validation_evidence": evidence}))
+
+
+def generate(
+    adapter,
+    store,
+    *,
+    value=None,
+    budget=None,
+    target_count=8,
+    children=None,
+    parents=None,
+    corpus_store=None,
+):
+    if children is None or parents is None:
+        children, parents = source_records()
+    corpus_store = corpus_store or ready_corpus_store(children, parents)
     return asyncio.run(generate_candidate_revision(
         corpus_version_id=CORPUS,
         children=children,
         parents=parents,
+        corpus_store=corpus_store,
         adapter=adapter,
         generator_route="openrouter",
         generator_model="generator-v1",
@@ -225,6 +278,107 @@ def test_candidates_bind_exact_corpus_spans_and_remain_unapproved():
     assert row.relevant_child_ids == ("corpus-v2:child:21-0",)
     assert row.parent_ids == ("corpus-v2:parent:1:1",)
     assert not hasattr(row, "review_status")
+
+
+def test_child_source_binding_rejects_corrupt_page_and_text():
+    children, parents = source_records()
+    child = children[0]
+    original_span = child.source_spans[0]
+
+    wrong_page_span = original_span.model_copy(update={"page": original_span.page + 1})
+    wrong_page_child = child.model_copy(
+        update={
+            "source_spans": [wrong_page_span],
+            "page_start": original_span.page + 1,
+            "page_end": original_span.page + 1,
+        }
+    )
+    with pytest.raises(CandidateSourceError, match="one parent source span"):
+        _validate_sources(CORPUS, (wrong_page_child,), parents)
+
+    wrong_identity_span = original_span.model_copy(update={"span_id": "wrong-span-id"})
+    wrong_identity_child = child.model_copy(update={"source_spans": [wrong_identity_span]})
+    with pytest.raises(CandidateSourceError, match="span identity"):
+        _validate_sources(CORPUS, (wrong_identity_child,), parents)
+
+    wrong_text_span = original_span.model_copy(update={"text": "Corrupted source excerpt."})
+    wrong_text_child = child.model_copy(
+        update={"source_spans": [wrong_text_span], "source_text": wrong_text_span.text}
+    )
+    with pytest.raises(CandidateSourceError, match="does not match its parent source range"):
+        _validate_sources(CORPUS, (wrong_text_child,), parents)
+
+
+def test_generation_requires_ready_complete_corpus_before_model_or_dataset_access():
+    children, parents = source_records()
+    version_without_evidence = CorpusVersion(
+        version_id=CORPUS,
+        source_uri="gs://corpus/dmbok.pdf",
+        embedding_model="text-embedding-005",
+        status="validated",
+        created_at=NOW,
+    )
+    incomplete_stores = (
+        FakeCorpusStore(None),
+        ready_corpus_store(children, parents, status="staged"),
+        ready_corpus_store(children, parents, evidence_update={"filter_ready": False}),
+        FakeCorpusStore(version_without_evidence),
+    )
+    for corpus_store in incomplete_stores:
+        adapter = FakeAdapter([result([answer_candidate("Must not run")])])
+        revision_store = FakeStore()
+        with pytest.raises(CandidateSourceError):
+            generate(
+                adapter,
+                revision_store,
+                children=children,
+                parents=parents,
+                corpus_store=corpus_store,
+                target_count=1,
+            )
+        assert adapter.calls == 0
+        assert revision_store.head_reads == 0
+        assert revision_store.revision_reads == 0
+        assert revision_store.staged == 0
+
+    bad_hash_child = children[0].model_copy(update={"content_hash": "0" * 64})
+    bad_hash_children = (bad_hash_child,)
+    adapter = FakeAdapter([result([answer_candidate("Must not run with a bad hash")])])
+    revision_store = FakeStore()
+    with pytest.raises(CandidateSourceError, match="completeness validation"):
+        generate(
+            adapter,
+            revision_store,
+            children=bad_hash_children,
+            parents=parents,
+            corpus_store=ready_corpus_store(bad_hash_children, parents),
+            target_count=1,
+        )
+    assert adapter.calls == 0
+    assert revision_store.head_reads == 0
+    assert revision_store.staged == 0
+
+
+def test_generation_rejects_near_duplicate_questions():
+    drafts = [
+        answer_candidate(
+            "How are data governance stewardship responsibilities and accountability roles applied across enterprise policy management?"
+        ),
+        answer_candidate(
+            "What are data governance stewardship responsibilities and authority roles applied across enterprise policy management?"
+        ),
+    ]
+    store = FakeStore()
+    adapter = FakeAdapter([
+        result(drafts),
+        result([answer_candidate("Which governance model controls stewardship policy management?")]),
+    ])
+    report = generate(adapter, store, target_count=2)
+
+    assert report.status == "published"
+    assert report.generated_count == 2
+    assert report.rejected_count == 1
+    assert len(store.rows) == 2
 
 
 def test_refusal_proposals_require_scope_rationale_and_no_support():

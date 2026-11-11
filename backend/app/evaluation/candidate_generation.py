@@ -15,12 +15,18 @@ from pydantic import ValidationError
 from app.contracts import (
     AllowanceReservation,
     ChildDocumentChunk,
+    CorpusVersion,
     DatasetHead,
     EvaluationRowV2,
     ParentChunk,
     RawSourceSpan,
 )
 from app.evaluation.generations import ConcurrentActivationError
+from app.corpus.versions import (
+    CorpusCompletenessError,
+    hierarchical_validation_evidence,
+    validate_hierarchical_records,
+)
 from app.provider_allowance import AllowanceStageResult
 from model.candidate_generation import CandidateDraft, CandidateGenerationAdapter, PROMPT_VERSION
 from model.protocol import GenerationError, GenerationRequest, Passage
@@ -32,6 +38,16 @@ _BATCH_SIZE = 8
 _MAX_BATCHES = 50
 _MAX_RETRIES = 1
 _MODEL_PROVIDER = {"openrouter": "openrouter", "vertex": "google-gemini"}
+_QUESTION_FILLER = frozenset(
+    {
+        "a", "about", "an", "and", "are", "as", "at", "be", "by", "can", "could", "describe",
+        "define", "do", "does", "for", "from", "give", "how", "in", "is", "it", "of", "on",
+        "or", "please", "should", "that", "the", "their", "this", "to", "what", "when", "where",
+        "which", "who", "why", "with", "would",
+    }
+)
+_NEAR_DUPLICATE_THRESHOLD = 0.8
+_NEAR_DUPLICATE_MIN_TOKENS = 5
 
 
 class CandidateRevisionStore(Protocol):
@@ -44,6 +60,10 @@ class CandidateRevisionStore(Protocol):
     ) -> DatasetHead: ...
 
     def activate_revision(self, head: DatasetHead, *, expected_revision: int | None) -> DatasetHead: ...
+
+
+class CandidateCorpusStore(Protocol):
+    def get(self, version_id: str) -> CorpusVersion | None: ...
 
 
 @dataclass(frozen=True)
@@ -74,6 +94,7 @@ async def generate_candidate_revision(
     corpus_version_id: str,
     children: tuple[ChildDocumentChunk, ...],
     parents: tuple[ParentChunk, ...],
+    corpus_store: CandidateCorpusStore,
     adapter: CandidateGenerationAdapter,
     generator_route: str,
     generator_model: str,
@@ -90,9 +111,10 @@ async def generate_candidate_revision(
         raise ValueError("target_count cannot exceed the initial 200-row candidate target")
     if generator_route not in _MODEL_PROVIDER or not generator_model.strip() or not generator_configuration_version.strip():
         raise ValueError("candidate generation requires a pinned supported route, model, and configuration")
-    head = store.corpus_head(corpus_version_id)
-    current_rows = store.get_revision(head) if head else ()
-    old_head = head
+    _validate_ready_corpus(corpus_version_id, corpus_store, children, parents)
+    source_map = _validate_sources(corpus_version_id, children, parents)
+    if not source_map:
+        raise CandidateSourceError("candidate generation requires verified child sources")
     if allowance.status != "staged" or allowance.reservation is None:
         return _report(
             "awaiting_budget", corpus_version_id, generator_configuration_version,
@@ -107,10 +129,10 @@ async def generate_candidate_revision(
     if reservation.kind != "generation":
         raise ValueError("candidate generation requires a generation allowance reservation")
 
-    source_map = _validate_sources(corpus_version_id, children, parents)
-    if not source_map:
-        raise CandidateSourceError("candidate generation requires verified child sources")
-    seen_questions = {_normalize_question(row.question) for row in current_rows}
+    head = store.corpus_head(corpus_version_id)
+    current_rows = store.get_revision(head) if head else ()
+    old_head = head
+    seen_questions = {_normalize_question_key(row.question) for row in current_rows}
     rows: list[EvaluationRowV2] = []
     rejected = 0
     usage_tokens = 0
@@ -180,8 +202,8 @@ async def generate_candidate_revision(
         for draft in drafts:
             if len(rows) >= target_count:
                 break
-            question_key = _normalize_question(draft.question)
-            if question_key in seen_questions:
+            question_key = _normalize_question_key(draft.question)
+            if _is_near_duplicate(draft.question, seen_questions):
                 rejected += 1
                 continue
             row = _to_row(corpus_version_id, draft, source_by_alias)
@@ -213,6 +235,36 @@ def _reservation_is_current(reservation: AllowanceReservation, *, now: datetime 
     return reservation.allowance_observed_at <= instant < reservation.allowance_expires_at
 
 
+def _validate_ready_corpus(
+    corpus_version_id: str,
+    corpus_store: CandidateCorpusStore,
+    children: tuple[ChildDocumentChunk, ...],
+    parents: tuple[ParentChunk, ...],
+) -> CorpusVersion:
+    version = corpus_store.get(corpus_version_id)
+    if version is None or version.version_id != corpus_version_id:
+        raise CandidateSourceError("candidate generation requires a selected corpus version")
+    evidence = version.validation_evidence
+    if (
+        version.status not in {"validated", "active"}
+        or evidence is None
+        or not evidence.index_ready
+        or not evidence.filter_ready
+        or evidence.chunk_count != len(children)
+    ):
+        raise CandidateSourceError("candidate generation requires a complete ready corpus")
+    try:
+        validate_hierarchical_records(corpus_version_id, parents, children)
+        expected = hierarchical_validation_evidence(
+            version, parents, children, index_ready=True, filter_ready=True
+        )
+    except (CorpusCompletenessError, ValueError) as exc:
+        raise CandidateSourceError("candidate corpus completeness validation failed") from exc
+    if evidence != expected:
+        raise CandidateSourceError("candidate corpus readiness evidence does not match its source records")
+    return version
+
+
 def _validate_sources(
     corpus_version_id: str,
     children: tuple[ChildDocumentChunk, ...],
@@ -231,13 +283,33 @@ def _validate_sources(
             raise CandidateSourceError("candidate children must link to a parent in the requested corpus")
         if parent.corpus_version_id != child.corpus_version_id:
             raise CandidateSourceError("candidate child and parent corpus versions must match")
-        parent_spans = {(span.block_id, span.start_offset, span.end_offset) for span in parent.source_spans}
-        if not all(
-            any(block == span.block_id and start <= span.start_offset and end >= span.end_offset
-                for block, start, end in parent_spans)
-            for span in child.source_spans
-        ):
-            raise CandidateSourceError("candidate child spans must be linked to its parent")
+        for span in child.source_spans:
+            matching_parent_spans = [
+                parent_span
+                for parent_span in parent.source_spans
+                if parent_span.block_id is not None
+                and parent_span.block_id == span.block_id
+                and parent_span.page == span.page
+                and parent_span.start_offset <= span.start_offset
+                and span.end_offset <= parent_span.end_offset
+            ]
+            if len(matching_parent_spans) != 1:
+                raise CandidateSourceError("candidate child spans must identify one parent source span")
+            parent_span = matching_parent_spans[0]
+            if parent_span.span_id is None or span.span_id is None:
+                raise CandidateSourceError("candidate child and parent spans require source identities")
+            if span.start_offset == parent_span.start_offset and span.end_offset == parent_span.end_offset:
+                expected_span_id = parent_span.span_id
+            else:
+                expected_span_id = hashlib.sha256(
+                    f"{span.block_id}:{span.start_offset}:{span.end_offset}".encode("utf-8")
+                ).hexdigest()[:24]
+            if span.span_id != expected_span_id:
+                raise CandidateSourceError("candidate child span identity does not match its parent source range")
+            start = span.start_offset - parent_span.start_offset
+            end = span.end_offset - parent_span.start_offset
+            if span.text != parent_span.text[start:end]:
+                raise CandidateSourceError("candidate child text does not match its parent source range")
     return dict(sorted(
         child_map.items(),
         key=lambda item: (
@@ -330,6 +402,31 @@ def _to_row(
 def _normalize_question(question: str) -> str:
     value = unicodedata.normalize("NFKC", question).casefold()
     return re.sub(r"[^\w]+", " ", value).strip()
+
+
+def _normalize_question_key(question: str) -> str:
+    tokens = _normalize_question(question).split()
+    content_tokens = tuple(token for token in tokens if token not in _QUESTION_FILLER)
+    return " ".join(content_tokens or tokens)
+
+
+def _is_near_duplicate(question: str, existing_keys: set[str]) -> bool:
+    """Reject exact normalized questions and high-overlap content-word duplicates."""
+    key = _normalize_question_key(question)
+    if key in existing_keys:
+        return True
+    tokens = set(key.split())
+    if len(tokens) < _NEAR_DUPLICATE_MIN_TOKENS:
+        return False
+    for existing_key in existing_keys:
+        existing_tokens = set(existing_key.split())
+        if len(existing_tokens) < _NEAR_DUPLICATE_MIN_TOKENS:
+            continue
+        overlap = len(tokens & existing_tokens)
+        similarity = overlap / len(tokens | existing_tokens)
+        if similarity >= _NEAR_DUPLICATE_THRESHOLD:
+            return True
+    return False
 
 
 def _usage(tokens: int, known: bool) -> int | None:

@@ -330,7 +330,6 @@ def test_long_parent_section_is_counted_against_generation_context_budget() -> N
         chunk_id="v1:child:long-section", page=1, section="Governance",
         excerpt="Child passage", relevance_score=.9,
     )
-    sent_section = " / ".join(section_path)[:500]
     budget = count_tokens(parent_text)
 
     context, selected = select_parent_context(

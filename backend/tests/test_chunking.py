@@ -334,3 +334,42 @@ def test_parsed_list_items_remain_indivisible_in_parent_and_child_spans():
     assert parents.ready_for_promotion
     assert tuple(span.text for parent_chunk in parents.parents for span in parent_chunk.source_spans) == expected
     assert tuple(span.list_item_index for child in children for span in child.source_spans) == (0, 1, 2)
+
+
+def test_markdown_table_header_and_separator_stay_together_when_parent_splits():
+    header_table = "| Name | Value |\n| --- | --- |\n| first | one |\n| second | two |"
+    section = LogicalSection(
+        ("Data",),
+        (
+            SourceSpan(
+                page=3, start_offset=0, end_offset=len("preceding content"),
+                text="preceding content", span_id="intro", block_id="intro",
+                block_order=0, block_kind="text",
+            ),
+            SourceSpan(
+                page=3, start_offset=0, end_offset=len(header_table), text=header_table,
+                span_id="table", block_id="table", block_order=1, block_kind="table",
+                table_rows=(("Name", "Value"), ("first", "one"), ("second", "two")),
+            ),
+        ),
+    )
+
+    parents = segment_parents([section], corpus_version_id="v1", target_tokens=10, max_tokens=80)
+    children = segment_children(parents.parents, target_tokens=8, max_tokens=80)
+
+    assert parents.ready_for_promotion
+    assert len(parents.parents) > 1
+    assert parents.parents[0].source_text == "preceding content"
+    header_spans = [
+        span
+        for parent_chunk in parents.parents
+        for span in parent_chunk.source_spans
+        if span.table_row_index == 0
+    ]
+    assert len(header_spans) == 1
+    assert header_spans[0].text == "| Name | Value |\n| --- | --- |"
+    assert all(
+        child.text.startswith("Section: Data\n| Name | Value |\n| --- | --- |\n")
+        for child in children
+        if child.source_spans[0].table_row_index not in (0, None)
+    )

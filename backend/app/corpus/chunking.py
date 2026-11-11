@@ -459,8 +459,20 @@ def _table_units(source: SourceSpan) -> tuple[SourceSpan, ...]:
         if not rows:
             raise ValueError("parsed Markdown table has no source rows")
         header_count = 2 if len(rows) > 1 and re.fullmatch(r"\s*\|?\s*[:|\- ]+\s*\|?\s*", rows[1][2]) else 1
-        header_text = "\n".join(row[2] for row in rows[:header_count])
-        return tuple(
+        header_start = rows[0][0]
+        header_end = rows[header_count - 1][1]
+        header_text = source.text[header_start:header_end]
+        units = [
+            _source_fragment(
+                source,
+                source.start_offset + header_start,
+                header_text,
+                table_row_index=0,
+                table_header_text=header_text,
+                table_header_row_count=header_count,
+            )
+        ]
+        units.extend(
             _source_fragment(
                 source,
                 source.start_offset + start,
@@ -469,8 +481,9 @@ def _table_units(source: SourceSpan) -> tuple[SourceSpan, ...]:
                 table_header_text=header_text,
                 table_header_row_count=header_count,
             )
-            for index, (start, _, text) in enumerate(rows)
+            for index, (start, _, text) in enumerate(rows[header_count:], start=header_count)
         )
+        return tuple(units)
 
     line_starts = [0]
     for line in source.text.splitlines(keepends=True):

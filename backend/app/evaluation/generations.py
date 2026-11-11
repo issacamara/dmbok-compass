@@ -185,6 +185,7 @@ class FirestoreEvaluationGenerationStore:
 
     def activate_revision(
         self, head: DatasetHead, *, expected_revision: int | None, operation_key: str | None = None,
+        owner_id: str | None = None,
     ) -> DatasetHead:
         self.get_revision(head)
         pointer = self.corpus_heads.document(_corpus_id(head.corpus_version_id))
@@ -207,6 +208,10 @@ class FirestoreEvaluationGenerationStore:
                     if recorded_head != head:
                         raise GenerationIntegrityError("candidate operation is already bound to another revision")
                     return recorded_head
+                if owner_id is not None and (
+                    recorded.get("status") != "running" or recorded.get("owner_id") != owner_id
+                ):
+                    raise ConcurrentActivationError("candidate generation no longer owns the publication lease")
                 if recorded.get("status") == "running" and recorded.get("corpus_version_id") != head.corpus_version_id:
                     raise GenerationIntegrityError("candidate operation is bound to another corpus")
             current = DatasetHead.model_validate(snapshot.to_dict()) if snapshot.exists else None

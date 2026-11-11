@@ -69,7 +69,8 @@ class CandidateRevisionStore(Protocol):
     ) -> DatasetHead: ...
 
     def activate_revision(
-        self, head: DatasetHead, *, expected_revision: int | None, operation_key: str | None = None
+        self, head: DatasetHead, *, expected_revision: int | None, operation_key: str | None = None,
+        owner_id: str | None = None,
     ) -> DatasetHead: ...
 
     def operation_head(
@@ -127,6 +128,7 @@ async def generate_candidate_revision(
     generator_model: str,
     generator_configuration_version: str,
     operation_key: str,
+    operation_owner_id: str | None = None,
     allowance: AllowanceStageResult,
     allowance_store: ProviderAllowanceStore,
     allowance_capabilities: ProviderAccountCapabilities,
@@ -204,6 +206,7 @@ async def generate_candidate_revision(
             generator_model=generator_model,
             generator_configuration_version=generator_configuration_version,
             operation_key=operation_key,
+            operation_owner_id=operation_owner_id,
             allowance_reservation=reservation,
             allowance_store=allowance_store,
             allowance_capabilities=allowance_capabilities,
@@ -273,6 +276,7 @@ async def _generate_candidate_revision(
     generator_model: str,
     generator_configuration_version: str,
     operation_key: str,
+    operation_owner_id: str | None,
     allowance_reservation: AllowanceReservation,
     allowance_store: ProviderAllowanceStore,
     allowance_capabilities: ProviderAccountCapabilities,
@@ -384,6 +388,7 @@ async def _generate_candidate_revision(
         staged,
         expected_revision=old_head.revision if old_head else None,
         operation_key=operation_key,
+        owner_id=operation_owner_id,
     )
     return _report(
         "published", corpus_version_id, generator_configuration_version, generator_model,

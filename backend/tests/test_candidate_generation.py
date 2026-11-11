@@ -172,7 +172,8 @@ class FakeStore:
         self._staged_rows = tuple(rows)
         return head
 
-    def activate_revision(self, head, *, expected_revision, operation_key=None):
+    def activate_revision(self, head, *, expected_revision, operation_key=None, owner_id=None):
+        del owner_id
         if operation_key in self.operations:
             assert self.operations[operation_key] == head
             return head

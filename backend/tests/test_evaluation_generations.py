@@ -575,6 +575,38 @@ def test_candidate_operation_lease_serializes_generation_and_allows_expired_reco
     ) is True
 
 
+def test_candidate_revision_publication_requires_the_current_lease_owner() -> None:
+    from datetime import timedelta
+
+    from app.contracts import EvaluationRowV2
+    from app.evaluation.generations import ConcurrentActivationError
+
+    repository = store(FakeFirestore())
+    now = datetime(2026, 11, 11, 12, 0, tzinfo=timezone.utc)
+    arguments = {"operation_key": "corpus-v2:generator-v1", "corpus_version_id": "corpus-v2"}
+    row = EvaluationRowV2(
+        item_id="one", origin="generated", question="Out of scope?", category="study",
+        expected_outcome="evidence_refusal", expected_answer_or_rubric="Refuse",
+        expected_refusal=True, scope_rationale="Outside the corpus.",
+    )
+    head = repository.stage_revision("corpus-v2", 1, (row,))
+
+    assert repository.claim_operation(
+        **arguments, owner_id="stale-worker", lease_seconds=10, now=now
+    ) is True
+    assert repository.claim_operation(
+        **arguments, owner_id="current-worker", lease_seconds=10, now=now + timedelta(seconds=11)
+    ) is True
+    with pytest.raises(ConcurrentActivationError, match="no longer owns the publication lease"):
+        repository.activate_revision(
+            head, expected_revision=None, operation_key=arguments["operation_key"], owner_id="stale-worker"
+        )
+
+    assert repository.activate_revision(
+        head, expected_revision=None, operation_key=arguments["operation_key"], owner_id="current-worker"
+    ) == head
+
+
 def test_candidate_exploration_publishes_inactive_dataset_and_dispatches_one_full_run() -> None:
     from app.contracts import EvaluationCandidateSnapshot, EvaluationRowV2
     from app.evaluation.automatic import CandidateExplorationPublisher

@@ -358,6 +358,7 @@ def _prepare_candidate_evaluation(client: firestore.Client, project: str, runtim
             generator_model=stage.model,
             generator_configuration_version=stage.configuration_version,
             operation_key=operation_key,
+            operation_owner_id=owner_id,
             allowance=reservation,
             allowance_store=allowances,
             allowance_capabilities=capabilities,

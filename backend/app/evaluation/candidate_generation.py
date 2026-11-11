@@ -152,7 +152,7 @@ async def generate_candidate_revision(
         source_map = _validate_sources(corpus_version_id, children, parents)
         if not source_map:
             raise CandidateSourceError("candidate generation requires verified child sources")
-        required_units = _required_reservation_units(target_count, children, adapter)
+        required_units = _required_reservation_units(target_count, tuple(source_map.values()), adapter)
         if reservation.reserved_units < required_units:
             return _report(
                 "awaiting_budget", corpus_version_id, generator_configuration_version,
@@ -161,7 +161,6 @@ async def generate_candidate_revision(
             )
         return await _generate_candidate_revision(
             corpus_version_id=corpus_version_id,
-            children=children,
             source_map=source_map,
             adapter=adapter,
             generator_route=generator_route,
@@ -209,7 +208,6 @@ def _generation_call_limit(target_count: int) -> int:
 async def _generate_candidate_revision(
     *,
     corpus_version_id: str,
-    children: tuple[ChildDocumentChunk, ...],
     source_map: dict[str, ChildDocumentChunk],
     adapter: CandidateGenerationAdapter,
     generator_route: str,

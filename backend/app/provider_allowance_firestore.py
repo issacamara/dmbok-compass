@@ -17,6 +17,7 @@ from app.provider_allowance import (
     _bounded_retries,
     _now,
     _result_for_existing,
+    provider_allowance_reservation_id,
 )
 
 T = TypeVar("T")
@@ -77,7 +78,7 @@ class FirestoreProviderAllowanceStore:
 
     @staticmethod
     def _reservation_id(capabilities: ProviderAccountCapabilities, operation_key: str) -> str:
-        return _digest(capabilities.provider_id, capabilities.account_id, capabilities.kind, operation_key)
+        return provider_allowance_reservation_id(capabilities, operation_key)
 
     def observe(self, capabilities: ProviderAccountCapabilities, observation: ProviderAllowanceObservation) -> None:
         account_ref = self.accounts.document(self._account_id(capabilities))

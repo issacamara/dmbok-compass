@@ -113,6 +113,16 @@ def _now(value: datetime | None) -> datetime:
     return _utc(value or datetime.now(timezone.utc))
 
 
+def provider_allowance_reservation_id(
+    capabilities: ProviderAccountCapabilities, operation_key: str
+) -> str:
+    """Return the stable identity binding a reservation to provider, account, kind and operation."""
+    if not operation_key.strip():
+        raise ValueError("operation_key is required")
+    identity = (capabilities.provider_id, capabilities.account_id, capabilities.kind, operation_key)
+    return sha256("\0".join(identity).encode("utf-8")).hexdigest()
+
+
 def _bounded_retries(requested: int, capabilities: ProviderAccountCapabilities) -> int:
     if type(requested) is not int:
         raise ValueError("retries must be an integer")
@@ -207,7 +217,7 @@ class InMemoryProviderAllowanceStore:
             if reserve_units > observation.remaining_units - held - spent:
                 return AllowanceStageResult("awaiting_budget", None, "estimated usage exceeds unreserved allowance")
             record = AllowanceReservation(
-                reservation_id=sha256("\0".join((*account_key, operation_key)).encode("utf-8")).hexdigest(),
+                reservation_id=provider_allowance_reservation_id(capabilities, operation_key),
                 operation_key=operation_key,
                 kind=capabilities.kind,
                 allowance_observed_at=observation.observed_at,

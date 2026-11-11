@@ -32,6 +32,7 @@ from app.provider_allowance import (
     AllowanceStageResult,
     ProviderAccountCapabilities,
     ProviderAllowanceStore,
+    provider_allowance_reservation_id,
 )
 from model.candidate_generation import CandidateDraft, CandidateGenerationAdapter, PROMPT_VERSION
 from model.protocol import GenerationError, GenerationRequest, Passage
@@ -146,6 +147,10 @@ async def generate_candidate_revision(
         raise ValueError("candidate generation requires a supported generator route")
     if allowance_capabilities.provider_id != _MODEL_PROVIDER[generator_route]:
         raise ValueError("candidate generator route does not match its allowance provider")
+    if reservation.reservation_id != provider_allowance_reservation_id(
+        allowance_capabilities, operation_key
+    ):
+        raise ValueError("candidate generation allowance reservation has the wrong provider account identity")
     usage = _UsageAccumulator()
     try:
         if target_count < 1:

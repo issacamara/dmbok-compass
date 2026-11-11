@@ -28,6 +28,7 @@ from app.provider_allowance import (
     InMemoryProviderAllowanceStore,
     ProviderAccountCapabilities,
     ProviderAllowanceObservation,
+    provider_allowance_reservation_id,
 )
 from model.candidate_generation import CandidateDraft, CandidateGenerationResult
 from model.protocol import (
@@ -184,9 +185,11 @@ class FakeAllowanceStore:
         return AllowanceStageResult(status, self.reservation)
 
 def allowance(status="staged", *, kind="generation", units=1_000_000):
+    capabilities = ProviderAccountCapabilities("openrouter", "generator", kind)
+    operation_key = "generation-1"
     reservation = None if status != "staged" else AllowanceReservation(
-        reservation_id="reservation-1",
-        operation_key="generation-1",
+        reservation_id=provider_allowance_reservation_id(capabilities, operation_key),
+        operation_key=operation_key,
         kind=kind,
         allowance_observed_at=NOW - timedelta(minutes=1),
         allowance_expires_at=NOW + timedelta(minutes=10),
@@ -389,6 +392,11 @@ def test_generation_rejects_wrong_provider_or_operation_reservation_before_calls
             ProviderAccountCapabilities("openrouter", "generator", "generation"),
             "another-operation",
             "wrong operation key",
+        ),
+        (
+            ProviderAccountCapabilities("openrouter", "other-generator", "generation"),
+            "generation-1",
+            "provider account identity",
         ),
     ):
         budget = allowance()

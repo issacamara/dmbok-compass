@@ -76,6 +76,8 @@ class CandidateGenerationResult(BaseModel):
 
 
 class CandidateGenerationAdapter(Protocol):
+    max_output_tokens: int
+
     async def generate(self, request: GenerationRequest) -> CandidateGenerationResult: ...
 
 

@@ -113,7 +113,7 @@ def test_probe_validates_hierarchical_child_provenance_and_schema() -> None:
         text="child",
     )
     metadata = {
-        **child.model_dump(mode="json"),
+        **child.model_dump(mode="json", exclude_none=True),
         "chunk_id": child.chunk_id,
     }
     store = FakeVectorStore([(Document(metadata), 0.91)])

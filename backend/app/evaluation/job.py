@@ -668,6 +668,46 @@ class EvaluationJobService:
             self.dispatcher.dispatch(stored, dataset)
         return stored
 
+    def launch_immutable_candidate(
+        self,
+        *,
+        dataset: EvaluationDataset,
+        corpus_version_id: str,
+        configuration_version_id: str,
+        model_version_id: str,
+        snapshot: EvaluationCandidateSnapshot,
+        run_id: str,
+        item_ids: list[str] | None = None,
+    ) -> EvaluationRun:
+        """Dispatch a server-bound candidate dataset without moving the active pointer.
+
+        This is an internal path for a committed corpus revision. The caller
+        resolves its attempt, revision, and configuration from durable records;
+        browser input can select item IDs but cannot supply any bindings.
+        """
+        if snapshot.corpus_binding.corpus_version_id != corpus_version_id:
+            raise EvaluationRunError("candidate snapshot does not match the corpus revision")
+        stored_dataset = self.datasets.get(dataset.dataset_version_id)
+        if stored_dataset is None or stored_dataset.model_dump(mode="json") != dataset.model_dump(mode="json"):
+            raise EvaluationRunError("candidate dataset is not durably committed")
+        selected = select_items(dataset, item_ids)
+        run = EvaluationRun(
+            run_id=run_id,
+            dataset_version_id=dataset.dataset_version_id,
+            corpus_version_id=corpus_version_id,
+            status="queued",
+            selected_item_ids=list(selected),
+            configuration_version_id=configuration_version_id,
+            model_version_id=model_version_id,
+            candidate_snapshot=snapshot,
+            report_eligibility=None,
+        )
+        run = run.model_copy(update={"report_eligibility": self._eligibility_for_run(run)})
+        persisted = self.runs.create_or_get(run)
+        if persisted.status == "queued":
+            self.dispatcher.dispatch(persisted, dataset)
+        return persisted
+
     def status(self, run_id: str) -> EvaluationRun:
         run = self.runs.get(run_id)
         if run is None:

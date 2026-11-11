@@ -7,7 +7,7 @@ documents, but it can never replace the currently visible dataset.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
 from typing import Any, Callable, Protocol, TypeVar
@@ -106,6 +106,7 @@ class FirestoreEvaluationGenerationStore:
     corpus_heads_collection_id = "evaluation_dataset_heads_v2"
     revision_winners_collection_id = "evaluation_dataset_revision_winners_v2"
     run_snapshots_collection_id = "evaluation_run_snapshots_v2"
+    candidate_operations_collection_id = "evaluation_candidate_generation_operations_v1"
 
     def __init__(
         self,
@@ -120,6 +121,7 @@ class FirestoreEvaluationGenerationStore:
         self.corpus_heads = client.collection(self.corpus_heads_collection_id)
         self.revision_winners = client.collection(self.revision_winners_collection_id)
         self.run_snapshots = client.collection(self.run_snapshots_collection_id)
+        self.candidate_operations = client.collection(self.candidate_operations_collection_id)
         self._transaction_runner = transaction_runner
 
     def stage_revision(
@@ -181,14 +183,32 @@ class FirestoreEvaluationGenerationStore:
         snapshot = self.corpus_heads.document(_corpus_id(corpus_version_id)).get()
         return DatasetHead.model_validate(snapshot.to_dict()) if snapshot.exists else None
 
-    def activate_revision(self, head: DatasetHead, *, expected_revision: int | None) -> DatasetHead:
+    def activate_revision(
+        self, head: DatasetHead, *, expected_revision: int | None, operation_key: str | None = None,
+    ) -> DatasetHead:
         self.get_revision(head)
         pointer = self.corpus_heads.document(_corpus_id(head.corpus_version_id))
         winner = self.revision_winners.document(_revision_id(head.corpus_version_id, head.revision))
+        operation = self.candidate_operations.document(_operation_id(operation_key)) if operation_key else None
 
         def apply(transaction: Any) -> DatasetHead:
             snapshot = pointer.get(transaction=transaction)
             winner_snapshot = winner.get(transaction=transaction)
+            operation_snapshot = operation.get(transaction=transaction) if operation is not None else None
+            if operation_snapshot is not None and operation_snapshot.exists:
+                recorded = operation_snapshot.to_dict()
+                if recorded.get("operation_key") != operation_key:
+                    raise GenerationIntegrityError("candidate operation identity conflicts")
+                if recorded.get("status") == "published":
+                    try:
+                        recorded_head = DatasetHead.model_validate(recorded["head"])
+                    except (KeyError, TypeError, ValueError):
+                        raise GenerationIntegrityError("candidate operation head is invalid") from None
+                    if recorded_head != head:
+                        raise GenerationIntegrityError("candidate operation is already bound to another revision")
+                    return recorded_head
+                if recorded.get("status") == "running" and recorded.get("corpus_version_id") != head.corpus_version_id:
+                    raise GenerationIntegrityError("candidate operation is bound to another corpus")
             current = DatasetHead.model_validate(snapshot.to_dict()) if snapshot.exists else None
             if (current.revision if current else None) != expected_revision:
                 raise ConcurrentActivationError("corpus dataset revision changed before activation")
@@ -198,9 +218,91 @@ class FirestoreEvaluationGenerationStore:
                 raise ConcurrentActivationError("corpus dataset revision is already published")
             transaction.set(winner, head.model_dump(mode="json"))
             transaction.set(pointer, head.model_dump(mode="json"))
+            if operation is not None:
+                transaction.set(operation, {
+                    "operation_key": operation_key,
+                    "corpus_version_id": head.corpus_version_id,
+                    "status": "published",
+                    "head": head.model_dump(mode="json"),
+                })
             return head
 
         return self._transaction_runner(self.client.transaction(), apply)
+
+    def operation_head(
+        self, operation_key: str, *, corpus_version_id: str | None = None
+    ) -> DatasetHead | None:
+        if not operation_key.strip():
+            raise ValueError("candidate operation key is required")
+        snapshot = self.candidate_operations.document(_operation_id(operation_key)).get()
+        if not snapshot.exists:
+            return None
+        payload = snapshot.to_dict()
+        if payload.get("operation_key") != operation_key:
+            raise GenerationIntegrityError("candidate operation identity conflicts")
+        if payload.get("status") != "published":
+            if corpus_version_id is not None and payload.get("corpus_version_id") not in (None, corpus_version_id):
+                raise GenerationIntegrityError("candidate operation key belongs to another corpus")
+            return None
+        try:
+            head = DatasetHead.model_validate(payload["head"])
+        except (KeyError, TypeError, ValueError):
+            raise GenerationIntegrityError("candidate operation head is invalid") from None
+        if corpus_version_id is not None and head.corpus_version_id != corpus_version_id:
+            raise GenerationIntegrityError("candidate operation key belongs to another corpus")
+        return head
+
+    def claim_operation(
+        self, operation_key: str, *, corpus_version_id: str, owner_id: str,
+        lease_seconds: int = 900, now: datetime | None = None,
+    ) -> bool:
+        if not operation_key.strip() or not corpus_version_id.strip() or not owner_id.strip():
+            raise ValueError("candidate operation identity is required")
+        if lease_seconds < 1:
+            raise ValueError("candidate operation lease must be positive")
+        instant = now or datetime.now(timezone.utc)
+        reference = self.candidate_operations.document(_operation_id(operation_key))
+
+        def apply(transaction: Any) -> bool:
+            snapshot = reference.get(transaction=transaction)
+            record = snapshot.to_dict() if snapshot.exists else {}
+            if record.get("operation_key") not in (None, operation_key):
+                raise GenerationIntegrityError("candidate operation identity conflicts")
+            if record.get("corpus_version_id") not in (None, corpus_version_id):
+                raise GenerationIntegrityError("candidate operation key belongs to another corpus")
+            if record.get("status") == "published":
+                return False
+            lease_until = record.get("lease_until")
+            if isinstance(lease_until, str):
+                lease_until = datetime.fromisoformat(lease_until)
+            if record.get("status") == "running" and isinstance(lease_until, datetime) and lease_until > instant:
+                return False
+            transaction.set(reference, {
+                **record,
+                "operation_key": operation_key,
+                "corpus_version_id": corpus_version_id,
+                "status": "running",
+                "owner_id": owner_id,
+                "lease_until": (instant + timedelta(seconds=lease_seconds)).isoformat(),
+            })
+            return True
+
+        return self._transaction_runner(self.client.transaction(), apply)
+
+    def release_operation(self, operation_key: str, *, owner_id: str, status: str) -> None:
+        if status not in {"awaiting_budget", "failed"}:
+            raise ValueError("candidate operation release status is invalid")
+        reference = self.candidate_operations.document(_operation_id(operation_key))
+
+        def apply(transaction: Any) -> None:
+            snapshot = reference.get(transaction=transaction)
+            if not snapshot.exists:
+                return
+            record = snapshot.to_dict()
+            if record.get("status") == "running" and record.get("owner_id") == owner_id:
+                transaction.update(reference, {"status": status, "owner_id": None, "lease_until": None})
+
+        self._transaction_runner(self.client.transaction(), apply)
 
     def create_run_snapshot(
         self, *, run_id: str, binding: CandidateDatasetBinding | ServingDatasetBinding,
@@ -721,6 +823,10 @@ def _corpus_id(corpus_version_id: str) -> str:
 
 def _revision_id(corpus_version_id: str, revision: int) -> str:
     return f"{_corpus_id(corpus_version_id)}-{revision}"
+
+
+def _operation_id(operation_key: str) -> str:
+    return sha256(operation_key.encode("utf-8")).hexdigest()
 
 
 def _proposal_id(head: DatasetHead) -> str:

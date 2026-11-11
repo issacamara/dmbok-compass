@@ -141,6 +141,7 @@ class FakeStore:
     def __init__(self, rows=()):
         self.rows = tuple(rows)
         self.head = None
+        self.operations = {}
         self.staged = 0
         self.head_reads = 0
         self.revision_reads = 0
@@ -154,6 +155,11 @@ class FakeStore:
         assert head == self.head
         return self.rows
 
+    def operation_head(self, operation_key, *, corpus_version_id=None):
+        if operation_key in self.operations and corpus_version_id is not None:
+            assert self.operations[operation_key].corpus_version_id == corpus_version_id
+        return self.operations.get(operation_key)
+
     def stage_revision(self, corpus_version_id, revision, rows):
         self.staged += 1
         head = DatasetHead(
@@ -166,10 +172,15 @@ class FakeStore:
         self._staged_rows = tuple(rows)
         return head
 
-    def activate_revision(self, head, *, expected_revision):
+    def activate_revision(self, head, *, expected_revision, operation_key=None):
+        if operation_key in self.operations:
+            assert self.operations[operation_key] == head
+            return head
         assert expected_revision == (self.head.revision if self.head else None)
         self.head = head
         self.rows = self._staged_rows
+        if operation_key is not None:
+            self.operations[operation_key] = head
         return head
 
 
@@ -453,6 +464,21 @@ def test_candidates_bind_exact_corpus_spans_and_remain_unapproved():
     assert row.relevant_child_ids == ("corpus-v2:child:21-0",)
     assert row.parent_ids == ("corpus-v2:parent:1:1",)
     assert not hasattr(row, "review_status")
+
+
+def test_published_generation_replay_returns_committed_revision_without_regenerating():
+    store = FakeStore()
+    original = FakeAdapter([result([answer_candidate("Define data quality?")])])
+    first = generate(original, store, target_count=1, operation_key="generation-1")
+    retried = FakeAdapter([result([answer_candidate("Must not be requested")])])
+
+    replay = generate(retried, store, target_count=1, operation_key="generation-1")
+
+    assert replay.status == "published"
+    assert replay.dataset_head == first.dataset_head == store.head
+    assert original.calls == 1
+    assert retried.calls == 0
+    assert store.staged == 1
 
 
 def test_child_source_binding_rejects_corrupt_page_and_text():

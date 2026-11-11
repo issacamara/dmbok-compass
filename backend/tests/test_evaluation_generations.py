@@ -528,6 +528,114 @@ def test_v2_run_snapshot_survives_revision_change_and_restart() -> None:
                                           configuration=configuration, item_ids=("one",))
 
 
+def test_candidate_operation_replay_returns_same_head_and_rejects_other_corpus() -> None:
+    from app.contracts import EvaluationRowV2
+    from app.evaluation.generations import EvaluationGenerationError
+
+    repository = store(FakeFirestore())
+    row = EvaluationRowV2(
+        item_id="one", origin="generated", question="Out of scope?", category="study",
+        expected_outcome="evidence_refusal", expected_answer_or_rubric="Refuse",
+        expected_refusal=True, scope_rationale="Outside the corpus.",
+    )
+    head = repository.stage_revision("corpus-v2", 1, (row,))
+
+    published = repository.activate_revision(head, expected_revision=None, operation_key="corpus-v2:generator-v1")
+    replay = repository.activate_revision(head, expected_revision=None, operation_key="corpus-v2:generator-v1")
+
+    assert replay == published == head
+    assert repository.operation_head("corpus-v2:generator-v1", corpus_version_id="corpus-v2") == head
+    with pytest.raises(EvaluationGenerationError, match="another corpus"):
+        repository.operation_head("corpus-v2:generator-v1", corpus_version_id="corpus-other")
+
+
+def test_candidate_operation_lease_serializes_generation_and_allows_expired_recovery() -> None:
+    from datetime import timedelta
+
+    repository = store(FakeFirestore())
+    now = datetime(2026, 11, 11, 12, 0, tzinfo=timezone.utc)
+    arguments = {"operation_key": "corpus-v2:generator-v1", "corpus_version_id": "corpus-v2"}
+
+    assert repository.claim_operation(
+        **arguments, owner_id="worker-one", lease_seconds=60, now=now
+    ) is True
+    assert repository.claim_operation(
+        **arguments, owner_id="worker-two", lease_seconds=60, now=now + timedelta(seconds=30)
+    ) is False
+    assert repository.claim_operation(
+        **arguments, owner_id="worker-two", lease_seconds=60, now=now + timedelta(seconds=61)
+    ) is True
+    repository.release_operation(arguments["operation_key"], owner_id="worker-one", status="failed")
+    assert repository.claim_operation(
+        **arguments, owner_id="worker-three", lease_seconds=60, now=now + timedelta(seconds=62)
+    ) is False
+    repository.release_operation(arguments["operation_key"], owner_id="worker-two", status="awaiting_budget")
+    assert repository.claim_operation(
+        **arguments, owner_id="worker-three", lease_seconds=60, now=now + timedelta(seconds=63)
+    ) is True
+
+
+def test_candidate_exploration_publishes_inactive_dataset_and_dispatches_one_full_run() -> None:
+    from app.contracts import EvaluationCandidateSnapshot, EvaluationRowV2
+    from app.evaluation.automatic import CandidateExplorationPublisher
+    from app.evaluation.job import EvaluationJobService, InMemoryEvaluationJobDispatcher, InMemoryEvaluationRunStore
+
+    client = FakeFirestore()
+    repository = store(client)
+    serving = EvaluationDataset(
+        dataset_version_id="serving-dataset",
+        items=[EvaluationItem(item_id="serving-item", question="Serving?", dataset_version_id="serving-dataset")],
+    )
+    generation_id = repository.stage(serving)
+    repository.activate(generation_id, expected_active_generation_id=None)
+
+    row = EvaluationRowV2(
+        item_id="candidate-item", origin="generated", question="Outside the DMBOK scope?",
+        category="study", expected_outcome="evidence_refusal", expected_answer_or_rubric="Refuse",
+        expected_refusal=True, scope_rationale="This subject is outside the corpus.",
+    )
+    head = repository.stage_revision("corpus-v2", 1, (row,))
+    repository.activate_revision(head, expected_revision=None)
+
+    class Resolver:
+        def resolve(self, *, corpus_version_id, configuration_version_id, model_version_id):
+            return EvaluationCandidateSnapshot(
+                corpus_binding=CorpusServingBinding(
+                    corpus_version_id=corpus_version_id, vector_collection="vectors",
+                    vector_schema_version="2", embedding_model="embedding",
+                    ingestion_fingerprint="a" * 64, configuration_fingerprint="b" * 64,
+                ),
+                project="project", location="region", answer_provider="openrouter", primary_model="model",
+                json_schema_supported=True, request_timeout_ms=1000, generation_timeout_ms=500,
+                prompt_version="prompt", retrieval_policy_version="retrieval", evidence_policy_version="evidence",
+                scorer_version="scorer", dependency_lock_sha256="c" * 64,
+                integration_artifact="artifact", runtime_version="runtime",
+            )
+
+    dispatcher = InMemoryEvaluationJobDispatcher()
+    jobs = EvaluationJobService(repository, InMemoryEvaluationRunStore(), dispatcher, Resolver())
+    publisher = CandidateExplorationPublisher(repository, jobs)
+
+    snapshot = publisher.launch(
+        attempt_id="attempt-v2", head=head, configuration_version_id="config-v2", model_version_id="model-v2",
+    )
+    replay = publisher.launch(
+        attempt_id="attempt-v2", head=head, configuration_version_id="config-v2", model_version_id="model-v2",
+    )
+
+    run = jobs.status(snapshot.run_id)
+    assert snapshot == replay
+    assert snapshot.binding.attempt_id == "attempt-v2"
+    assert snapshot.binding.corpus_version_id == "corpus-v2"
+    assert snapshot.selection == "full"
+    assert run.dataset_version_id.startswith("candidate-")
+    assert run.selected_item_ids == ["candidate-item"]
+    assert run.report_eligibility is not None
+    assert run.report_eligibility.eligibility == "exploratory"
+    assert repository.active().generation_id == "serving-dataset"
+    assert set(dispatcher.dispatched) == {snapshot.run_id}
+
+
 def test_v2_revision_rejects_invalid_shape_and_corrupted_staged_items() -> None:
     from app.contracts import EvaluationRowV2
     from pydantic import ValidationError

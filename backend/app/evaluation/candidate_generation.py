@@ -68,7 +68,13 @@ class CandidateRevisionStore(Protocol):
         self, corpus_version_id: str, revision: int, rows: tuple[EvaluationRowV2, ...]
     ) -> DatasetHead: ...
 
-    def activate_revision(self, head: DatasetHead, *, expected_revision: int | None) -> DatasetHead: ...
+    def activate_revision(
+        self, head: DatasetHead, *, expected_revision: int | None, operation_key: str | None = None
+    ) -> DatasetHead: ...
+
+    def operation_head(
+        self, operation_key: str, *, corpus_version_id: str | None = None
+    ) -> DatasetHead | None: ...
 
 
 class CandidateCorpusStore(Protocol):
@@ -129,6 +135,20 @@ async def generate_candidate_revision(
     now: datetime | None = None,
 ) -> CandidateGenerationReport:
     """Generate, validate, then atomically publish one candidate dataset revision."""
+    if not operation_key.strip():
+        raise ValueError("candidate generation requires a stable operation key")
+    find_operation = getattr(store, "operation_head", None)
+    existing_head = (
+        find_operation(operation_key, corpus_version_id=corpus_version_id)
+        if callable(find_operation)
+        else None
+    )
+    if existing_head is not None:
+        existing_rows = store.get_revision(existing_head)
+        return _report(
+            "published", corpus_version_id, generator_configuration_version,
+            generator_model, target_count, existing_rows, 0, None, dataset_head=existing_head,
+        )
     if allowance.status != "staged" or allowance.reservation is None:
         if target_count < 1:
             raise ValueError("target_count must be positive")
@@ -183,6 +203,7 @@ async def generate_candidate_revision(
             generator_route=generator_route,
             generator_model=generator_model,
             generator_configuration_version=generator_configuration_version,
+            operation_key=operation_key,
             allowance_reservation=reservation,
             allowance_store=allowance_store,
             allowance_capabilities=allowance_capabilities,
@@ -251,6 +272,7 @@ async def _generate_candidate_revision(
     generator_route: str,
     generator_model: str,
     generator_configuration_version: str,
+    operation_key: str,
     allowance_reservation: AllowanceReservation,
     allowance_store: ProviderAllowanceStore,
     allowance_capabilities: ProviderAccountCapabilities,
@@ -358,7 +380,11 @@ async def _generate_candidate_revision(
     next_revision = (old_head.revision + 1) if old_head else 1
     combined_rows = (*current_rows, *rows)
     staged = store.stage_revision(corpus_version_id, next_revision, combined_rows)
-    activated = store.activate_revision(staged, expected_revision=old_head.revision if old_head else None)
+    activated = store.activate_revision(
+        staged,
+        expected_revision=old_head.revision if old_head else None,
+        operation_key=operation_key,
+    )
     return _report(
         "published", corpus_version_id, generator_configuration_version, generator_model,
         target_count, tuple(rows), rejected, _usage(usage.tokens, usage.known), dataset_head=activated,

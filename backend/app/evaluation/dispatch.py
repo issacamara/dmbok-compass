@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 from typing import Any, Callable, Protocol
+from uuid import uuid4
 
 from google.api_core.exceptions import AlreadyExists
+from google.cloud import firestore
 
 from app.contracts import EvaluationDataset, EvaluationRun
 from app.evaluation.job import EvaluationRunError
@@ -31,6 +34,7 @@ class EvaluationDispatchClaimStore:
     collection_id = "evaluation_run_dispatches"
 
     def __init__(self, client: Any) -> None:
+        self._client = client
         self._claims = client.collection(self.collection_id)
 
     def claim(self, run_id: str) -> bool:
@@ -42,8 +46,63 @@ class EvaluationDispatchClaimStore:
         except AlreadyExists:
             return False
 
-    def release(self, run_id: str) -> None:
-        self._claims.document(run_id).delete()
+    def release(self, run_id: str, *, owner_id: str | None = None) -> None:
+        reference = self._claims.document(run_id)
+        if owner_id is None:
+            reference.delete()
+            return
+
+        @firestore.transactional
+        def apply(transaction: Any) -> None:
+            snapshot = reference.get(transaction=transaction)
+            record = snapshot.to_dict() if snapshot.exists else {}
+            if record.get("owner_id") == owner_id and record.get("state") in {"submitting", "submitted"}:
+                transaction.delete(reference)
+
+        apply(self._client.transaction())
+
+    def claim_leased(
+        self, run_id: str, *, lease_seconds: int = 120, now: datetime | None = None,
+    ) -> str | None:
+        """Acquire or recover an expired submission lease for resumable dispatch."""
+        if lease_seconds < 1:
+            raise ValueError("dispatch lease must be positive")
+        instant = now or datetime.now(timezone.utc)
+        reference = self._claims.document(run_id)
+        owner_id = uuid4().hex
+
+        @firestore.transactional
+        def apply(transaction: Any) -> str | None:
+            snapshot = reference.get(transaction=transaction)
+            record = snapshot.to_dict() if snapshot.exists else {}
+            if record.get("state") == "submitted":
+                return None
+            lease_until = record.get("lease_until")
+            if isinstance(lease_until, str):
+                lease_until = datetime.fromisoformat(lease_until)
+            if record.get("state") == "submitting" and isinstance(lease_until, datetime) and lease_until > instant:
+                return None
+            transaction.set(reference, {
+                "run_id": run_id,
+                "state": "submitting",
+                "lease_until": (instant + timedelta(seconds=lease_seconds)).isoformat(),
+                "owner_id": owner_id,
+            })
+            return owner_id
+
+        return apply(self._client.transaction())
+
+    def complete_claim(self, run_id: str, *, owner_id: str) -> None:
+        reference = self._claims.document(run_id)
+
+        @firestore.transactional
+        def apply(transaction: Any) -> None:
+            snapshot = reference.get(transaction=transaction)
+            record = snapshot.to_dict() if snapshot.exists else {}
+            if record.get("owner_id") == owner_id and record.get("state") == "submitting":
+                transaction.update(reference, {"state": "submitted", "lease_until": None})
+
+        apply(self._client.transaction())
 
 
 class CloudRunJobExecutor:
@@ -55,6 +114,10 @@ class CloudRunJobExecutor:
         self.job_name = _non_empty(job_name, "job_name")
 
     def __call__(self, run_id: str) -> None:
+        self.dispatch_overrides({"EVALUATION_RUN_ID": run_id})
+
+    def dispatch_overrides(self, environment: dict[str, str]) -> None:
+        """Start one execution with a bounded set of server-created variables."""
         import google.auth
         from google.auth.transport.requests import AuthorizedSession
 
@@ -67,7 +130,7 @@ class CloudRunJobExecutor:
             json={
                 "overrides": {
                     "containerOverrides": [
-                        {"env": [{"name": "EVALUATION_RUN_ID", "value": run_id}]}
+                        {"env": [{"name": name, "value": value} for name, value in sorted(environment.items())]}
                     ]
                 }
             },
@@ -76,6 +139,42 @@ class CloudRunJobExecutor:
         if not response.ok:
             status_code, provider_code, provider_message = _safe_provider_diagnostic(response)
             raise EvaluationDispatchError(status_code, provider_code, provider_message)
+
+
+class CloudRunCandidateGenerationDispatcher:
+    """Submit one durable generation task per corpus and generator fingerprint."""
+
+    def __init__(self, claims: EvaluationDispatchClaimStore, executor: CloudRunJobExecutor) -> None:
+        self.claims = claims
+        self.executor = executor
+
+    @staticmethod
+    def operation_key(corpus_version_id: str, generator_fingerprint: str) -> str:
+        return f"candidate-generation:{corpus_version_id}:{generator_fingerprint}"
+
+    @staticmethod
+    def claim_id(operation_key: str) -> str:
+        return "candidate-generation-" + sha256(operation_key.encode("utf-8")).hexdigest()
+
+    def dispatch(self, *, attempt_id: str, corpus_version_id: str, generator_fingerprint: str) -> bool:
+        operation_key = self.operation_key(corpus_version_id, generator_fingerprint)
+        claim_id = self.claim_id(operation_key)
+        owner_id = self.claims.claim_leased(claim_id)
+        if owner_id is None:
+            return False
+        try:
+            self.executor.dispatch_overrides({
+                "EVALUATION_TASK": "prepare_candidates",
+                "CORPUS_STAGING_ATTEMPT_ID": attempt_id,
+                "EVALUATION_CORPUS_VERSION_ID": corpus_version_id,
+                "EVALUATION_GENERATOR_FINGERPRINT": generator_fingerprint,
+                "EVALUATION_DISPATCH_OWNER_ID": owner_id,
+            })
+        except Exception:
+            self.claims.release(claim_id, owner_id=owner_id)
+            raise
+        self.claims.complete_claim(claim_id, owner_id=owner_id)
+        return True
 
 
 class CloudRunEvaluationJobDispatcher:

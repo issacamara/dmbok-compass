@@ -151,10 +151,7 @@ def test_hierarchical_writer_preserves_explicit_ids_and_nested_metadata() -> Non
     assert parent_record["metadata"]["corpus_manifest_sha256"] == manifest.manifest_sha256
     assert vector_store.calls[0][1] == [child.chunk_id for child in children]
     assert child_document.metadata["parent_id"] == parents[0].parent_id
-    assert child_document.metadata["source_spans"][0] == {
-        "page": 1,
-        "start_offset": 0,
-        "end_offset": 1,
-        "text": "x",
-    }
+    assert child_document.metadata["source_spans"][0] == children[0].source_spans[0].model_dump(
+        mode="json", exclude_none=True
+    )
     assert child_document.metadata["corpus_manifest_sha256"] == manifest.manifest_sha256

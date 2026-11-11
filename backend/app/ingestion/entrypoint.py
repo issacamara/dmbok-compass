@@ -338,6 +338,8 @@ def build_hierarchical_candidate(
         approval_sha256=approval_sha256,
         ingestion_gate=ingestion_gate,
         vector_collection=vector_collection,
+        parsing_artifact_sha256=expected_parsing_artifact_sha256,
+        parsing_output_sha256=expected_parsing_output_sha256,
     )
     manifest = create_source_manifest(
         bucket=source_manifest.bucket,

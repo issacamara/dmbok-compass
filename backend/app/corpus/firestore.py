@@ -204,6 +204,14 @@ class FirestoreCorpusVersionStore:
         )
         if evidence.complete.collection_id != expected_collection:
             raise CorpusVersionError("search readiness evidence is bound to another collection")
+        if evidence.complete.status == "complete" and (
+            version is None
+            or version.status not in {"staged", "validated", "active"}
+            or version.validation_evidence is None
+        ):
+            raise CorpusVersionError(
+                "complete search readiness requires persisted corpus completeness validation"
+            )
         if evidence.search_ready is not None and (
             evidence.complete.status != "complete"
             or evidence.search_ready.status != "search_ready"

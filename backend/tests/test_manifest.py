@@ -187,6 +187,46 @@ def test_hierarchical_derivation_records_map_approval_tokenizer_and_schema() -> 
     }
 
 
+def test_parse_output_and_reviewed_boundaries_create_fresh_deterministic_identities() -> None:
+    common = {
+        "map_id": "reviewed-map",
+        "map_uri": "gs://corpus/maps/reviewed.json",
+        "map_generation": 12,
+        "map_file_sha256": "b" * 64,
+        "map_content_sha256": "c" * 64,
+        "approval_uri": "gs://corpus/approvals/reviewed.json",
+        "approval_generation": 13,
+        "approval_sha256": "d" * 64,
+        "ingestion_gate": {"oversized_indivisible_list_items_or_table_rows": True},
+        "parsing_artifact_sha256": "e" * 64,
+        "parsing_output_sha256": "f" * 64,
+    }
+
+    def manifest(**changes: object):
+        args = {**common, **changes}
+        return create_source_manifest(
+            bucket="dmbok-corpus",
+            object_name="source/dmbok.pdf",
+            generation=7,
+            content_sha256=PDF_HASH,
+            derivation=hierarchical_derivation(**args),  # type: ignore[arg-type]
+        )
+
+    first = manifest()
+    rebuilt = manifest()
+    changed_parse = manifest(parsing_output_sha256="1" * 64)
+    changed_boundary = manifest(map_content_sha256="2" * 64)
+
+    assert rebuilt.corpus_version_id == first.corpus_version_id
+    assert rebuilt.manifest_sha256 == first.manifest_sha256
+    assert changed_parse.corpus_version_id != first.corpus_version_id
+    assert changed_boundary.corpus_version_id != first.corpus_version_id
+    assert first.manifest["derivation"]["parsing"]["provider"] == "llamacloud"
+    assert first.manifest["derivation"]["parsing"]["options"] == {
+        "route": "llamacloud", "input_content_type": "application/pdf"
+    }
+
+
 def test_hierarchical_manifest_rejects_invalid_map_or_approval_digest() -> None:
     with pytest.raises(ValueError, match="map_file_sha256"):
         hierarchical_derivation(

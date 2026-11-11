@@ -137,6 +137,8 @@ def hierarchical_derivation(
     approval_sha256: str,
     ingestion_gate: Mapping[str, Any],
     vector_collection: str = VECTOR_COLLECTION,
+    parsing_artifact_sha256: str | None = None,
+    parsing_output_sha256: str | None = None,
 ) -> dict[str, Any]:
     """Return all approved map and parent/child algorithm inputs explicitly."""
 
@@ -147,6 +149,15 @@ def hierarchical_derivation(
     ):
         if not _SHA256.fullmatch(digest):
             raise ValueError(f"{name} must be a lowercase SHA-256 digest")
+    if (parsing_artifact_sha256 is None) != (parsing_output_sha256 is None):
+        raise ValueError("parsing artifact and output digests must be provided together")
+    if parsing_artifact_sha256 is not None:
+        for name, digest in (
+            ("parsing_artifact_sha256", parsing_artifact_sha256),
+            ("parsing_output_sha256", parsing_output_sha256),
+        ):
+            if digest is None or not _SHA256.fullmatch(digest):
+                raise ValueError(f"{name} must be a lowercase SHA-256 digest")
     if not map_id or map_id.strip() != map_id:
         raise ValueError("map_id must be a non-empty normalized value")
     if not map_uri or map_generation < 1:
@@ -172,6 +183,16 @@ def hierarchical_derivation(
         "approval_generation": approval_generation,
         "approval_sha256": approval_sha256,
     }
+    if parsing_artifact_sha256 is not None and parsing_output_sha256 is not None:
+        result["parsing"] = {
+            "artifact_schema": "parsing-artifact-v1",
+            "artifact_sha256": parsing_artifact_sha256,
+            "output_sha256": parsing_output_sha256,
+            "provider": "llamacloud",
+            "service_version": "latest",
+            "client_version": _package_version("llama-cloud"),
+            "options": {"route": "llamacloud", "input_content_type": "application/pdf"},
+        }
     result["readiness_gate"] = _json_value(ingestion_gate)
     result["corpus_schema"] = {
         "parent": "parent-chunk-v1",

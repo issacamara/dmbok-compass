@@ -350,6 +350,7 @@ export interface ExceptionRecord {
   section?: string | null;
   status: "exception" | "stale" | "inapplicable";
   reason: string;
+  expected_refusal?: boolean;
   decision?: ReviewDecisionMetadata | null;
 }
 
@@ -362,7 +363,54 @@ export interface ExplicitExceptionDecision {
 export interface BatchAttestationRequest {
   decision: BatchAttestationDecision;
   exception_decisions: ExplicitExceptionDecision[];
+  semantic_assessments?: BatchSemanticAssessmentSelection[];
+  refusal_confirmation_item_ids?: string[];
   reason?: string | null;
+}
+
+export interface BatchSemanticAssessmentSelection {
+  item_id: string;
+  assessment_id: string;
+}
+
+export interface RunItemAssessmentDecision {
+  assessment_id: string;
+  claim_support: boolean | null;
+  citation_support: boolean | null;
+  rubric_passed: boolean | null;
+  refusal_judgment: boolean | null;
+  reviewed_at: string;
+}
+
+export interface RunItemAssessmentProjection {
+  run_id: string;
+  item_id: string;
+  generation_id: string;
+  expected_refusal: boolean;
+  output_text: string;
+  attempt_id: string;
+  candidate_id: string;
+  scorer_version: string;
+  output_digest: string;
+  assessment: RunItemAssessmentDecision | null;
+}
+
+export interface RunItemAssessmentSubmission {
+  generation_id: string;
+  attempt_id: string;
+  candidate_id: string;
+  scorer_version: string;
+  output_digest: string;
+  claim_support: boolean;
+  citation_support: boolean;
+  rubric_passed: boolean;
+  refusal_judgment: boolean;
+}
+
+export interface RunItemAssessmentRecordResult extends RunItemAssessmentSubmission {
+  assessment_id: string;
+  reviewer_actor: string;
+  reviewed_at: string;
 }
 
 export interface BatchAttestationResult {
@@ -599,4 +647,26 @@ export interface DatasetRevisionConflict {
   expected_revision: number;
   current_revision: number;
   message: string;
+}
+
+export interface EvaluationDatasetRevision {
+  revision: number;
+  dataset_sha256: string;
+  rows: EvaluationRowV2Projection[];
+}
+
+export interface AddEvaluationDatasetRowRequest {
+  expected_revision: number;
+  operation_key: string;
+  question: string;
+  category: QuestionCategory;
+  expected_outcome: "answer" | "qualified" | "evidence_refusal";
+  expected_answer_or_rubric: string;
+  supporting_passage?: string | null;
+  scope_rationale?: string | null;
+}
+
+export interface RemoveEvaluationDatasetRowRequest {
+  expected_revision: number;
+  operation_key: string;
 }

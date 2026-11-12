@@ -405,6 +405,45 @@ def test_active_dataset_exposes_only_ids_and_review_state() -> None:
     assert "Sensitive evidence" not in response.text
 
 
+def test_versioned_dataset_revision_exposes_row_content_without_support_bindings() -> None:
+    firestore = FakeFirestore()
+    repository = _store(firestore)
+    head = repository.stage_revision(
+        "uploaded-corpus",
+        1,
+        (EvaluationRowV2(
+            item_id="generated-row-1",
+            origin="generated",
+            question="What is metadata?",
+            category="definitions",
+            expected_outcome="answer",
+            expected_answer_or_rubric="Explain metadata.",
+            expected_refusal=False,
+            source_spans=[{"span_id": "span-1", "block_id": "block-1", "physical_page": 3, "start_offset": 0, "end_offset": 8, "raw_text": "Metadata"}],
+            relevant_child_ids=["internal-child-id"],
+            parent_ids=["internal-parent-id"],
+        ),),
+    )
+    repository.activate_revision(head, expected_revision=None)
+    app.dependency_overrides[get_admin_user] = _admin
+    app.dependency_overrides[evaluation_generation_store] = lambda: repository
+    _service()
+    try:
+        response = TestClient(app).get("/api/admin/evaluation-datasets/revision")
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == status.HTTP_200_OK, response.text
+    body = response.json()
+    assert body["revision"] == 1
+    assert body["rows"][0]["question"] == "What is metadata?"
+    assert body["rows"][0]["expected_answer_or_rubric"] == "Explain metadata."
+    assert "source_spans" not in response.text
+    assert "relevant_child_ids" not in response.text
+    assert "internal-child-id" not in response.text
+    assert "internal-parent-id" not in response.text
+
+
 def test_active_dataset_and_review_require_admin_and_active_candidate() -> None:
     firestore = FakeFirestore()
     repository = _store(firestore)

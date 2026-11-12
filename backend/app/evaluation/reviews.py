@@ -68,6 +68,8 @@ class OutputStore(Protocol):
 
 
 class AssessmentRepository(Protocol):
+    def get(self, assessment_id: str) -> RunItemAssessmentRecord | None: ...
+
     def save(
         self,
         assessment: RunItemAssessment,
@@ -83,6 +85,9 @@ class InMemoryAssessmentRepository:
 
     def __init__(self) -> None:
         self.records: dict[str, RunItemAssessmentRecord] = {}
+
+    def get(self, assessment_id: str) -> RunItemAssessmentRecord | None:
+        return self.records.get(assessment_id)
 
     def save(self, assessment: RunItemAssessment, *, actor: UserProfile, candidate_identity: CandidateIdentity, reviewed_at: datetime) -> RunItemAssessmentRecord:
         key = assessment_key(assessment)
@@ -108,6 +113,10 @@ class FirestoreAssessmentRepository:
 
     def __init__(self, client: Any) -> None:
         self.assessments = client.collection(self.collection_id)
+
+    def get(self, assessment_id: str) -> RunItemAssessmentRecord | None:
+        snapshot = self.assessments.document(assessment_id).get()
+        return RunItemAssessmentRecord.model_validate(snapshot.to_dict()) if snapshot.exists else None
 
     def save(self, assessment: RunItemAssessment, *, actor: UserProfile, candidate_identity: CandidateIdentity, reviewed_at: datetime) -> RunItemAssessmentRecord:
         key = assessment_key(assessment)

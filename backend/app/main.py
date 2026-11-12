@@ -25,6 +25,7 @@ from app.api.evaluation_reviews import (
     batch_review_repository,
     evaluation_generation_store as review_evaluation_generation_store,
     evaluation_run_store as review_evaluation_run_store,
+    evaluation_stage_store as review_evaluation_stage_store,
     pinned_chunk_source as review_pinned_chunk_source,
     router as evaluation_reviews_router,
     support_evidence_store as review_support_evidence_store,
@@ -179,6 +180,18 @@ def configured_evaluation_run_store() -> FirestoreEvaluationRunStore:
 
 
 @lru_cache(maxsize=1)
+def get_review_evaluation_stage_store() -> FirestoreEvaluationStageStore:
+    from app.identity import _firebase_app
+    from firebase_admin import firestore
+
+    return FirestoreEvaluationStageStore(firestore.client(app=_firebase_app()))
+
+
+def configured_review_evaluation_stage_store() -> FirestoreEvaluationStageStore:
+    return get_review_evaluation_stage_store()
+
+
+@lru_cache(maxsize=1)
 def get_evaluation_output_store() -> FirestoreCandidateOutputStore:
     from app.identity import _firebase_app
     from firebase_admin import firestore
@@ -205,6 +218,7 @@ def configured_assessment_repository() -> FirestoreAssessmentRepository:
 app.dependency_overrides[evaluation_run_store] = configured_evaluation_run_store
 app.dependency_overrides[output_store] = configured_evaluation_output_store
 app.dependency_overrides[assessment_repository] = configured_assessment_repository
+app.dependency_overrides[review_evaluation_stage_store] = configured_review_evaluation_stage_store
 
 
 @lru_cache(maxsize=1)

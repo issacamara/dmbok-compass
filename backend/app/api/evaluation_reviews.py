@@ -7,9 +7,13 @@ from typing import Protocol
 
 from fastapi import APIRouter, Depends, HTTPException, status
 
+from app.api.evaluation_assessments import assessment_repository, output_store
 from app.contracts import (
     BatchAttestationRequest,
     BatchAttestationResult,
+    ChildDocumentChunk,
+    DocumentChunk,
+    DurableSemanticAssessmentReference,
     EvaluationDataset,
     EvaluationRun,
     ExceptionRecord,
@@ -17,6 +21,7 @@ from app.contracts import (
     IndividualEvidenceDecisionResult,
     IndividualEvidenceReview,
     RepresentativeSampleEntry,
+    ParentChunk,
     RunBoundSupportEvidence,
     ReviewDecisionMetadata,
     ReviewProjection,
@@ -33,7 +38,8 @@ from app.evaluation.batch_reviews import (
     create_batch_review,
     NoEligibleCandidatesError,
 )
-from app.evaluation.job import EvaluationRunStore
+from app.evaluation.job import EvaluationRunStore, EvaluationStageStore
+from app.evaluation.reviews import AssessmentRepository, OutputStore
 from app.evaluation.support import (
     FirestoreRunPinnedChunkSource,
     SupportEvidenceStore,
@@ -90,6 +96,13 @@ def batch_review_repository() -> BatchReviewRepository:
     )
 
 
+def evaluation_stage_store() -> EvaluationStageStore:
+    raise HTTPException(
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        detail={"code": "evaluation_stage_store_unavailable", "message": "Evaluation stage storage is not configured."},
+    )
+
+
 def _run(run_id: str, runs: EvaluationRunStore) -> EvaluationRun:
     run = runs.get(run_id)
     if run is None:
@@ -134,6 +147,7 @@ def _review(
     dataset: EvaluationDataset,
     evidence_store: SupportEvidenceStore,
     repository: BatchReviewRepository,
+    source: FirestoreRunPinnedChunkSource,
 ) -> BatchReview:
     evidence = []
     for item_id in run.selected_item_ids:
@@ -144,6 +158,7 @@ def _review(
                 detail={"code": "incomplete_batch_review", "message": "The run does not have complete review evidence."},
             )
         evidence.append(item)
+    evidence = _revalidate_batch_evidence(run, dataset, evidence, source)
     try:
         return repository.create_or_get(create_batch_review(run, dataset, evidence))
     except NoEligibleCandidatesError as exc:
@@ -161,6 +176,87 @@ def _review(
             status_code=status.HTTP_409_CONFLICT,
             detail={"code": "invalid_batch_review", "message": "The run-bound review evidence could not be verified."},
         ) from exc
+
+
+def _revalidate_batch_evidence(
+    run: EvaluationRun,
+    dataset: EvaluationDataset,
+    evidence: list[RunBoundSupportEvidence],
+    source: FirestoreRunPinnedChunkSource,
+) -> list[RunBoundSupportEvidence]:
+    """Keep stale or mismatched parent/child mappings in the exception queue."""
+    try:
+        provenance = source.source_provenance_sha256(corpus_version_id=run.corpus_version_id)
+        records = source.chunks(corpus_version_id=run.corpus_version_id)
+    except (SupportPreparationError, ValueError, TypeError):
+        return [_stale_support(item) for item in evidence]
+    if any(item.source_provenance_sha256 != provenance for item in evidence):
+        return [_stale_support(item) for item in evidence]
+
+    valid_records = tuple(record for record in records if record.valid and record.chunk is not None)
+    child_records = tuple(
+        record for record in valid_records if isinstance(record.chunk, ChildDocumentChunk)
+    )
+    if child_records:
+        parent_by_id = {
+            record.parent.parent_id: record.parent
+            for record in child_records if record.parent is not None
+        }
+        candidate_chunks = tuple(parent_by_id.values()) + tuple(record.chunk for record in child_records)
+    else:
+        candidate_chunks = tuple(
+            record.chunk for record in valid_records if isinstance(record.chunk, DocumentChunk)
+        )
+    try:
+        remapped = remap_gold_annotations(
+            dataset,
+            candidate_chunks,
+            CandidateGoldBinding(
+                run.corpus_version_id,
+                candidate_snapshot_sha256(run),
+                provenance,
+            ),
+        )
+    except (ValueError, TypeError):
+        return [_stale_support(item) if item.match_status in {"eligible", "review_approved"} else item for item in evidence]
+
+    records_by_id = {record.chunk_id: record for record in valid_records}
+    result: list[RunBoundSupportEvidence] = []
+    for item in evidence:
+        if item.expected_refusal or item.match_status not in {"eligible", "review_approved"}:
+            result.append(item)
+            continue
+        mapping = remapped.remap_for(item.item_id)
+        ids = tuple(item.candidate_chunk_ids)
+        verified = tuple(
+            verified_chunk_choice(records_by_id[chunk_id], provenance)
+            for chunk_id in ids if chunk_id in records_by_id
+        )
+        selected = tuple(item.selected_chunks or ((item.selected_chunk,) if item.selected_chunk else ()))
+        matches = (
+            mapping.remap_status == "matched"
+            and mapping.relevant_chunk_ids == ids
+            and len(verified) == len(ids)
+            and tuple(item.verified_chunks) == verified
+            and (not selected or selected == verified)
+            and item.parent_id == mapping.parent_id
+            and item.parent_content_hash == mapping.parent_content_hash
+            and item.parent_span_sha256 == mapping.parent_span_sha256
+        )
+        result.append(item if matches else _stale_support(item))
+    return result
+
+
+def _stale_support(evidence: RunBoundSupportEvidence) -> RunBoundSupportEvidence:
+    payload = evidence.model_dump() | {
+        "match_status": "ambiguous",
+        "selected_chunk": None,
+        "selected_chunks": [],
+        "reason": "stale_source_evidence",
+        "reviewer_actor": None,
+        "reviewed_at": None,
+    }
+    return RunBoundSupportEvidence.model_validate(payload)
 
 
 def _annotation_map(dataset: EvaluationDataset):
@@ -181,7 +277,7 @@ def _chunk_for(
     evidence,
     source: FirestoreRunPinnedChunkSource,
 ) -> StoredSupportChunk | None:
-    selected = evidence.selected_chunk
+    selected = evidence.selected_chunk or (evidence.selected_chunks[0] if evidence.selected_chunks else None)
     if selected is None:
         return None
     return source.chunk(corpus_version_id=selected.corpus_version_id, chunk_id=selected.chunk_id)
@@ -194,6 +290,93 @@ def _decision_metadata(attestation: DurableBatchAttestation) -> ReviewDecisionMe
         decided_at=attestation.decided_at,
         decision_version=attestation.decision_version,
     )
+
+
+def _semantic_assessment_references(
+    run: EvaluationRun,
+    review: BatchReview,
+    request: BatchAttestationRequest,
+    *,
+    assessments: AssessmentRepository,
+    outputs: OutputStore,
+    stages: EvaluationStageStore,
+) -> tuple[DurableSemanticAssessmentReference, ...]:
+    if request.decision == "rejected":
+        if request.semantic_assessments:
+            raise HTTPException(status_code=409, detail={
+                "code": "invalid_batch_attestation",
+                "message": "A rejected batch cannot attach semantic assessments.",
+            })
+        return ()
+
+    refusal_ids = {
+        record.item_id for record in review.exceptions
+        if record.expected_refusal and record.status != "stale"
+    }
+    required_ids = set(review.summary.sampled_item_ids) | refusal_ids
+    selected = {selection.item_id: selection for selection in request.semantic_assessments}
+    if set(selected) != required_ids:
+        raise HTTPException(status_code=409, detail={
+            "code": "incomplete_semantic_attestation",
+            "message": "Every sampled item and confirmed refusal requires an exact-output assessment.",
+        })
+
+    result: list[DurableSemanticAssessmentReference] = []
+    for item_id in sorted(required_ids):
+        selection = selected[item_id]
+        record = assessments.get(selection.assessment_id)
+        stage = stages.get(run.run_id, item_id)
+        if record is None or stage is None:
+            raise HTTPException(status_code=409, detail={
+                "code": "stale_semantic_assessment",
+                "message": "The exact run output assessment is unavailable.",
+            })
+        audit = outputs.get_audit(record.attempt_id)
+        if audit is None:
+            raise HTTPException(status_code=409, detail={
+                "code": "stale_semantic_assessment",
+                "message": "The exact run output assessment is unavailable.",
+            })
+        identity = record.candidate_identity
+        snapshot = run.candidate_snapshot
+        if (
+            not record.complete
+            or record.assessment_id != selection.assessment_id
+            or record.generation_id != run.dataset_version_id
+            or audit.evaluation_run_id != run.run_id
+            or audit.evaluation_item_id != item_id
+            or audit.attempt_id != record.attempt_id
+            or audit.candidate_id != record.candidate_id
+            or audit.scorer_version != record.scorer_version
+            or audit.output_digest != record.output_digest
+            or audit.candidate_identity != identity
+            or stage.output_handle != record.attempt_id
+            or stage.output_digest != record.output_digest
+            or snapshot is None
+            or identity.corpus_version_id != run.corpus_version_id
+            or identity.configuration_version_id != run.configuration_version_id
+            or identity.scorer_version != snapshot.scorer_version
+            or identity.installed_lock_sha256 != snapshot.dependency_lock_sha256
+            or identity.artifact_id != snapshot.integration_artifact
+        ):
+            raise HTTPException(status_code=409, detail={
+                "code": "stale_semantic_assessment",
+                "message": "The semantic assessment does not match the current immutable run output.",
+            })
+        if item_id in refusal_ids and record.refusal_judgment is not True:
+            raise HTTPException(status_code=409, detail={
+                "code": "invalid_refusal_assessment",
+                "message": "A refusal confirmation requires a positive exact-output refusal assessment.",
+            })
+        result.append(DurableSemanticAssessmentReference(
+            item_id=item_id,
+            assessment_id=record.assessment_id,
+            output_digest=record.output_digest,
+            scorer_version=record.scorer_version,
+            reviewer_actor=record.reviewer_actor,
+            reviewed_at=record.reviewed_at,
+        ))
+    return tuple(result)
 
 
 def _projection(
@@ -224,14 +407,20 @@ def _projection(
         if item is None or annotation is None or evidence is None:
             raise HTTPException(status_code=409, detail={"code": "incomplete_batch_review", "message": "The review projection is incomplete."})
         chunk = _chunk_for(evidence, source)
+        selected = evidence.selected_chunk or (evidence.selected_chunks[0] if evidence.selected_chunks else None)
+        page = selected.page if selected else None
+        section = selected.section if selected else None
+        if chunk and chunk.chunk:
+            page = getattr(chunk.chunk, "page", getattr(chunk.chunk, "page_start", page))
+            section = getattr(chunk.chunk, "section", section)
         samples.append(
             RepresentativeSampleEntry(
                 item_id=item.item_id,
                 question=item.question,
                 rubric=annotation.expected_answer_or_rubric,
                 support_excerpt=_safe_excerpt(annotation.supporting_passage) or "Verified support excerpt unavailable.",
-                page=chunk.chunk.page if chunk and chunk.chunk else evidence.selected_chunk.page,
-                section=chunk.chunk.section if chunk and chunk.chunk else evidence.selected_chunk.section,
+                page=page,
+                section=section,
                 status=status_value,
                 decision=decision,
             )
@@ -253,6 +442,7 @@ def _projection(
                 section=evidence.selected_chunk.section if evidence and evidence.selected_chunk else None,
                 status=record.status,
                 reason=record.reason,
+                expected_refusal=record.expected_refusal,
                 decision=decision,
             )
         )
@@ -429,7 +619,7 @@ def get_review_summary(
 ) -> ReviewProjection:
     run = _run(run_id, runs)
     dataset = _current_dataset(run, generations)
-    review = _review(run, dataset, evidence_store, repository)
+    review = _review(run, dataset, evidence_store, repository, source)
     summary, samples, exceptions = _projection(review, dataset, evidence_store, source, repository)
     return ReviewProjection(summary=summary, sample=samples, exceptions=exceptions)
 
@@ -443,16 +633,24 @@ def attest_review(
     generations: EvaluationGenerationReviewStore = Depends(evaluation_generation_store),
     evidence_store: SupportEvidenceStore = Depends(support_evidence_store),
     repository: BatchReviewRepository = Depends(batch_review_repository),
+    source: FirestoreRunPinnedChunkSource = Depends(pinned_chunk_source),
+    assessments: AssessmentRepository = Depends(assessment_repository),
+    outputs: OutputStore = Depends(output_store),
+    stages: EvaluationStageStore = Depends(evaluation_stage_store),
 ) -> BatchAttestationResult:
     run = _run(run_id, runs)
     dataset = _current_dataset(run, generations)
-    review = _review(run, dataset, evidence_store, repository)
+    review = _review(run, dataset, evidence_store, repository, source)
     try:
+        semantic_assessments = _semantic_assessment_references(
+            run, review, request, assessments=assessments, outputs=outputs, stages=stages,
+        )
         attestation = repository.attest(
             review,
             request,
             actor=admin.user_id,
             decided_at=datetime.now(timezone.utc),
+            semantic_assessments=semantic_assessments,
         )
     except BatchReviewStaleError as exc:
         raise HTTPException(status_code=409, detail={"code": "stale_batch_review", "message": "The batch review snapshot is stale."}) from exc
@@ -464,5 +662,7 @@ def attest_review(
         status=attestation.decision,
         decision=attestation.decision,
         exception_decisions=request.exception_decisions,
+        semantic_assessments=attestation.semantic_assessments,
+        refusal_confirmation_item_ids=attestation.refusal_confirmation_item_ids,
         decision_metadata=_decision_metadata(attestation),
     )

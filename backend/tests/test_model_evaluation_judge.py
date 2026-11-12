@@ -12,6 +12,7 @@ from pydantic import ValidationError
 from app.contracts import EvaluationDataset, EvaluationItem, GoldAnnotation
 from app.evaluation.assessments import response_fingerprint, score_assessment
 from app.evaluation.judge import (
+    EvaluationJudgeError,
     FirestoreSemanticJudgeProposalStore,
     SemanticJudgeProposal,
     semantic_judge_proposal,
@@ -122,11 +123,41 @@ def test_proposal_records_model_overlap_and_is_bound_to_exact_output_and_config(
     changed_config = semantic_judge_proposal(**{**kwargs, "configuration_fingerprint": "c" * 64})
 
     assert proposal.generator_judge_overlap is True
+    assert proposal.generator_provider_overlap is True
+    assert proposal.generator_model_overlap is True
     assert proposal.status == "unapproved"
     assert proposal.release_authorized is False
     assert proposal.proposal_id != changed_output.proposal_id
     assert proposal.proposal_id != changed_config.proposal_id
     assert "answer" not in proposal.model_dump()
+
+
+def test_proposal_records_provider_overlap_even_when_models_differ() -> None:
+    config = _configuration()
+    assessment = EvaluationJudgeProposal(
+        claim_support=True, citation_support=True, rubric_passed=True, refusal_judgment=False,
+    )
+    common = dict(
+        run_id="run-1", item_id="item-1", output_digest="a" * 64, judge=assessment,
+        judge_route="vertex", judge_model="gemini-judge", judge_configuration_version="judge-config-v1",
+        prompt_version=config.prompt_version, rubric_version=config.rubric_version,
+        output_token_cap=config.output_token_cap, generator_configuration_version="generator-v1",
+        configuration_fingerprint=config.fingerprint(),
+    )
+
+    same_provider = semantic_judge_proposal(
+        **common, generator_route="google-gemini", generator_model="gemini-generator",
+    )
+    same_model = semantic_judge_proposal(
+        **common, generator_route="openrouter", generator_model="gemini-judge",
+    )
+
+    assert same_provider.generator_provider_overlap is True
+    assert same_provider.generator_model_overlap is False
+    assert same_provider.generator_judge_overlap is False
+    assert same_model.generator_provider_overlap is False
+    assert same_model.generator_model_overlap is True
+    assert same_model.generator_judge_overlap is False
 
 
 def test_firestore_proposals_are_immutable_idempotent_and_content_free() -> None:
@@ -212,6 +243,33 @@ class FakeAllowanceStore:
         self.reconciled.append((operation_key, actual_units))
 
 
+class FailingAllowanceStore(FakeAllowanceStore):
+    def __init__(self, failure):
+        super().__init__()
+        self.failure = failure
+
+    def stage_reservation(self, capabilities, operation_key, estimated_units, *, retries):
+        if self.failure == "reservation":
+            raise RuntimeError("sensitive provider details")
+        return super().stage_reservation(capabilities, operation_key, estimated_units, retries=retries)
+
+
+class FailingProposalStore(FakeProposalStore):
+    def __init__(self, failure):
+        super().__init__()
+        self.failure = failure
+
+    def get(self, proposal_id):
+        if self.failure == "read":
+            raise RuntimeError("sensitive storage details")
+        return super().get(proposal_id)
+
+    def save(self, proposal):
+        if self.failure == "write":
+            raise RuntimeError("sensitive storage details")
+        return super().save(proposal)
+
+
 class FakeJudge:
     def __init__(self):
         self.request = None
@@ -224,6 +282,51 @@ class FakeJudge:
             ),
             usage=UsageMetadata(provider="openrouter", model="judge-v1", total_tokens=20),
         )
+
+
+class FailingJudge:
+    async def propose(self, _request):
+        raise RuntimeError("sensitive provider details")
+
+
+@pytest.mark.parametrize("failure", ["read", "reservation", "provider", "write"])
+def test_configured_judge_failures_fail_closed_and_reconcile_provider_usage(failure: str) -> None:
+    judge_config = _configuration()
+    allowance = FailingAllowanceStore(failure)
+    proposals = FailingProposalStore(failure)
+    judge = FailingJudge() if failure == "provider" else FakeJudge()
+    evaluator = EvaluationAnswerEvaluator(
+        EvaluationDataset(dataset_version_id="dataset", items=[EvaluationItem(
+            item_id="item-1", question="Question", dataset_version_id="dataset",
+        )]),
+        answerer=object(),
+        run=SimpleNamespace(run_id="run-1"),
+        judge=judge,
+        judge_configuration=judge_config,
+        judge_allowance_store=allowance,
+        judge_allowance_capabilities=SimpleNamespace(kind="judging", max_units_per_operation=100),
+        judge_proposals=proposals,
+    )
+    item = EvaluationItem(item_id="item-1", question="Question", dataset_version_id="dataset")
+    annotation = GoldAnnotation(
+        item_id="item-1", expected_answer_or_rubric="Approved rubric", review_status="approved",
+    )
+    response = SimpleNamespace(
+        outcome="answer", answer_text="The answer.",
+        trace=SimpleNamespace(retrieved_passages=[SimpleNamespace(chunk_id="chunk-1", text="Evidence.")]),
+    )
+
+    with pytest.raises(EvaluationJudgeError, match="configured evaluation judge"):
+        evaluator._propose_semantic_assessment(item, annotation, response, {"chunk-1"})
+
+    if failure == "provider":
+        assert len(allowance.reserved) == 1
+        assert allowance.reconciled == [(allowance.reserved[0][0], None)]
+    elif failure == "write":
+        assert len(allowance.reserved) == 1
+        assert allowance.reconciled == [(allowance.reserved[0][0], 20)]
+    else:
+        assert allowance.reconciled == []
 
 
 def test_unreviewed_case_never_spends_judge_allowance_or_creates_a_proposal() -> None:

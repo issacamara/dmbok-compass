@@ -23,6 +23,8 @@ class SemanticJudgeProposal(BaseModel):
     generator_route: str | None = Field(default=None, max_length=128)
     generator_model: str | None = Field(default=None, max_length=256)
     generator_configuration_version: str | None = Field(default=None, max_length=128)
+    generator_provider_overlap: bool
+    generator_model_overlap: bool
     generator_judge_overlap: bool
     judge_route: str = Field(min_length=1, max_length=128)
     judge_model: str = Field(min_length=1, max_length=256)
@@ -46,6 +48,10 @@ class SemanticJudgeProposalStore(Protocol):
 
 class SemanticJudgeProposalError(ValueError):
     """Raised when an immutable proposal identity conflicts with stored data."""
+
+
+class EvaluationJudgeError(RuntimeError):
+    """A configured judge could not produce durable proposal evidence."""
 
 
 class FirestoreSemanticJudgeProposalStore:
@@ -95,12 +101,11 @@ def semantic_judge_proposal(
     generator_configuration_version: str | None,
     configuration_fingerprint: str,
 ) -> SemanticJudgeProposal:
-    overlap = (
-        generator_route is not None
-        and generator_model is not None
-        and generator_route == judge_route
-        and generator_model == judge_model
-    )
+    providers = {"vertex": "google-gemini", "google-gemini": "google-gemini"}
+    generator_provider = providers.get(generator_route, generator_route)
+    judge_provider = providers.get(judge_route, judge_route)
+    provider_overlap = generator_provider is not None and generator_provider == judge_provider
+    model_overlap = generator_model is not None and generator_model == judge_model
     return SemanticJudgeProposal(
         proposal_id=semantic_judge_proposal_id(run_id, item_id, output_digest, configuration_fingerprint),
         run_id=run_id,
@@ -109,7 +114,9 @@ def semantic_judge_proposal(
         generator_route=generator_route,
         generator_model=generator_model,
         generator_configuration_version=generator_configuration_version,
-        generator_judge_overlap=overlap,
+        generator_provider_overlap=provider_overlap,
+        generator_model_overlap=model_overlap,
+        generator_judge_overlap=provider_overlap and model_overlap,
         judge_route=judge_route,
         judge_model=judge_model,
         judge_configuration_version=judge_configuration_version,

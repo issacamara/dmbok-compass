@@ -246,19 +246,19 @@ class EvaluationAnswerEvaluator:
         )
 
     def _propose_semantic_assessment(self, item, annotation, response, cited: set[str]) -> None:
-        if (
-            self._judge is None
-            or self._judge_configuration is None
-            or self._judge_allowance_store is None
-            or self._judge_allowance_capabilities is None
-            or self._judge_proposals is None
-            or self._run is None
-            or annotation is None
-            or annotation.review_status != "approved"
-        ):
+        if self._judge_configuration is None:
             return
+        if self._run is None or annotation is None or annotation.review_status != "approved":
+            return
+        if any(value is None for value in (
+            self._judge, self._judge_allowance_store, self._judge_allowance_capabilities,
+            self._judge_proposals,
+        )):
+            from app.evaluation.judge import EvaluationJudgeError
+
+            raise EvaluationJudgeError("configured evaluation judge could not produce durable evidence")
         from app.evaluation.assessments import response_fingerprint
-        from app.evaluation.judge import semantic_judge_proposal
+        from app.evaluation.judge import EvaluationJudgeError, semantic_judge_proposal
         from model.evaluation_judge import EvaluationJudgeInput, EvaluationJudgeProposal
 
         config = self._judge_configuration
@@ -295,7 +295,7 @@ class EvaluationAnswerEvaluator:
             if self._judge_proposals.get(proposal.proposal_id) is not None:
                 return
         except Exception:
-            return
+            raise EvaluationJudgeError("configured evaluation judge could not produce durable evidence") from None
         operation_key = proposal.proposal_id
         try:
             reservation = self._judge_allowance_store.stage_reservation(
@@ -305,9 +305,9 @@ class EvaluationAnswerEvaluator:
                 retries=0,
             )
         except Exception:
-            return
+            raise EvaluationJudgeError("configured evaluation judge could not produce durable evidence") from None
         if reservation.status != "staged":
-            return
+            raise EvaluationJudgeError("configured evaluation judge could not produce durable evidence")
         try:
             judged = asyncio.run(self._judge.propose(EvaluationJudgeInput(
                 question=item.question,
@@ -333,26 +333,28 @@ class EvaluationAnswerEvaluator:
                 )
             except Exception:
                 pass
-            return
+            raise EvaluationJudgeError("configured evaluation judge could not produce durable evidence") from None
         proposal = proposal.model_copy(update={
             "claim_support": judged.proposal.claim_support,
             "citation_support": judged.proposal.citation_support,
             "rubric_passed": judged.proposal.rubric_passed,
             "refusal_judgment": judged.proposal.refusal_judgment,
         })
+        storage_failed = False
         try:
             self._judge_proposals.save(proposal)
         except Exception:
-            pass
-        finally:
-            try:
-                self._judge_allowance_store.reconcile_usage(
-                    self._judge_allowance_capabilities,
-                    operation_key,
-                    judged.usage.total_tokens,
-                )
-            except Exception:
-                pass
+            storage_failed = True
+        try:
+            self._judge_allowance_store.reconcile_usage(
+                self._judge_allowance_capabilities,
+                operation_key,
+                judged.usage.total_tokens,
+            )
+        except Exception:
+            raise EvaluationJudgeError("configured evaluation judge could not produce durable evidence") from None
+        if storage_failed:
+            raise EvaluationJudgeError("configured evaluation judge could not produce durable evidence")
 
 
 def main() -> None:

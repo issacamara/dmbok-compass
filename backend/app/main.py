@@ -11,6 +11,7 @@ from app.api.corpus_staging import router as corpus_staging_router
 from app.api.evaluation_datasets import evaluation_generation_store, router as evaluation_datasets_router
 from app.api.evaluation_assessments import (
     assessment_repository,
+    evaluation_stage_store as assessment_evaluation_stage_store,
     evaluation_run_store,
     output_store,
     router as evaluation_assessments_router,
@@ -219,6 +220,7 @@ app.dependency_overrides[evaluation_run_store] = configured_evaluation_run_store
 app.dependency_overrides[output_store] = configured_evaluation_output_store
 app.dependency_overrides[assessment_repository] = configured_assessment_repository
 app.dependency_overrides[review_evaluation_stage_store] = configured_review_evaluation_stage_store
+app.dependency_overrides[assessment_evaluation_stage_store] = configured_review_evaluation_stage_store
 
 
 @lru_cache(maxsize=1)

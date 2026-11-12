@@ -159,6 +159,28 @@ class DatasetRowMutationResponse(BaseModel):
     operation_key: str
 
 
+class EvaluationRowV2Projection(BaseModel):
+    """Browser-safe row details; support bindings remain server-owned."""
+
+    schema_version: Literal["evaluation-row-v2"]
+    item_id: str
+    origin: Literal["generated", "admin", "imported"]
+    question: str
+    category: Literal["definitions", "explanations", "comparisons", "study", "scenarios"]
+    expected_outcome: Literal["answer", "qualified", "evidence_refusal"]
+    expected_answer_or_rubric: str
+    expected_refusal: bool
+    scope_rationale: str | None
+
+
+class EvaluationDatasetRevisionResponse(BaseModel):
+    """Current versioned dataset content without storage or evidence selectors."""
+
+    revision: int = Field(ge=1)
+    dataset_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    rows: list[EvaluationRowV2Projection] = Field(max_length=MAX_EVALUATION_IMPORT_ITEMS)
+
+
 class CandidateBindingPayload(BaseModel):
     candidate_snapshot_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
     source_provenance_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
@@ -579,6 +601,40 @@ def get_active_evaluation_dataset(
         item_count=len(dataset.items),
         approved_gold_count=sum(review.review_status == "approved" for review in reviews),
         item_reviews=reviews,
+    )
+
+
+@router.get("/revision", response_model=EvaluationDatasetRevisionResponse)
+def get_evaluation_dataset_revision(
+    _: UserProfile = Depends(get_admin_user),
+    store: EvaluationGenerationStore = Depends(evaluation_generation_store),
+    corpus_version_id: str = Depends(uploaded_corpus_version_id),
+) -> EvaluationDatasetRevisionResponse:
+    """Read the current dataset rows without exposing their support bindings."""
+    try:
+        head = store.corpus_head(corpus_version_id)
+        if head is None:
+            _reject(status.HTTP_404_NOT_FOUND, "evaluation_dataset_revision_not_found", "No evaluation dataset revision is available.")
+        rows = store.get_revision(head)
+    except (EvaluationGenerationError, RuntimeError):
+        _reject(status.HTTP_503_SERVICE_UNAVAILABLE, "evaluation_dataset_revision_unavailable", "The evaluation dataset revision is unavailable.")
+    return EvaluationDatasetRevisionResponse(
+        revision=head.revision,
+        dataset_sha256=head.dataset_sha256,
+        rows=[
+            EvaluationRowV2Projection(
+                schema_version=row.schema_version,
+                item_id=row.item_id,
+                origin=row.origin,
+                question=row.question,
+                category=row.category,
+                expected_outcome=row.expected_outcome,
+                expected_answer_or_rubric=row.expected_answer_or_rubric,
+                expected_refusal=row.expected_refusal,
+                scope_rationale=row.scope_rationale,
+            )
+            for row in rows
+        ],
     )
 
 

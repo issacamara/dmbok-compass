@@ -939,10 +939,14 @@ def _metrics(results: list[EvaluationOutcome], response_time_threshold_ms: float
         _metric("grounded_claims", results, lambda result: result.grounded, threshold=95),
         _metric("citation_correctness", results, lambda result: result.citation_correct, threshold=95),
         _metric("answer_quality", results, lambda result: result.answer_quality, threshold=85),
-        _metric("refusal_correctness", results, lambda result: result.refusal_correct, threshold=95),
+        _metric(
+            "refusal_correctness", results,
+            lambda result: result.operational_error is None and result.refusal_correct,
+            threshold=95,
+        ),
         _metric(
             "response_time", results,
-            lambda result: result.response_time_ms <= response_time_threshold_ms,
+            lambda result: result.operational_error is None and result.response_time_ms <= response_time_threshold_ms,
             threshold=95,
         ),
     ]

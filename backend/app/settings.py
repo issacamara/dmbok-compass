@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from hashlib import sha256
+import json
 import os
 from typing import Literal, Mapping
 
@@ -149,6 +152,26 @@ class EvaluationStageConfiguration(BaseModel):
             )
         except ValidationError:
             raise ValueError(f"Invalid or missing {stage.lower()} stage settings") from None
+
+
+@dataclass(frozen=True)
+class EvaluationJudgeConfiguration:
+    """Judge-only prompt, rubric, and output limits pinned apart from generation."""
+
+    stage: EvaluationStageConfiguration
+    prompt_version: str = "semantic-judge-v1"
+    rubric_version: str = "semantic-rubric-v1"
+    output_token_cap: int = 512
+
+    def fingerprint(self) -> str:
+        material = {
+            "stage": self.stage.model_dump(mode="json"),
+            "prompt_version": self.prompt_version,
+            "rubric_version": self.rubric_version,
+            "output_token_cap": self.output_token_cap,
+        }
+        encoded = json.dumps(material, sort_keys=True, separators=(",", ":"))
+        return sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def _required_bool(environ: Mapping[str, str], name: str) -> bool:

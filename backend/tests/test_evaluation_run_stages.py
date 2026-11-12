@@ -121,6 +121,28 @@ def test_generation_failure_retains_retrieval_and_never_receives_refusal_credit(
     assert stage.refusal_correct is False
 
 
+def test_operational_errors_cannot_earn_refusal_or_fast_response_credit() -> None:
+    job, stages = _job()
+    run = job.launch(
+        corpus_version_id="corpus-v1", configuration_version_id="config-v1",
+        model_version_id="model-v1", item_ids=None,
+    )
+    failed = EvaluationOutcome(
+        True, True, True, True, True, 1,
+        applicable_metrics=frozenset({"refusal_correctness"}),
+        generation_outcome="operational_error",
+        operational_error="provider_unavailable",
+    )
+
+    completed = EvaluationWorker(job.runs, stages).execute(
+        run.run_id, job.datasets.get("dataset-v1"), lambda _: failed  # type: ignore[arg-type]
+    )
+    by_name = {metric.metric_name: metric for metric in completed.metrics}
+
+    assert by_name["refusal_correctness"].numerator == 0
+    assert by_name["response_time"].numerator == 0
+
+
 def test_finalization_requires_exact_digest_and_recomputes_all_six_metrics() -> None:
     job, stages = _job()
     run = job.launch(

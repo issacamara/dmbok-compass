@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 from time import perf_counter
-from typing import Protocol
+from typing import Literal, Protocol
 
 from app.contracts import AnswerResponse, TelemetryEvent, validate_telemetry_payload
 
@@ -63,6 +63,30 @@ def error_event(error: BaseException, started: float | None = None) -> Telemetry
         outcome="error",
         duration_ms=_elapsed_ms(started) if started is not None else None,
         error_class=type(error).__name__,
+    )
+
+
+def stage_event(
+    stage: Literal["parsing", "generation", "judging"],
+    status: Literal["started", "succeeded", "failed", "awaiting_budget", "resumed"],
+    *,
+    completed_count: int | None = None,
+    total_count: int | None = None,
+    usage_kind: Literal["pages", "units", "credits", "tokens"] | None = None,
+    usage_units: int | None = None,
+    error: BaseException | None = None,
+) -> TelemetryEvent:
+    """Build a typed stage event without accepting content or provider errors."""
+
+    return TelemetryEvent(
+        event="stage_operation",
+        stage=stage,
+        stage_status=status,
+        completed_count=completed_count,
+        total_count=total_count,
+        usage_kind=usage_kind,
+        usage_units=usage_units,
+        error_class=type(error).__name__ if error is not None else None,
     )
 
 

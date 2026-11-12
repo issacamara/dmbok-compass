@@ -44,6 +44,8 @@ from app.evaluation.support import (
 from app.rag import LangChainRagFactory, LangChainRagSettings
 from app.settings import RuntimeConfiguration
 
+_CANDIDATE_DATASET_TARGET = 200
+
 
 class FirestoreEvaluationCandidateSnapshotResolver(EvaluationCandidateSnapshotResolver):
     """Resolve an evaluation candidate once, before durable dispatch."""
@@ -302,6 +304,7 @@ def _prepare_candidate_evaluation(client: firestore.Client, project: str, runtim
     from app.evaluation.candidate_generation import generate_candidate_revision
     from app.evaluation.dispatch import CloudRunCandidateGenerationDispatcher, EvaluationDispatchClaimStore
     from app.corpus.staging import FirestoreCorpusStagingAttemptStore
+    from app.telemetry import LoggingTelemetryAdapter, stage_event
     from app.provider_allowance import ProviderAccountCapabilities
     from app.provider_allowance_firestore import FirestoreProviderAllowanceStore
     from app.settings import EvaluationStageConfiguration
@@ -310,8 +313,11 @@ def _prepare_candidate_evaluation(client: firestore.Client, project: str, runtim
     attempt_id = _required("CORPUS_STAGING_ATTEMPT_ID")
     corpus_version_id = _required("EVALUATION_CORPUS_VERSION_ID")
     dispatch_owner_id = _required("EVALUATION_DISPATCH_OWNER_ID")
-    attempt = FirestoreCorpusStagingAttemptStore(client).get(attempt_id=attempt_id)
+    staging = FirestoreCorpusStagingAttemptStore(client)
+    telemetry = LoggingTelemetryAdapter()
+    attempt = staging.get(attempt_id=attempt_id)
     _validate_candidate_staging_attempt(attempt, attempt_id=attempt_id, corpus_version_id=corpus_version_id)
+    staging.update_candidate_generation_status(attempt_id=attempt_id, state="queued")
     stage = EvaluationStageConfiguration.from_environment("GENERATOR")
     fingerprint = candidate_generator_fingerprint(
         stage.route, stage.model, stage.configuration_version
@@ -329,12 +335,40 @@ def _prepare_candidate_evaluation(client: firestore.Client, project: str, runtim
             configuration_version_id=stage.configuration_version,
             model_version_id=stage.model,
         )
+        committed_rows = store.get_revision(committed_head)
+        completed_count = len(committed_rows)
+        target_count = attempt.get("candidate_generation_target")
+        if type(target_count) is not int or target_count < completed_count:
+            target_count = max(_CANDIDATE_DATASET_TARGET, completed_count)
+        rejected_count = attempt.get("candidate_generation_rejected_count")
+        if type(rejected_count) is not int or rejected_count < 0:
+            rejected_count = None
+        usage_tokens = attempt.get("candidate_generation_usage_tokens")
+        if type(usage_tokens) is not int or usage_tokens < 0:
+            usage_tokens = None
+        staging.update_candidate_generation_status(
+            attempt_id=attempt_id,
+            state="published",
+            completed_count=completed_count,
+            target_count=target_count,
+            rejected_count=rejected_count,
+            usage_tokens=usage_tokens,
+        )
+        telemetry.emit(stage_event(
+            "generation", "succeeded",
+            completed_count=completed_count,
+            total_count=target_count,
+            usage_kind="tokens" if usage_tokens is not None else None,
+            usage_units=usage_tokens,
+        ))
         return
     owner_id = uuid4().hex
     if not store.claim_operation(
         operation_key, corpus_version_id=corpus_version_id, owner_id=owner_id
     ):
         return
+    staging.update_candidate_generation_status(attempt_id=attempt_id, state="running")
+    telemetry.emit(stage_event("generation", "started"))
     claims = EvaluationDispatchClaimStore(client)
     allowances = FirestoreProviderAllowanceStore(client)
     provider_id = "google-gemini" if stage.route == "vertex" else stage.route
@@ -352,6 +386,8 @@ def _prepare_candidate_evaluation(client: firestore.Client, project: str, runtim
         if reservation.status != "staged":
             store.release_operation(operation_key, owner_id=owner_id, status="awaiting_budget")
             claims.release(operation_claim_id, owner_id=dispatch_owner_id)
+            staging.update_candidate_generation_status(attempt_id=attempt_id, state="awaiting_budget")
+            telemetry.emit(stage_event("generation", "awaiting_budget"))
             print(json.dumps({"event": "candidate_generation_paused", "status": "awaiting_budget"}))
             return
         records = store.get_parse_derived_records(corpus_version_id=corpus_version_id)
@@ -367,6 +403,17 @@ def _prepare_candidate_evaluation(client: firestore.Client, project: str, runtim
             project=project,
             location=runtime_configuration.runtime.location,
         )
+        def record_progress(completed: int, target: int, usage_tokens: int | None, rejected: int) -> None:
+            staging.update_candidate_generation_status(
+                attempt_id=attempt_id, state="running", completed_count=completed,
+                target_count=target, rejected_count=rejected, usage_tokens=usage_tokens,
+            )
+            telemetry.emit(stage_event(
+                "generation", "started", completed_count=completed, total_count=target,
+                usage_kind="tokens" if usage_tokens is not None else None,
+                usage_units=usage_tokens,
+            ))
+
         report = asyncio.run(generate_candidate_revision(
             corpus_version_id=corpus_version_id,
             children=children,
@@ -380,15 +427,18 @@ def _prepare_candidate_evaluation(client: firestore.Client, project: str, runtim
             generator_configuration_version=stage.configuration_version,
             operation_key=operation_key,
             operation_owner_id=owner_id,
+            progress_callback=record_progress,
             allowance=reservation,
             allowance_store=allowances,
             allowance_capabilities=capabilities,
             store=store,
-            target_count=200,
+            target_count=_CANDIDATE_DATASET_TARGET,
         ))
         if report.status == "awaiting_budget":
             store.release_operation(operation_key, owner_id=owner_id, status="awaiting_budget")
             claims.release(operation_claim_id, owner_id=dispatch_owner_id)
+            staging.update_candidate_generation_status(attempt_id=attempt_id, state="awaiting_budget")
+            telemetry.emit(stage_event("generation", "awaiting_budget"))
             print(json.dumps({"event": "candidate_generation_paused", "status": "awaiting_budget"}))
             return
         if report.status != "published" or report.dataset_head is None:
@@ -399,15 +449,38 @@ def _prepare_candidate_evaluation(client: firestore.Client, project: str, runtim
             configuration_version_id=stage.configuration_version,
             model_version_id=stage.model,
         )
+        staging.update_candidate_generation_status(
+            attempt_id=attempt_id, state="published", completed_count=report.generated_count,
+            target_count=report.target_count, rejected_count=report.rejected_count,
+            usage_tokens=report.usage_tokens,
+        )
+        telemetry.emit(stage_event(
+            "generation", "succeeded", completed_count=report.generated_count,
+            total_count=report.target_count,
+            usage_kind="tokens" if report.usage_tokens is not None else None,
+            usage_units=report.usage_tokens,
+        ))
         print(json.dumps({
             "event": "candidate_exploration_dispatched",
             "status": "published",
             "generated_count": report.generated_count,
         }))
-    except Exception:
-        store.release_operation(operation_key, owner_id=owner_id, status="failed")
-        claims.release(operation_claim_id, owner_id=dispatch_owner_id)
-        raise
+    except Exception as exc:
+        cleanup_actions = (
+            lambda: store.release_operation(operation_key, owner_id=owner_id, status="failed"),
+            lambda: claims.release(operation_claim_id, owner_id=dispatch_owner_id),
+            lambda: staging.update_candidate_generation_status(attempt_id=attempt_id, state="failed"),
+        )
+        for cleanup in cleanup_actions:
+            try:
+                cleanup()
+            except Exception:
+                pass
+        try:
+            telemetry.emit(stage_event("generation", "failed", error=exc))
+        except Exception:
+            pass
+        raise RuntimeError("candidate dataset generation failed") from None
 
 
 def _configured_evaluation_service():

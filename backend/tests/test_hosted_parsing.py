@@ -49,8 +49,15 @@ class Checkpoints:
     def record_reservation(self, attempt_id, reservation):
         self.records[attempt_id]["allowance_reservation"] = dict(reservation)
 
-    def record_status(self, attempt_id, state, *, error_code=None):
-        self.records[attempt_id].update(parsing_state=state, parsing_error_code=error_code)
+    def record_status(
+        self, attempt_id, state, *, error_code=None, page_count=None, block_count=None,
+        usage_kind=None, usage_units=None,
+    ):
+        self.records[attempt_id].update(
+            parsing_state=state, parsing_error_code=error_code,
+            parsing_page_count=page_count, parsing_block_count=block_count,
+            parsing_usage_kind=usage_kind, parsing_usage_units=usage_units,
+        )
 
 
 class Artifacts:
@@ -136,12 +143,33 @@ def test_restart_reconciles_saved_job_and_reuses_immutable_artifact():
     assert complete.artifact == repeated.artifact
     assert complete.artifact is not None
     assert complete.artifact.output_sha256 == hashlib.sha256(RAW_RESULT).hexdigest()
+    assert complete.page_count == 1
+    assert complete.block_count == 1
+    assert complete.usage_kind == "pages"
+    assert complete.usage_units == 1
+    assert checkpoints.records[ATTEMPT]["parsing_page_count"] == 1
+    assert checkpoints.records[ATTEMPT]["parsing_block_count"] == 1
     assert provider.submissions == 1
     assert provider.result_calls == 1
     assert artifacts.writes == 1
     assert len(reservations) == 1
     assert reservations[0][0].startswith("corpus-parse:parse:llamacloud:")
     assert resumed_reconciled[0][1] == 1
+
+
+def test_usage_unknown_is_not_reported_as_zero():
+    checkpoints, artifacts = Checkpoints(), Artifacts()
+    provider = Provider(result={"blocks": RESULT["blocks"], "usage": {"pages": "unknown"}})
+    parser, _, _ = coordinator(provider, checkpoints, artifacts)
+
+    outcome = parser.run(attempt_id=ATTEMPT, source=SOURCE, pdf=PDF)
+
+    assert outcome.state == "awaiting_review"
+    assert outcome.page_count == 1
+    assert outcome.block_count == 1
+    assert outcome.usage_kind is None
+    assert outcome.usage_units is None
+    assert checkpoints.records[ATTEMPT]["parsing_usage_units"] is None
 
 
 def test_sigterm_stop_keeps_saved_job_for_a_later_run():

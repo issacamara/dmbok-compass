@@ -230,6 +230,35 @@ class FirestoreCorpusStagingAttemptStore:
         snapshot = self.attempts.document(attempt_id).get()
         return snapshot.to_dict() if snapshot.exists else None
 
+    def update_candidate_generation_status(
+        self,
+        *,
+        attempt_id: str,
+        state: Literal["queued", "running", "awaiting_budget", "published", "failed"],
+        completed_count: int | None = None,
+        target_count: int | None = None,
+        rejected_count: int | None = None,
+        usage_tokens: int | None = None,
+    ) -> None:
+        """Persist only safe candidate-generation progress on the staging attempt."""
+        for value in (completed_count, target_count, rejected_count, usage_tokens):
+            if value is not None and (type(value) is not int or value < 0):
+                raise ValueError("candidate generation progress values must be non-negative integers")
+        if (completed_count is None) != (target_count is None):
+            raise ValueError("candidate generation progress requires both counts")
+        if completed_count is not None and target_count is not None and completed_count > target_count:
+            raise ValueError("candidate generation progress exceeds its target")
+        payload: dict[str, Any] = {"candidate_generation_state": state}
+        if completed_count is not None:
+            payload["candidate_generation_count"] = completed_count
+            payload["candidate_generation_target"] = target_count
+        if rejected_count is not None:
+            payload["candidate_generation_rejected_count"] = rejected_count
+        if usage_tokens is not None:
+            payload["candidate_generation_usage_tokens"] = usage_tokens
+        payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+        self.attempts.document(attempt_id).update(payload)
+
     def complete_validation(
         self,
         *,
@@ -510,6 +539,15 @@ def _attempt_status(record: dict[str, Any]) -> CorpusStagingAttemptStatus:
                     "chunk_count",
                     "staged_corpus_version_id",
                     "parsing_output_sha256",
+                    "parsing_page_count",
+                    "parsing_block_count",
+                    "parsing_usage_kind",
+                    "parsing_usage_units",
+                    "candidate_generation_state",
+                    "candidate_generation_count",
+                    "candidate_generation_target",
+                    "candidate_generation_rejected_count",
+                    "candidate_generation_usage_tokens",
                     "error",
                 )
                 if key in record

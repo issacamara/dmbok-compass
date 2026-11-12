@@ -87,6 +87,15 @@ export interface CorpusStagingAttemptStatus {
   staged_corpus_version_id: string | null;
   hosted_parsing_state?: HostedParsingState | null;
   parsing_output_sha256?: string | null;
+  parsing_page_count?: number | null;
+  parsing_block_count?: number | null;
+  parsing_usage_kind?: "pages" | "units" | "credits" | null;
+  parsing_usage_units?: number | null;
+  candidate_generation_state?: "queued" | "running" | "awaiting_budget" | "published" | "failed" | null;
+  candidate_generation_count?: number | null;
+  candidate_generation_target?: number | null;
+  candidate_generation_rejected_count?: number | null;
+  candidate_generation_usage_tokens?: number | null;
   error: ApiError | null;
 }
 
@@ -561,6 +570,13 @@ export const TELEMETRY_FIELDS = [
   "configuration_version",
   "error_class",
   "model_attempts",
+  "event",
+  "stage",
+  "stage_status",
+  "completed_count",
+  "total_count",
+  "usage_kind",
+  "usage_units",
 ] as const;
 
 export type TelemetryField = (typeof TELEMETRY_FIELDS)[number];

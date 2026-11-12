@@ -6,6 +6,7 @@ from .adapter import (
     TelemetryAdapter,
     error_event,
     response_event,
+    stage_event,
 )
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "TelemetryAdapter",
     "error_event",
     "response_event",
+    "stage_event",
 ]

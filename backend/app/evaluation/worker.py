@@ -42,7 +42,7 @@ from app.evaluation.support import (
     prepare_support,
 )
 from app.rag import LangChainRagFactory, LangChainRagSettings
-from app.settings import RuntimeConfiguration
+from app.settings import EvaluationJudgeConfiguration, EvaluationStageConfiguration, RuntimeConfiguration
 
 _CANDIDATE_DATASET_TARGET = 200
 
@@ -191,6 +191,12 @@ class EvaluationAnswerEvaluator:
         run: EvaluationRun | None = None,
         support_evidence: Callable[..., RunBoundSupportEvidence | None] | None = None,
         scorer_version: str = "evaluation-gates-v1",
+        judge=None,
+        judge_configuration: EvaluationJudgeConfiguration | None = None,
+        generator_configuration: EvaluationStageConfiguration | None = None,
+        judge_allowance_store=None,
+        judge_allowance_capabilities=None,
+        judge_proposals=None,
     ) -> None:
         self._items = {item.item_id: item for item in dataset.items}
         self._annotations = {annotation.item_id: annotation for annotation in dataset.gold_annotations}
@@ -198,6 +204,12 @@ class EvaluationAnswerEvaluator:
         self._run = run
         self._support_evidence = support_evidence
         self._scorer_version = scorer_version
+        self._judge = judge
+        self._judge_configuration = judge_configuration
+        self._generator_configuration = generator_configuration
+        self._judge_allowance_store = judge_allowance_store
+        self._judge_allowance_capabilities = judge_allowance_capabilities
+        self._judge_proposals = judge_proposals
 
     def __call__(self, item_id: str) -> EvaluationOutcome:
         item = self._items[item_id]
@@ -220,6 +232,8 @@ class EvaluationAnswerEvaluator:
                 else None
             ),
         )
+        if response.error is None and self._run is not None:
+            self._propose_semantic_assessment(item, annotation, response, cited)
         return EvaluationOutcome(
             retrieval_success=score.retrieval_success,
             grounded=score.grounded,
@@ -228,7 +242,119 @@ class EvaluationAnswerEvaluator:
             refusal_correct=score.refusal_correct,
             response_time_ms=float(response.trace.timings_ms.get("total_ms", 0)),
             applicable_metrics=score.applicable_metrics,
+            operational_error=response.error.code if response.error is not None else None,
         )
+
+    def _propose_semantic_assessment(self, item, annotation, response, cited: set[str]) -> None:
+        if self._judge_configuration is None:
+            return
+        if self._run is None or annotation is None or annotation.review_status != "approved":
+            return
+        if any(value is None for value in (
+            self._judge, self._judge_allowance_store, self._judge_allowance_capabilities,
+            self._judge_proposals,
+        )):
+            from app.evaluation.judge import EvaluationJudgeError
+
+            raise EvaluationJudgeError("configured evaluation judge could not produce durable evidence")
+        from app.evaluation.assessments import response_fingerprint
+        from app.evaluation.judge import EvaluationJudgeError, semantic_judge_proposal
+        from model.evaluation_judge import EvaluationJudgeInput, EvaluationJudgeProposal
+
+        config = self._judge_configuration
+        stage = config.stage
+        output_digest = response_fingerprint(
+            outcome=response.outcome,
+            answer_text=response.answer_text,
+            cited_chunk_ids=cited,
+        )
+        proposal = semantic_judge_proposal(
+            run_id=self._run.run_id,
+            item_id=item.item_id,
+            output_digest=output_digest,
+            judge=EvaluationJudgeProposal(
+                claim_support=False,
+                citation_support=False,
+                rubric_passed=False,
+                refusal_judgment=False,
+            ),
+            judge_route=stage.route,
+            judge_model=stage.model,
+            judge_configuration_version=stage.configuration_version,
+            prompt_version=config.prompt_version,
+            rubric_version=config.rubric_version,
+            output_token_cap=config.output_token_cap,
+            generator_route=self._generator_configuration.route if self._generator_configuration else None,
+            generator_model=self._generator_configuration.model if self._generator_configuration else None,
+            generator_configuration_version=(
+                self._generator_configuration.configuration_version if self._generator_configuration else None
+            ),
+            configuration_fingerprint=config.fingerprint(),
+        )
+        try:
+            if self._judge_proposals.get(proposal.proposal_id) is not None:
+                return
+        except Exception:
+            raise EvaluationJudgeError("configured evaluation judge could not produce durable evidence") from None
+        operation_key = proposal.proposal_id
+        try:
+            reservation = self._judge_allowance_store.stage_reservation(
+                self._judge_allowance_capabilities,
+                operation_key,
+                self._judge_allowance_capabilities.max_units_per_operation,
+                retries=0,
+            )
+        except Exception:
+            raise EvaluationJudgeError("configured evaluation judge could not produce durable evidence") from None
+        if reservation.status != "staged":
+            raise EvaluationJudgeError("configured evaluation judge could not produce durable evidence")
+        try:
+            judged = asyncio.run(self._judge.propose(EvaluationJudgeInput(
+                question=item.question,
+                expected_outcome=(
+                    "evidence_refusal"
+                    if annotation.semantic_assessment is not None
+                    and annotation.semantic_assessment.expected_refusal is True
+                    else "unknown"
+                ),
+                rubric=annotation.expected_answer_or_rubric,
+                outcome=response.outcome,
+                answer=response.answer_text or "",
+                retrieved_passages=tuple(
+                    {"id": passage.chunk_id, "text": passage.text}
+                    for passage in response.trace.retrieved_passages
+                ),
+                cited_chunk_ids=tuple(sorted(cited)),
+            )))
+        except Exception:
+            try:
+                self._judge_allowance_store.reconcile_usage(
+                    self._judge_allowance_capabilities, operation_key, None
+                )
+            except Exception:
+                pass
+            raise EvaluationJudgeError("configured evaluation judge could not produce durable evidence") from None
+        proposal = proposal.model_copy(update={
+            "claim_support": judged.proposal.claim_support,
+            "citation_support": judged.proposal.citation_support,
+            "rubric_passed": judged.proposal.rubric_passed,
+            "refusal_judgment": judged.proposal.refusal_judgment,
+        })
+        storage_failed = False
+        try:
+            self._judge_proposals.save(proposal)
+        except Exception:
+            storage_failed = True
+        try:
+            self._judge_allowance_store.reconcile_usage(
+                self._judge_allowance_capabilities,
+                operation_key,
+                judged.usage.total_tokens,
+            )
+        except Exception:
+            raise EvaluationJudgeError("configured evaluation judge could not produce durable evidence") from None
+        if storage_failed:
+            raise EvaluationJudgeError("configured evaluation judge could not produce durable evidence")
 
 
 def main() -> None:
@@ -267,6 +393,7 @@ def main() -> None:
             )
             return
         support_store = FirestoreSupportEvidenceStore(client)
+        judge_bindings = _configured_judge_bindings(client, configuration)
         execute_run(
             run_id,
             datasets=datasets,
@@ -277,6 +404,7 @@ def main() -> None:
                 run=run,
                 support_evidence=support_store.get_evidence,
                 scorer_version=run.candidate_snapshot.scorer_version,
+                **judge_bindings,
             ),
             termination_requested=termination_requested.is_set,
             stages=stages,
@@ -487,6 +615,48 @@ def _configured_evaluation_service():
     from app.main import get_evaluation_service
 
     return get_evaluation_service()
+
+
+def _configured_judge_bindings(client, runtime_configuration) -> dict[str, object]:
+    """Build the independent proposal path only when a judge stage is configured."""
+    if not os.environ.get("JUDGE_ROUTE", "").strip():
+        return {}
+
+    from app.evaluation.judge import FirestoreSemanticJudgeProposalStore
+    from app.provider_allowance import ProviderAccountCapabilities
+    from app.provider_allowance_firestore import FirestoreProviderAllowanceStore
+    from model.evaluation_judge import EvaluationJudgeAdapter
+
+    judge_stage = EvaluationStageConfiguration.from_environment("JUDGE")
+    judge_configuration = EvaluationJudgeConfiguration(judge_stage)
+    try:
+        generator_configuration = EvaluationStageConfiguration.from_environment("GENERATOR")
+    except ValueError:
+        generator_configuration = None
+    judge = EvaluationJudgeAdapter(
+        route=judge_stage.route,
+        model=judge_stage.model,
+        timeout_ms=runtime_configuration.generation_timeout_ms,
+        api_key=os.environ.get("OPENROUTER_API_KEY") if judge_stage.route == "openrouter" else None,
+        project=runtime_configuration.runtime.project,
+        location=runtime_configuration.runtime.location,
+    )
+    provider_id = "google-gemini" if judge_stage.route == "vertex" else judge_stage.route
+    capabilities = ProviderAccountCapabilities(
+        provider_id=provider_id,
+        account_id=judge_stage.allowance_policy,
+        kind="judging",
+        max_units_per_operation=judge_stage.allowance_max_units,
+        max_retries=1,
+    )
+    return {
+        "judge": judge,
+        "judge_configuration": judge_configuration,
+        "generator_configuration": generator_configuration,
+        "judge_allowance_store": FirestoreProviderAllowanceStore(client),
+        "judge_allowance_capabilities": capabilities,
+        "judge_proposals": FirestoreSemanticJudgeProposalStore(client),
+    }
 
 
 def _validate_candidate_staging_attempt(

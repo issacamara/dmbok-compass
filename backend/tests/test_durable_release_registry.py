@@ -21,10 +21,12 @@ def test_manifest_and_decision_survive_repository_restart() -> None:
     run = completed_run()
     runs.create_or_get(run)
     decisions = FirestoreReleaseDecisionStore(client)
+    evidence = EvidenceStore()
+    evidence.attach_run(run)
     service = ReleaseDecisionService(
         runs,
         decisions,
-        EvidenceStore(),
+        evidence,
         FirestoreReleaseManifestStore(client),
         actor_user_id="admin-1",
         clock=lambda: datetime(2026, 10, 21, tzinfo=timezone.utc),
@@ -51,10 +53,12 @@ def test_decision_is_immutable_and_does_not_store_interaction_content() -> None:
     runs = InMemoryEvaluationRunStore()
     run = completed_run()
     runs.create_or_get(run)
+    evidence = EvidenceStore()
+    evidence.attach_run(run)
     service = ReleaseDecisionService(
         runs,
         FirestoreReleaseDecisionStore(client),
-        EvidenceStore(),
+        evidence,
         FirestoreReleaseManifestStore(client),
         actor_user_id="admin-1",
         batch_reviews=AttestedReviewStore(run),

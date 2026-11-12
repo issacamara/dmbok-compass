@@ -809,7 +809,7 @@ class FirestoreEvaluationGenerationStore:
             generation = snapshot.to_dict()
             is_current = active_id == generation_id
             approved_gold_count = int(generation.get("approved_gold_count", 0))
-            release_eligible = is_current and 30 <= approved_gold_count <= 50
+            release_eligible = is_current and 40 <= approved_gold_count <= 50
             return EvaluationReportEligibility(
                 generation_id=generation_id,
                 eligibility="release_evidence" if release_eligible else "exploratory",

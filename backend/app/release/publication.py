@@ -9,7 +9,7 @@ from threading import RLock
 from typing import Any, Protocol
 
 from app.contracts import CorpusVersion, ReleaseDecision
-from app.release.firestore import ReleaseManifest
+from app.release.firestore import ReleaseManifest, release_candidate_digest
 
 
 class PublicationError(ValueError):
@@ -91,9 +91,30 @@ class ReleasePublisher:
             raise PublicationError("only an approved release decision can be published")
         if decision.release_id != manifest.release_id or manifest.corpus_version_id != corpus.version_id:
             raise PublicationError("release decision, manifest and corpus do not match")
+        candidate = manifest.candidate_binding
+        binding = corpus.serving_binding
+        if (
+            candidate is None
+            or decision.candidate_digest is None
+            or release_candidate_digest(candidate) != manifest.candidate_digest
+            or decision.candidate_digest != manifest.candidate_digest
+            or decision.evaluation_run_id != manifest.evaluation_run_id
+            or decision.dataset_version_id != manifest.dataset_version_id
+            or candidate.evaluation_run_id != decision.evaluation_run_id
+            or candidate.dataset_version_id != decision.dataset_version_id
+            or candidate.corpus_version_id != decision.corpus_version_id
+            or candidate.judge_version != decision.scorer_version_id
+            or manifest.configuration_version_id != decision.configuration_version_id
+            or manifest.provider_version_id != decision.provider_version_id
+            or manifest.model_version_id != decision.model_version_id
+            or manifest.scorer_version_id != decision.scorer_version_id
+            or manifest.gate_report_ids != decision.gate_report_ids
+            or candidate.corpus_manifest_sha256 != (binding.ingestion_fingerprint if binding else None)
+            or candidate.corpus_configuration_sha256 != (binding.configuration_fingerprint if binding else None)
+        ):
+            raise PublicationError("release decision does not match the exact reviewed candidate")
         if corpus.status not in {"validated", "active"}:
             raise PublicationError("only a validated corpus can be published")
-        binding = corpus.serving_binding
         evidence = corpus.validation_evidence
         if binding is None or evidence is None or not evidence.index_ready or not evidence.filter_ready:
             raise PublicationError("corpus is not ready for serving")

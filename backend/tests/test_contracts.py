@@ -361,13 +361,13 @@ def test_release_evidence_requires_current_generation_and_gold_gate() -> None:
     current = EvaluationReportEligibility(
         generation_id="generation-2",
         eligibility="release_evidence",
-        approved_gold_count=30,
+        approved_gold_count=40,
         is_current_generation=True,
         is_superseded=False,
     )
     assert current.eligibility == "release_evidence"
 
-    for count in (29, 51):
+    for count in (39, 51):
         with pytest.raises(ValidationError, match="release evidence"):
             EvaluationReportEligibility(
                 generation_id="generation-2",

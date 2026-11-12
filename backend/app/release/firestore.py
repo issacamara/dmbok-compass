@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from hashlib import sha256
+import json
 from typing import Any, Protocol
 
 from google.api_core.exceptions import AlreadyExists
-from pydantic import Field
+from pydantic import Field, model_validator
 
 from app.contracts.api import ContractModel, ReleaseDecision
 
@@ -25,6 +26,45 @@ class ReleaseManifest(ContractModel):
     scorer_version_id: str = Field(min_length=1, max_length=128)
     candidate_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
     gate_report_ids: list[str] = Field(min_length=1, max_length=100)
+    candidate_binding: "ReleaseCandidateBinding | None" = None
+
+    @model_validator(mode="after")
+    def validate_candidate_binding(self) -> "ReleaseManifest":
+        if self.candidate_binding is not None and release_candidate_digest(self.candidate_binding) != self.candidate_digest:
+            raise ValueError("release manifest digest does not match its exact candidate binding")
+        return self
+
+
+class ReleaseCandidateBinding(ContractModel):
+    """The complete, content-free identity authorized by one release decision.
+
+    ``corpus_manifest_sha256`` is the corpus ingestion fingerprint; it covers
+    the immutable source generation, parser output, reviewed map and derivation.
+    """
+
+    evaluation_run_id: str = Field(min_length=1, max_length=128)
+    dataset_version_id: str = Field(min_length=1, max_length=128)
+    dataset_revision: int = Field(ge=1)
+    dataset_snapshot_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    dataset_revision_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    corpus_version_id: str = Field(min_length=1, max_length=128)
+    corpus_manifest_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    corpus_configuration_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    candidate_snapshot_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    generator_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    judge_version: str = Field(min_length=1, max_length=128)
+    output_assessment_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    context_policy_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    dependency_lock_sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+    integration_artifact: str = Field(min_length=1, max_length=256)
+    runtime_version: str = Field(min_length=1, max_length=256)
+
+
+def release_candidate_digest(binding: ReleaseCandidateBinding) -> str:
+    """Hash the exact source, dataset, evaluator and runtime release tuple."""
+
+    canonical = json.dumps(binding.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
+    return sha256(canonical.encode("utf-8")).hexdigest()
 
 
 class ReleaseManifestStore(Protocol):
@@ -87,6 +127,8 @@ class FirestoreReleaseDecisionStore:
     ) -> ReleaseDecision:
         if not actor_user_id:
             raise ValueError("authenticated actor is required")
+        if not candidate_digest or decision.candidate_digest != candidate_digest:
+            raise ValueError("release decision candidate digest is missing or inconsistent")
         reference = self.decisions.document(decision.release_id)
         payload = {
             "decision": decision.model_dump(mode="json"),
@@ -101,7 +143,10 @@ class FirestoreReleaseDecisionStore:
             if not snapshot.exists:
                 raise
             stored = snapshot.to_dict()
-            if stored.get("decision") != decision.model_dump(mode="json"):
+            if (
+                stored.get("decision") != decision.model_dump(mode="json")
+                or stored.get("candidate_digest") != candidate_digest
+            ):
                 raise ValueError("release_id is already bound to another decision")
             return ReleaseDecision.model_validate(stored["decision"])
         if decision.decision == "approved":

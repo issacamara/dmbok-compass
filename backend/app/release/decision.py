@@ -4,21 +4,26 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
+from hashlib import sha256
+import json
 from threading import RLock
 from typing import Callable, Literal, Protocol
 
 from pydantic import Field
 
 from app.contracts import EvaluationReportEligibility, EvaluationRun, ReleaseDecision, RunBoundSupportEvidence
+from app.contracts.v29 import CandidateDatasetBinding
 from app.evaluation import EvaluationRunStore
 from app.evaluation.batch_reviews import BatchReviewRepository
 from app.evaluation.support import approved_refusal, approved_support_chunk_ids
 from app.evaluation.job import EvaluationStageStore
 from app.contracts.api import ContractModel
 from app.release.firestore import (
+    ReleaseCandidateBinding,
     ReleaseManifest,
     ReleaseManifestStore,
     candidate_digest,
+    release_candidate_digest,
 )
 
 
@@ -65,6 +70,10 @@ class ReleaseEvidenceStore(Protocol):
 
     def candidate_binding(self, generation_id: str) -> object | None: ...
 
+    def get_run_snapshot(self, run_id: str) -> tuple[object, object]: ...
+
+    def corpus_head(self, corpus_version_id: str) -> object | None: ...
+
 
 class RunSupportEvidenceStore(Protocol):
     def get_marker(self, *, run_id: str) -> object | None: ...
@@ -79,8 +88,10 @@ class InMemoryReleaseDecisionStore:
         self._decisions: dict[str, ReleaseDecision] = {}
         self._lock = RLock()
 
-    def create_or_get(self, decision: ReleaseDecision, **_: object) -> ReleaseDecision:
+    def create_or_get(self, decision: ReleaseDecision, *, candidate_digest: str = "", **_: object) -> ReleaseDecision:
         with self._lock:
+            if not candidate_digest or decision.candidate_digest != candidate_digest:
+                raise ReleaseDecisionError("release decision candidate digest is missing or inconsistent")
             existing = self._decisions.get(decision.release_id)
             if existing is not None:
                 if existing != decision:
@@ -135,11 +146,12 @@ class ReleaseDecisionService:
         if run is None:
             raise ReleaseDecisionError("evaluation evidence is missing")
         self._validate_binding(request, run)
+        candidate_binding = self._candidate_binding(run)
+        digest = release_candidate_digest(candidate_binding)
         if request.decision == "approved":
             self._validate_current_evidence(run)
             self._validate_gates(request, run)
-        decision = request.to_decision()
-        digest = candidate_digest(run.candidate_snapshot)
+        decision = request.to_decision().model_copy(update={"candidate_digest": digest})
         if self.manifests is not None:
             self.manifests.create_or_get(ReleaseManifest(
                 release_id=decision.release_id,
@@ -152,6 +164,7 @@ class ReleaseDecisionService:
                 scorer_version_id=decision.scorer_version_id,
                 candidate_digest=digest,
                 gate_report_ids=decision.gate_report_ids,
+                candidate_binding=candidate_binding,
             ))
         return self.decisions.create_or_get(
             decision,
@@ -159,6 +172,99 @@ class ReleaseDecisionService:
             decided_at=self.clock(),
             candidate_digest=digest,
         )
+
+    def _candidate_binding(self, run: EvaluationRun) -> ReleaseCandidateBinding:
+        if run.candidate_snapshot is None:
+            raise ReleaseDecisionError("release evidence is missing the complete candidate snapshot")
+        try:
+            snapshot, configuration = self.evidence.get_run_snapshot(run.run_id)
+            head = self.evidence.corpus_head(run.corpus_version_id)
+        except Exception:
+            raise ReleaseDecisionError("release evidence is missing the immutable dataset revision") from None
+        binding = getattr(snapshot, "binding", None)
+        if (
+            getattr(snapshot, "run_id", None) != run.run_id
+            or getattr(snapshot, "configuration_version_id", None) != run.configuration_version_id
+            or getattr(snapshot, "selection", None) not in {"full", "subset"}
+            or not isinstance(binding, CandidateDatasetBinding)
+            or getattr(binding, "corpus_version_id", None) != run.corpus_version_id
+            or getattr(binding, "dataset_revision", None) is None
+            or getattr(snapshot, "snapshot_sha256", None) is None
+            or getattr(head, "dataset_sha256", None) is None
+            or head is None
+            or getattr(head, "corpus_version_id", None) != run.corpus_version_id
+            or getattr(head, "revision", None) != getattr(binding, "dataset_revision", None)
+            or configuration != run.candidate_snapshot
+            or tuple(row.item_id for row in getattr(snapshot, "items", ())) != tuple(run.selected_item_ids)
+        ):
+            raise ReleaseDecisionError("release evidence is stale or does not match the current dataset revision")
+        candidate = run.candidate_snapshot
+        generator = {
+            "provider": candidate.answer_provider,
+            "primary_model": candidate.primary_model,
+            "fallback_model": candidate.fallback_model,
+            "prompt_version": candidate.prompt_version,
+            "json_schema_supported": candidate.json_schema_supported,
+            "request_timeout_ms": candidate.request_timeout_ms,
+            "generation_timeout_ms": candidate.generation_timeout_ms,
+        }
+        context_policy = {
+            "retrieval_policy_version": candidate.retrieval_policy_version,
+            "evidence_policy_version": candidate.evidence_policy_version,
+        }
+        return ReleaseCandidateBinding(
+            evaluation_run_id=run.run_id,
+            dataset_version_id=run.dataset_version_id,
+            dataset_revision=binding.dataset_revision,
+            dataset_snapshot_sha256=snapshot.snapshot_sha256,
+            dataset_revision_sha256=head.dataset_sha256,
+            corpus_version_id=run.corpus_version_id,
+            corpus_manifest_sha256=candidate.corpus_binding.ingestion_fingerprint,
+            corpus_configuration_sha256=candidate.corpus_binding.configuration_fingerprint,
+            candidate_snapshot_sha256=candidate_digest(candidate),
+            generator_sha256=_sha256_json(generator),
+            judge_version=candidate.scorer_version,
+            output_assessment_sha256=self._output_assessment_digest(run),
+            context_policy_sha256=_sha256_json(context_policy),
+            dependency_lock_sha256=candidate.dependency_lock_sha256,
+            integration_artifact=candidate.integration_artifact,
+            runtime_version=candidate.runtime_version,
+        )
+
+    def _output_assessment_digest(self, run: EvaluationRun) -> str:
+        stages: list[dict[str, object]] = []
+        for item_id in run.selected_item_ids:
+            stage = self.stages.get(run.run_id, item_id) if self.stages is not None else None
+            if stage is None:
+                stages.append({"item_id": item_id, "assessment_status": "missing"})
+                continue
+            stages.append({
+                "item_id": item_id,
+                "retrieval_status": stage.retrieval_status,
+                "generation_status": stage.generation_status,
+                "generation_outcome": stage.generation_outcome,
+                "assessment_status": stage.assessment_status,
+                "output_digest": stage.output_digest,
+                "reviewed_output_digest": stage.reviewed_output_digest,
+                "retrieval_success": stage.retrieval_success,
+                "grounded": stage.grounded,
+                "citation_correct": stage.citation_correct,
+                "answer_quality": stage.answer_quality,
+                "refusal_correct": stage.refusal_correct,
+                "response_time_ms": stage.response_time_ms,
+            })
+        review = self.batch_reviews.get(generation_id=run.dataset_version_id, run_id=run.run_id) if self.batch_reviews is not None else None
+        attestation = self.batch_reviews.attestation(review) if review is not None and self.batch_reviews is not None else None
+        material = {
+            "stages": stages,
+            "review": ({
+                "summary": review.summary.model_dump(mode="json"),
+                "samples": [item.model_dump(mode="json") for item in review.samples],
+                "exceptions": [item.model_dump(mode="json") for item in review.exceptions],
+            } if review is not None else None),
+            "attestation": attestation.model_dump(mode="json") if attestation is not None else None,
+        }
+        return _sha256_json(material)
 
     def get(self, release_id: str) -> ReleaseDecision:
         decision = self.decisions.get(release_id)
@@ -203,7 +309,7 @@ class ReleaseDecisionService:
             or not eligibility.is_current_generation
             or eligibility.is_superseded
         ):
-            raise ReleaseDecisionError("release evidence is exploratory, superseded, or lacks 30–50 approved gold items")
+            raise ReleaseDecisionError("release evidence is exploratory, superseded, or lacks 40–50 approved gold items")
         if self.support_evidence is None:
             raise ReleaseDecisionError("release evidence is missing run-bound support records")
         if self.support_evidence is not None:
@@ -223,8 +329,25 @@ class ReleaseDecisionService:
                 evidence = self.support_evidence.get_evidence(run_id=run.run_id, item_id=item_id)
                 if approved_support_chunk_ids(evidence, run=run) or approved_refusal(evidence, run=run):
                     approved_count += 1
-            if not 30 <= approved_count <= 50:
-                raise ReleaseDecisionError("release evidence lacks 30–50 approved run-bound support items")
+            if not 40 <= approved_count <= 50:
+                raise ReleaseDecisionError("release evidence lacks 40–50 approved run-bound support items")
+            run_snapshot, _ = self.evidence.get_run_snapshot(run.run_id)
+            rows = {row.item_id: row for row in run_snapshot.items}
+            answerable_count = 0
+            refusal_count = 0
+            for item_id in run.selected_item_ids:
+                evidence = self.support_evidence.get_evidence(run_id=run.run_id, item_id=item_id)
+                if not (approved_support_chunk_ids(evidence, run=run) or approved_refusal(evidence, run=run)):
+                    continue
+                row = rows.get(item_id)
+                if row is None:
+                    raise ReleaseDecisionError("release evidence item is missing from the immutable dataset revision")
+                if row.expected_outcome in {"answer", "qualified"}:
+                    answerable_count += 1
+                elif row.expected_outcome == "evidence_refusal":
+                    refusal_count += 1
+            if answerable_count < 20 or refusal_count < 20:
+                raise ReleaseDecisionError("release evidence requires at least 20 answerable and 20 refusal/out-of-domain gold items")
         if self.stages is None:
             raise ReleaseDecisionError("release evidence is missing exact-output assessment records")
         for item_id in run.selected_item_ids:
@@ -375,3 +498,8 @@ def _candidate_snapshot_sha256(snapshot: object) -> str:
     """Hash the complete non-secret candidate identity deterministically."""
 
     return candidate_digest(snapshot)
+
+
+def _sha256_json(value: object) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return sha256(encoded.encode("utf-8")).hexdigest()

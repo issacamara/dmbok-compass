@@ -22,6 +22,7 @@ from app.contracts import (
     VerifiedChunkChoice,
     UserProfile,
 )
+from app.contracts.v29 import CandidateDatasetBinding, DatasetHead, EvaluationRowV2, EvaluationRunSnapshot, RawSourceSpan
 from app.evaluation import InMemoryEvaluationRunStore
 from app.identity import IdentityError, get_admin_user
 from app.main import app, release_decision_service
@@ -41,12 +42,50 @@ REQUIRED_METRICS = (
 class EvidenceStore:
     def __init__(self, eligibility: EvaluationReportEligibility | None = None) -> None:
         self.eligibility = eligibility or EvaluationReportEligibility(
-            generation_id="dataset-v1", eligibility="release_evidence", approved_gold_count=30,
+            generation_id="dataset-v1", eligibility="release_evidence", approved_gold_count=40,
             is_current_generation=True, is_superseded=False,
         )
+        self.run_snapshots: dict[str, tuple[EvaluationRunSnapshot, EvaluationCandidateSnapshot]] = {}
+        self.heads: dict[str, DatasetHead] = {}
 
     def report_eligibility(self, generation_id: str) -> EvaluationReportEligibility:
         return self.eligibility
+
+    def attach_run(self, run: EvaluationRun, *, answerable_count: int = 20) -> None:
+        rows = []
+        for index, item_id in enumerate(run.selected_item_ids):
+            if index < answerable_count:
+                rows.append(EvaluationRowV2(
+                    item_id=item_id, origin="admin", question=f"Question {item_id}", category="definitions",
+                    expected_outcome="answer", expected_refusal=False, expected_answer_or_rubric="Answer",
+                    source_spans=[RawSourceSpan(
+                        span_id=f"span-{item_id}", block_id=f"block-{item_id}", physical_page=1,
+                        start_offset=0, end_offset=1, raw_text="x",
+                    )], relevant_child_ids=[f"chunk-{item_id}"], parent_ids=[f"parent-{item_id}"],
+                ))
+            else:
+                rows.append(EvaluationRowV2(
+                    item_id=item_id, origin="admin", question=f"Question {item_id}", category="definitions",
+                    expected_outcome="evidence_refusal", expected_refusal=True,
+                    expected_answer_or_rubric="Refuse outside scope", scope_rationale="Outside corpus scope",
+                ))
+        snapshot = EvaluationRunSnapshot(
+            run_id=run.run_id,
+            binding=CandidateDatasetBinding(attempt_id="attempt-v1", corpus_version_id=run.corpus_version_id, dataset_revision=7),
+            configuration_version_id=run.configuration_version_id,
+            selection="full", items=tuple(rows), snapshot_sha256="f" * 64,
+        )
+        self.run_snapshots[run.run_id] = (snapshot, run.candidate_snapshot)
+        self.heads[run.corpus_version_id] = DatasetHead(
+            corpus_version_id=run.corpus_version_id, revision=7, dataset_sha256="e" * 64
+        )
+
+    def get_run_snapshot(self, run_id: str) -> tuple[EvaluationRunSnapshot, EvaluationCandidateSnapshot]:
+        assert run_id in self.run_snapshots
+        return self.run_snapshots[run_id]
+
+    def corpus_head(self, corpus_version_id: str) -> DatasetHead | None:
+        return self.heads.get(corpus_version_id)
 
 
 class AttestedReviewStore:
@@ -134,6 +173,14 @@ class SupportEvidenceStore:
             return None
         if self.run.selected_item_ids.index(item_id) >= self.approved_count:
             return None
+        if self.run.selected_item_ids.index(item_id) >= 20:
+            return RunBoundSupportEvidence(
+                run_id=self.run.run_id, item_id=item_id,
+                candidate_snapshot_sha256=candidate_snapshot_sha256(self.run),
+                corpus_version_id=self.run.corpus_version_id, source_provenance_sha256="b" * 64,
+                match_status="review_approved", expected_refusal=True, reviewer_actor="admin",
+                reviewed_at=datetime(2026, 11, 5, tzinfo=timezone.utc),
+            )
         choice = VerifiedChunkChoice(
             chunk_id=f"chunk-{item_id}", corpus_version_id=self.run.corpus_version_id,
             content_hash="a" * 64, page=1, section="Section", source_provenance_sha256="b" * 64,
@@ -166,7 +213,7 @@ class StageStore:
         return self.stages.get(item_id)
 
 
-def completed_run(*, passed: bool = True, item_count: int = 30) -> EvaluationRun:
+def completed_run(*, passed: bool = True, item_count: int = 40) -> EvaluationRun:
     return EvaluationRun(
         run_id="eval-1",
         dataset_version_id="dataset-v1",
@@ -191,7 +238,7 @@ def completed_run(*, passed: bool = True, item_count: int = 30) -> EvaluationRun
         selected_item_ids=[f"item-{index}" for index in range(item_count)],
         report_eligibility=EvaluationReportEligibility(
             generation_id="dataset-v1",
-            eligibility="release_evidence" if 30 <= item_count <= 50 else "exploratory",
+            eligibility="release_evidence" if 40 <= item_count <= 50 else "exploratory",
             approved_gold_count=item_count,
             is_current_generation=True,
             is_superseded=False,
@@ -230,8 +277,10 @@ def service(
 ) -> ReleaseDecisionService:
     runs = InMemoryEvaluationRunStore()
     runs.create_or_get(run)
+    evidence_store = evidence or EvidenceStore()
+    evidence_store.attach_run(run)
     return ReleaseDecisionService(
-        runs, InMemoryReleaseDecisionStore(), evidence or EvidenceStore(),
+        runs, InMemoryReleaseDecisionStore(), evidence_store,
         batch_reviews=(AttestedReviewStore(run) if batch_reviews is _DEFAULT_REVIEWS else batch_reviews),  # type: ignore[arg-type]
         support_evidence=SupportEvidenceStore(run),
         stages=StageStore(run),
@@ -292,7 +341,7 @@ def test_failed_gate_requires_an_explicit_approved_exception() -> None:
 
 def test_approval_rechecks_active_generation_and_gold_subset_at_commit_time() -> None:
     stale = EvidenceStore(EvaluationReportEligibility(
-        generation_id="dataset-v1", eligibility="exploratory", approved_gold_count=30,
+        generation_id="dataset-v1", eligibility="exploratory", approved_gold_count=40,
         is_current_generation=False, is_superseded=True,
     ))
     with pytest.raises(ValueError, match="superseded"):
@@ -303,16 +352,42 @@ def test_approval_rechecks_active_generation_and_gold_subset_at_commit_time() ->
         generation_id="dataset-v1", eligibility="exploratory", approved_gold_count=51,
         is_current_generation=True, is_superseded=False,
     ))
-    with pytest.raises(ValueError, match="30–50"):
+    with pytest.raises(ValueError, match="40–50"):
         service(too_many_run, too_many_gold).record(ReleaseDecisionRequest(**request()))
 
-    too_few_run = completed_run(item_count=29)
+    too_few_run = completed_run(item_count=39)
     too_few_gold = EvidenceStore(EvaluationReportEligibility(
-        generation_id="dataset-v1", eligibility="exploratory", approved_gold_count=29,
+        generation_id="dataset-v1", eligibility="exploratory", approved_gold_count=39,
         is_current_generation=True, is_superseded=False,
     ))
-    with pytest.raises(ValueError, match="30–50"):
+    with pytest.raises(ValueError, match="40–50"):
         service(too_few_run, too_few_gold).record(ReleaseDecisionRequest(**request()))
+
+
+def test_dataset_revision_edit_invalidates_release_decision_without_mutating_run() -> None:
+    run = completed_run()
+    evidence = EvidenceStore()
+    release_service = service(run, evidence)
+    original_snapshot = evidence.run_snapshots[run.run_id][0]
+    evidence.heads[run.corpus_version_id] = evidence.heads[run.corpus_version_id].model_copy(
+        update={"revision": 8, "dataset_sha256": "9" * 64}
+    )
+
+    with pytest.raises(ValueError, match="current dataset revision"):
+        release_service.record(ReleaseDecisionRequest(**request()))
+
+    assert evidence.run_snapshots[run.run_id][0] == original_snapshot
+    assert release_service.decisions.get("release-1") is None
+
+
+def test_release_requires_twenty_approved_items_in_each_outcome_group() -> None:
+    run = completed_run(item_count=40)
+    evidence = EvidenceStore()
+    release_service = service(run, evidence)
+    evidence.attach_run(run, answerable_count=19)
+
+    with pytest.raises(ValueError, match="20 answerable and 20 refusal/out-of-domain"):
+        release_service.record(ReleaseDecisionRequest(**request()))
 
 
 def test_approval_requires_exactly_the_six_release_metrics() -> None:
@@ -448,8 +523,10 @@ def test_approval_fails_closed_when_reviewed_output_digest_changes() -> None:
     run = completed_run()
     runs = InMemoryEvaluationRunStore()
     runs.create_or_get(run)
+    evidence = EvidenceStore()
+    evidence.attach_run(run)
     release_service = ReleaseDecisionService(
-        runs, InMemoryReleaseDecisionStore(), EvidenceStore(),
+        runs, InMemoryReleaseDecisionStore(), evidence,
         support_evidence=SupportEvidenceStore(run),
         batch_reviews=AttestedReviewStore(run),
         stages=StageStore(run, stale_output=True),

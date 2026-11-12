@@ -117,7 +117,10 @@ def _run(terminated: Event) -> None:
         stop_requested=terminated.is_set,
     )
     try:
-        outcome = coordinator.run(attempt_id=attempt_id, source=source, pdf=pdf)
+        outcome = coordinator.run(
+            attempt_id=attempt_id, source=source, pdf=pdf,
+            physical_page_numbers=record.get("physical_page_numbers"),
+        )
     except ParsingOutcomeUnknown:
         telemetry.emit(stage_event("parsing", "awaiting_budget"))
         return

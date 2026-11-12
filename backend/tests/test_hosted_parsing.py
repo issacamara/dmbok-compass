@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 from threading import Event
 
 import pytest
@@ -84,8 +85,10 @@ class Provider:
         self.submissions = 0
         self.result_calls = 0
         self.lookups = 0
+        self.submitted_pdf = None
 
     def submit(self, *, pdf, idempotency_key, route):
+        self.submitted_pdf = pdf
         self.submissions += 1
         if self.unknown_submit:
             raise TimeoutError("response lost")
@@ -100,7 +103,7 @@ class Provider:
         return RAW_RESULT, self.result_value
 
 
-def coordinator(provider, checkpoints, artifacts, *, route="llamacloud", reconcile=None, **kwargs):
+def coordinator(provider, checkpoints, artifacts, *, route="llamacloud", reconcile=None, max_units=20, **kwargs):
     reservations, reconciled = [], []
 
     def reserve(key, amount):
@@ -112,7 +115,7 @@ def coordinator(provider, checkpoints, artifacts, *, route="llamacloud", reconci
         bucket_name="corpus-bucket", route=route,
         reserve_allowance=reserve,
         reconcile_allowance=reconcile or (lambda key, units: reconciled.append((key, units))),
-        max_units=20, poll_interval_seconds=1, **kwargs,
+        max_units=max_units, poll_interval_seconds=1, **kwargs,
     )
     return parser, reservations, reconciled
 
@@ -123,6 +126,87 @@ def test_invalid_pdf_and_malformed_schema_never_persist_artifact():
     with pytest.raises(ParsingError, match="not a PDF"):
         parser.run(attempt_id=ATTEMPT, source=SOURCE, pdf=b"not a PDF")
     assert parser.run(attempt_id=ATTEMPT, source=SOURCE, pdf=PDF).state == "failed"
+    assert artifacts.writes == 0
+
+
+def test_selected_five_pages_are_the_only_provider_input_and_map_back_to_original_pages():
+    from pypdf import PdfReader, PdfWriter
+
+    selected = [21, 25, 58, 78, 105]
+    writer = PdfWriter()
+    for page_number in range(1, 106):
+        writer.add_blank_page(width=100 + page_number, height=792)
+    original = io.BytesIO()
+    writer.write(original)
+    pdf = original.getvalue()
+    source = {**SOURCE, "sha256": hashlib.sha256(pdf).hexdigest()}
+    result = {
+        "blocks": [
+            {"block_id": f"selected-{page}", "physical_page": page, "kind": "text", "raw_text": f"Selected page {page}"}
+            for page in range(1, 6)
+        ],
+        "usage": {"credits": 15},
+    }
+    provider = Provider(result=result)
+    checkpoints, artifacts = Checkpoints(), Artifacts()
+    checkpoints.records[ATTEMPT]["physical_page_numbers"] = selected
+    parser, reservations, reconciled = coordinator(provider, checkpoints, artifacts, max_units=15)
+
+    outcome = parser.run(attempt_id=ATTEMPT, source=source, pdf=pdf, physical_page_numbers=selected)
+
+    assert provider.submitted_pdf is not None
+    submitted_pages = PdfReader(io.BytesIO(provider.submitted_pdf)).pages
+    assert len(submitted_pages) == 5
+    assert [int(page.mediabox.width) - 100 for page in submitted_pages] == selected
+    assert outcome.state == "awaiting_review"
+    assert outcome.artifact is not None
+    assert outcome.artifact.source_generation == str(source["generation"])
+    assert outcome.artifact.source_sha256 == source["sha256"]
+    assert [block.physical_page for block in outcome.artifact.blocks] == selected
+    assert reservations[0][1] == 15
+    assert reservations[0][0].endswith(":[21,25,58,78,105]")
+    assert reconciled[0][1] == 15
+
+
+def test_selected_parse_rejects_provider_page_outside_subset():
+    from pypdf import PdfWriter
+
+    output = io.BytesIO()
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    writer.write(output)
+    pdf = output.getvalue()
+    source = {**SOURCE, "sha256": hashlib.sha256(pdf).hexdigest()}
+    provider = Provider(result={"blocks": [{"block_id": "bad", "physical_page": 2, "kind": "text", "raw_text": "bad"}]})
+    checkpoints, artifacts = Checkpoints(), Artifacts()
+    parser, _, _ = coordinator(provider, checkpoints, artifacts)
+
+    outcome = parser.run(attempt_id=ATTEMPT, source=source, pdf=pdf, physical_page_numbers=[1])
+
+    assert outcome.state == "failed"
+    assert provider.submitted_pdf is not None
+    assert artifacts.writes == 0
+
+
+def test_provider_usage_above_reserved_allowance_does_not_create_review_artifact():
+    from pypdf import PdfWriter
+
+    output = io.BytesIO()
+    writer = PdfWriter()
+    writer.add_blank_page(width=612, height=792)
+    writer.write(output)
+    pdf = output.getvalue()
+    source = {**SOURCE, "sha256": hashlib.sha256(pdf).hexdigest()}
+    provider = Provider(result={"blocks": RESULT["blocks"], "usage": {"credits": 16}})
+    checkpoints, artifacts = Checkpoints(), Artifacts()
+    parser, reservations, reconciled = coordinator(provider, checkpoints, artifacts, max_units=15)
+
+    outcome = parser.run(attempt_id=ATTEMPT, source=source, pdf=pdf, physical_page_numbers=[1])
+
+    assert outcome.state == "failed"
+    assert outcome.usage_units == 16
+    assert reservations[0][1] == 15
+    assert reconciled[0][1] == 16
     assert artifacts.writes == 0
 
 

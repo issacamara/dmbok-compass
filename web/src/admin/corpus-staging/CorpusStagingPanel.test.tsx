@@ -17,6 +17,17 @@ describe("CorpusStagingPanel", () => {
     vi.clearAllMocks(); window.localStorage.clear();
     api.getCorpusStagingStatus.mockResolvedValue(reviewed);
   });
+
+  it("requires a unique physical page selection before submitting", async () => {
+    const user = userEvent.setup();
+    render(<CorpusStagingPanel token="admin-token" />);
+    await user.upload(screen.getByLabelText("Source PDF"), new File(["pdf"], "source.pdf", { type: "application/pdf" }));
+    await user.clear(screen.getByLabelText("Physical pages to send for parsing"));
+    await user.type(screen.getByLabelText("Physical pages to send for parsing"), "21, 21");
+    await user.click(screen.getByRole("button", { name: "Upload PDF and parse" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(/unique physical page numbers/i);
+    expect(api.submitPdfOnlyCorpusStagingAttempt).not.toHaveBeenCalled();
+  });
   afterEach(() => vi.restoreAllMocks());
 
   it("uploads only a PDF, proposes an outline, saves corrections, and approves the exact revision", async () => {
@@ -32,6 +43,7 @@ describe("CorpusStagingPanel", () => {
     expect(screen.queryByRole("button", { name: /structure template/i })).not.toBeInTheDocument();
     await user.upload(screen.getByLabelText("Source PDF"), new File(["pdf"], "source.pdf", { type: "application/pdf" }));
     await user.click(screen.getByRole("button", { name: "Upload PDF and parse" }));
+    expect(api.submitPdfOnlyCorpusStagingAttempt).toHaveBeenCalledWith("admin-token", expect.any(File), [21, 25, 58, 78, 105]);
     expect(await screen.findByLabelText("Section path for pages 1 to 2")).toHaveValue("Chapter 1");
     expect(api.proposeCorpusStagingStructure).toHaveBeenCalledWith("admin-token", "attempt-1");
 
@@ -128,6 +140,8 @@ describe("CorpusStagingPanel", () => {
     await user.upload(screen.getByLabelText("Source PDF"), new File(["pdf"], "source.pdf", { type: "application/pdf" }));
     screen.getByLabelText("Source PDF").focus();
     expect(screen.getByLabelText("Source PDF")).toHaveFocus();
+    await user.tab();
+    expect(screen.getByLabelText("Physical pages to send for parsing")).toHaveFocus();
     await user.tab();
     expect(screen.getByRole("button", { name: "Upload PDF and parse" })).toHaveFocus();
   });

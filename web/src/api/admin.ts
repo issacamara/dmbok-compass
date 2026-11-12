@@ -27,9 +27,10 @@ export function getCorpusStagingTemplate(token: string): Promise<StructureTempla
   return adminRequest<StructureTemplate>(ADMIN_ROUTES.corpusStagingTemplate, token);
 }
 
-export async function submitPdfOnlyCorpusStagingAttempt(token: string, sourcePdf: File): Promise<CorpusStagingAttemptStatus> {
+export async function submitPdfOnlyCorpusStagingAttempt(token: string, sourcePdf: File, physicalPageNumbers?: number[]): Promise<CorpusStagingAttemptStatus> {
   const body = new FormData();
   body.append("source_pdf", sourcePdf);
+  if (physicalPageNumbers?.length) body.append("physical_page_numbers", physicalPageNumbers.join(","));
   return adminRequest<CorpusStagingAttemptStatus>(`${ADMIN_ROUTES.corpusStagingAttempts}/pdf`, token, { method: "POST", body });
 }
 

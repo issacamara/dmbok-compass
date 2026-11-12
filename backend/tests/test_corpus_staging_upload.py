@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from hashlib import sha256
+from io import BytesIO
 import json
 import logging
 
@@ -46,7 +47,7 @@ class MemoryStore:
         self.attempts: dict[str, dict[str, object]] = {}
         self.active_pointer = "active-corpus-v1"
 
-    def begin(self, *, attempt_id: str, actor_id: str, source_object_name: str, map_object_name: str | None) -> int:
+    def begin(self, *, attempt_id: str, actor_id: str, source_object_name: str, map_object_name: str | None, physical_page_numbers=None) -> int:
         self.attempts[attempt_id] = {
             "attempt_id": attempt_id,
             "actor_id": actor_id,
@@ -56,6 +57,7 @@ class MemoryStore:
             "map_object_name": map_object_name,
             "source": None,
             "structure": None,
+            **({"physical_page_numbers": physical_page_numbers} if physical_page_numbers is not None else {}),
         }
         return 1
 
@@ -171,6 +173,7 @@ def test_paired_upload_persists_one_attempt_with_immutable_generations_and_hashe
             "attempt_id", "revision", "state", "completed_stage", "preview",
             "correction_codes", "parent_count", "child_count", "chunk_count",
             "staged_corpus_version_id", "hosted_parsing_state", "parsing_output_sha256", "error",
+            "physical_page_numbers",
             "parsing_page_count", "parsing_block_count", "parsing_usage_kind", "parsing_usage_units",
             "candidate_generation_state", "candidate_generation_count", "candidate_generation_target",
             "candidate_generation_rejected_count", "candidate_generation_usage_tokens",
@@ -224,6 +227,69 @@ def test_pdf_only_upload_is_idempotent_and_keeps_paired_path_compatible() -> Non
         assert paired.status_code == 201
         assert paired.json()["attempt_id"] != first.json()["attempt_id"]
         assert len([path for path in database.data if path.startswith("corpus_staging_attempts/")]) == 2
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_pdf_only_upload_pins_page_selection_into_attempt_and_source_identity():
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    for _ in range(3):
+        writer.add_blank_page(width=612, height=792)
+    pdf_file = BytesIO()
+    writer.write(pdf_file)
+    pdf = pdf_file.getvalue()
+    database = FakeFirestore()
+    store = FirestoreCorpusStagingAttemptStore(database)
+    service = CorpusStagingUploadService(store, FakeBucket(), "private-corpus-bucket")
+    client = setup_client(service)
+    try:
+        response = client.post(
+            "/api/admin/corpus-staging/attempts/pdf",
+            files={"source_pdf": ("dmbok.pdf", pdf, "application/pdf")},
+            data={"physical_page_numbers": "3, 1"},
+        )
+        assert response.status_code == 201
+        assert response.json()["physical_page_numbers"] == [1, 3]
+        record = database.data[f"corpus_staging_attempts/{response.json()['attempt_id']}"]
+        assert record["physical_page_numbers"] == [1, 3]
+        assert record["source"]["sha256"] == sha256(pdf).hexdigest()
+        replay = client.post(
+            "/api/admin/corpus-staging/attempts/pdf",
+            files={"source_pdf": ("dmbok.pdf", pdf, "application/pdf")},
+            data={"physical_page_numbers": "1, 3"},
+        )
+        other_selection = client.post(
+            "/api/admin/corpus-staging/attempts/pdf",
+            files={"source_pdf": ("dmbok.pdf", pdf, "application/pdf")},
+            data={"physical_page_numbers": "2"},
+        )
+        assert replay.json()["attempt_id"] == response.json()["attempt_id"]
+        assert other_selection.json()["attempt_id"] != response.json()["attempt_id"]
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_pdf_only_upload_rejects_duplicate_and_out_of_range_page_selection():
+    from pypdf import PdfWriter
+
+    writer = PdfWriter()
+    for _ in range(3):
+        writer.add_blank_page(width=612, height=792)
+    pdf_file = BytesIO()
+    writer.write(pdf_file)
+    store = MemoryStore()
+    client = setup_client(CorpusStagingUploadService(store, FakeBucket(), "private-corpus-bucket"))
+    try:
+        for selection in ("1,1", "4"):
+            response = client.post(
+                "/api/admin/corpus-staging/attempts/pdf",
+                files={"source_pdf": ("dmbok.pdf", pdf_file.getvalue(), "application/pdf")},
+                data={"physical_page_numbers": selection},
+            )
+            assert response.status_code == 422
+        assert store.attempts == {}
     finally:
         app.dependency_overrides.clear()
 

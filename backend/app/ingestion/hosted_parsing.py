@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import csv
 import io
+import json
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -390,7 +391,10 @@ class HostedParsingCoordinator:
         self.sleep = sleep
         self.stop_requested = stop_requested
 
-    def run(self, *, attempt_id: str, source: Mapping[str, Any], pdf: bytes) -> ParsingRun:
+    def run(
+        self, *, attempt_id: str, source: Mapping[str, Any], pdf: bytes,
+        physical_page_numbers: list[int] | None = None,
+    ) -> ParsingRun:
         if not attempt_id.strip() or not _valid_source(source, self.bucket_name, attempt_id):
             raise ParsingError("staged source binding is invalid")
         if not pdf.startswith(b"%PDF-"):
@@ -413,7 +417,14 @@ class HostedParsingCoordinator:
                 checkpoint.get("parsing_usage_kind"), checkpoint.get("parsing_usage_units"),
             )
 
+        if physical_page_numbers is not None:
+            pdf = _extract_selected_pdf_pages(pdf, physical_page_numbers)
+            selected_key = json.dumps(physical_page_numbers, separators=(",", ":"))
+        else:
+            selected_key = "all"
         operation_key = f"corpus-parse:{self.mode}:{self.route}:{attempt_id}:{source_digest}"
+        if physical_page_numbers is not None:
+            operation_key = f"{operation_key}:{selected_key}"
         existing_operation_key = checkpoint.get("parsing_operation_key")
         if existing_operation_key is not None and existing_operation_key != operation_key:
             raise ParsingError("staging attempt parser settings changed")
@@ -464,7 +475,10 @@ class HostedParsingCoordinator:
                 self.checkpoints.record_status(attempt_id, "failed", error_code="parser_failed")
                 return ParsingRun(None, "failed", remote_job_id)
             if status == "succeeded":
-                return self._persist_result(attempt_id, source, source_digest, remote_job_id, operation_key)
+                return self._persist_result(
+                    attempt_id, source, source_digest, remote_job_id, operation_key,
+                    physical_page_numbers,
+                )
             remaining = deadline - self.monotonic()
             if remaining <= 0:
                 return ParsingRun(None, "parsing", remote_job_id)
@@ -472,11 +486,14 @@ class HostedParsingCoordinator:
 
     def _persist_result(
         self, attempt_id: str, source: Mapping[str, Any], source_digest: str,
-        job_id: str, operation_key: str,
+        job_id: str, operation_key: str, physical_page_numbers: list[int] | None = None,
     ) -> ParsingRun:
         try:
             raw_result, payload = self.provider.result(job_id)
-            artifact = _parse_result(payload, str(source["generation"]), source_digest, raw_result)
+            artifact = _parse_result(
+                payload, str(source["generation"]), source_digest, raw_result,
+                physical_page_numbers=physical_page_numbers,
+            )
         except (ParsingError, ValidationError):
             self.reconcile_allowance(operation_key, None)
             self.checkpoints.record_status(attempt_id, "failed", error_code="invalid_parser_output")
@@ -484,6 +501,11 @@ class HostedParsingCoordinator:
         except Exception:
             self.checkpoints.record_status(attempt_id, "parsing", error_code="parser_result_unavailable")
             return ParsingRun(None, "parsing", job_id)
+        usage_kind, usage_units = _usage_detail(payload)
+        self.reconcile_allowance(operation_key, usage_units)
+        if usage_units is not None and usage_units > self.max_units:
+            self.checkpoints.record_status(attempt_id, "failed", error_code="parser_usage_exceeded")
+            return ParsingRun(None, "failed", job_id, usage_kind=usage_kind, usage_units=usage_units)
         serialized = artifact.model_dump_json().encode("utf-8")
         artifact_digest = hashlib.sha256(serialized).hexdigest()
         digest = artifact.output_sha256
@@ -502,8 +524,6 @@ class HostedParsingCoordinator:
             "artifact_generation": stored.get("generation"),
             "remote_job_id": job_id,
         }
-        usage_kind, usage_units = _usage_detail(payload)
-        self.reconcile_allowance(operation_key, usage_units)
         self.checkpoints.record_artifact(attempt_id, identity)
         page_count = len({block.physical_page for block in artifact.blocks})
         block_count = len(artifact.blocks)
@@ -547,7 +567,38 @@ def _saved_artifact(
     return artifact
 
 
-def _parse_result(payload: Any, source_generation: str, source_digest: str, raw_result: bytes) -> ParsingArtifact:
+def _extract_selected_pdf_pages(pdf: bytes, physical_page_numbers: list[int]) -> bytes:
+    if (
+        not physical_page_numbers or len(physical_page_numbers) > 5
+        or physical_page_numbers != sorted(set(physical_page_numbers))
+        or any(type(page) is not int or page < 1 for page in physical_page_numbers)
+    ):
+        raise ParsingError("physical page selection is invalid")
+    try:
+        from pypdf import PdfReader, PdfWriter
+
+        reader = PdfReader(io.BytesIO(pdf))
+        if physical_page_numbers[-1] > len(reader.pages):
+            raise ParsingError("physical page selection is outside the source PDF")
+        writer = PdfWriter()
+        for page_number in physical_page_numbers:
+            writer.add_page(reader.pages[page_number - 1])
+        output = io.BytesIO()
+        writer.write(output)
+        subset = output.getvalue()
+        if len(PdfReader(io.BytesIO(subset)).pages) != len(physical_page_numbers):
+            raise ParsingError("selected PDF page count could not be verified")
+        return subset
+    except ParsingError:
+        raise
+    except Exception:
+        raise ParsingError("selected PDF pages could not be extracted") from None
+
+
+def _parse_result(
+    payload: Any, source_generation: str, source_digest: str, raw_result: bytes,
+    *, physical_page_numbers: list[int] | None = None,
+) -> ParsingArtifact:
     if not isinstance(payload, Mapping):
         raise ParsingError("parser result schema is invalid")
     raw_blocks = payload.get("blocks")
@@ -562,6 +613,10 @@ def _parse_result(payload: Any, source_generation: str, source_digest: str, raw_
                 raise ParsingError("parser block schema is invalid")
             block_id = value.get("block_id")
             physical_page = value.get("physical_page")
+            if physical_page_numbers is not None:
+                if type(physical_page) is not int or not 1 <= physical_page <= len(physical_page_numbers):
+                    raise ParsingError("parser returned a page outside the selected PDF")
+                physical_page = physical_page_numbers[physical_page - 1]
             printed_page_label = value.get("printed_page_label")
             kind = value.get("kind")
             raw_text = value.get("raw_text")

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
+from io import BytesIO
 from pathlib import Path
 import re
 import tempfile
@@ -94,7 +95,8 @@ class StagingArtifact:
 
 class CorpusStagingAttemptStore(Protocol):
     def begin(
-        self, *, attempt_id: str, actor_id: str, source_object_name: str, map_object_name: str | None
+        self, *, attempt_id: str, actor_id: str, source_object_name: str, map_object_name: str | None,
+        physical_page_numbers: list[int] | None = None,
     ) -> int: ...
 
     def attach_artifact(
@@ -166,7 +168,8 @@ class FirestoreCorpusStagingAttemptStore:
         self._transaction_runner = transaction_runner
 
     def begin(
-        self, *, attempt_id: str, actor_id: str, source_object_name: str, map_object_name: str | None
+        self, *, attempt_id: str, actor_id: str, source_object_name: str, map_object_name: str | None,
+        physical_page_numbers: list[int] | None = None,
     ) -> int:
         now = datetime.now(timezone.utc).isoformat()
         self.attempts.document(attempt_id).create(
@@ -177,6 +180,7 @@ class FirestoreCorpusStagingAttemptStore:
                 "revision": 1,
                 "source_object_name": source_object_name,
                 "map_object_name": map_object_name,
+                **({"physical_page_numbers": physical_page_numbers} if physical_page_numbers is not None else {}),
                 "source": None,
                 "structure": None,
                 "created_at": now,
@@ -538,6 +542,7 @@ def _attempt_status(record: dict[str, Any]) -> CorpusStagingAttemptStatus:
                     "child_count",
                     "chunk_count",
                     "staged_corpus_version_id",
+                    "physical_page_numbers",
                     "parsing_output_sha256",
                     "parsing_page_count",
                     "parsing_block_count",
@@ -745,6 +750,28 @@ def validate_staging_pdf(*, pdf_filename: str | None, pdf_content_type: str | No
         )
 
 
+def _validate_physical_page_selection(pdf_bytes: bytes, page_numbers: list[int]) -> list[int]:
+    if not page_numbers or len(page_numbers) > 5 or any(type(page) is not int or page < 1 for page in page_numbers):
+        raise StagingUploadValidationError(
+            "invalid_page_selection", "Choose up to five unique physical page numbers starting at 1.", 422
+        )
+    if page_numbers != sorted(set(page_numbers)):
+        raise StagingUploadValidationError(
+            "invalid_page_selection", "Physical page numbers must be unique and sorted.", 422
+        )
+    try:
+        from pypdf import PdfReader
+
+        page_count = len(PdfReader(BytesIO(pdf_bytes)).pages)
+    except Exception:
+        raise StagingUploadValidationError("invalid_staging_pdf", "The PDF file is invalid.", 422) from None
+    if page_numbers[-1] > page_count:
+        raise StagingUploadValidationError(
+            "invalid_page_selection", "A selected physical page is outside the PDF.", 422
+        )
+    return page_numbers
+
+
 class CorpusStagingUploadService:
     def __init__(self, store: CorpusStagingAttemptStore, bucket: Any, bucket_name: str) -> None:
         self.store = store
@@ -804,14 +831,21 @@ class CorpusStagingUploadService:
             attempt_id=attempt_id, revision=revision, state="validating"
         )
 
-    def submit_pdf(self, *, actor_id: str, pdf_bytes: bytes) -> CorpusStagingAttemptStatus:
+    def submit_pdf(
+        self, *, actor_id: str, pdf_bytes: bytes, physical_page_numbers: list[int] | None = None,
+    ) -> CorpusStagingAttemptStatus:
         """Create a source-only attempt; parsing and structure generation are later stages."""
         if len(pdf_bytes) > MAX_STAGING_PDF_BYTES or not pdf_bytes.startswith(b"%PDF-"):
             raise StagingUploadValidationError(
                 "invalid_staging_pdf", "The PDF file is invalid or exceeds the allowed size.", 422
             )
         source_digest = sha256(pdf_bytes).hexdigest()
-        attempt_id = sha256(f"{actor_id}\0{source_digest}".encode("utf-8")).hexdigest()[:32]
+        if physical_page_numbers is not None:
+            physical_page_numbers = _validate_physical_page_selection(pdf_bytes, physical_page_numbers)
+        attempt_identity = f"{actor_id}\0{source_digest}"
+        if physical_page_numbers is not None:
+            attempt_identity = f"{attempt_identity}\0{json.dumps(physical_page_numbers, separators=(',', ':'))}"
+        attempt_id = sha256(attempt_identity.encode("utf-8")).hexdigest()[:32]
         try:
             existing = self.store.get(attempt_id=attempt_id)
             if existing is not None:
@@ -834,6 +868,7 @@ class CorpusStagingUploadService:
                     actor_id=actor_id,
                     source_object_name=source_name,
                     map_object_name=None,
+                    physical_page_numbers=physical_page_numbers,
                 )
             except Exception:
                 concurrent = self.store.get(attempt_id=attempt_id)
@@ -887,7 +922,8 @@ class CorpusStagingUploadService:
                 pass
             raise StagingPersistenceError("staging storage is unavailable") from None
         return CorpusStagingAttemptStatus(
-            attempt_id=attempt_id, revision=revision, state="validating"
+            attempt_id=attempt_id, revision=revision, state="validating",
+            physical_page_numbers=physical_page_numbers,
         )
 
     def status(self, *, attempt_id: str) -> CorpusStagingAttemptStatus:

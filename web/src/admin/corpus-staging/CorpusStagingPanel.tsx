@@ -16,6 +16,7 @@ export function CorpusStagingPanel({ token }: { token: string }) {
   const [attemptId, setAttemptId] = useState(() => window.localStorage.getItem(ATTEMPT_KEY) ?? "");
   const [attempt, setAttempt] = useState<CorpusStagingAttemptStatus | null>(null);
   const [pdf, setPdf] = useState<File | null>(null);
+  const [physicalPageSelection, setPhysicalPageSelection] = useState("21, 25, 58, 78, 105");
   const [sectionPaths, setSectionPaths] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -54,9 +55,11 @@ export function CorpusStagingPanel({ token }: { token: string }) {
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); setError(""); setMessage("");
     if (!pdf) { setError("Choose a source PDF to begin staging."); return; }
+    const pages = parsePhysicalPageSelection(physicalPageSelection);
+    if (!pages) { setError("Enter up to five unique physical page numbers, separated by commas."); return; }
     setBusy(true);
     try {
-      const submitted = await submitPdfOnlyCorpusStagingAttempt(token, pdf);
+      const submitted = await submitPdfOnlyCorpusStagingAttempt(token, pdf, pages);
       setAttemptId(submitted.attempt_id);
       window.localStorage.setItem(ATTEMPT_KEY, submitted.attempt_id);
       setAttempt(submitted);
@@ -140,6 +143,9 @@ export function CorpusStagingPanel({ token }: { token: string }) {
     <form className="staging-form" onSubmit={(event) => void submit(event)}>
       <label htmlFor="staging-pdf">Source PDF</label>
       <input id="staging-pdf" type="file" accept="application/pdf,.pdf" onChange={(event) => setPdf(event.target.files?.[0] ?? null)} />
+      <label htmlFor="staging-physical-pages">Physical pages to send for parsing</label>
+      <input id="staging-physical-pages" type="text" inputMode="numeric" value={physicalPageSelection} onChange={(event) => setPhysicalPageSelection(event.target.value)} aria-describedby="staging-physical-pages-help" />
+      <small id="staging-physical-pages-help">Enter up to five 1-based physical page numbers, separated by commas. The source PDF remains pinned in full.</small>
       <button type="submit" disabled={busy || !pdf}>{busy ? "Working…" : "Upload PDF and parse"}</button>
     </form>
     {attempt && <section className="staging-review" aria-labelledby="staging-review-title">
@@ -164,6 +170,14 @@ export function CorpusStagingPanel({ token }: { token: string }) {
       <button type="button" disabled={!approvable || busy} onClick={() => void approve()}>Approve outline and create chunks</button>
     </section>}
   </section>;
+}
+
+function parsePhysicalPageSelection(value: string): number[] | null {
+  const parts = value.split(",").map((part) => part.trim());
+  if (parts.length < 1 || parts.length > 5 || parts.some((part) => !/^\d+$/.test(part))) return null;
+  const pages = parts.map(Number);
+  if (pages.some((page) => page < 1) || new Set(pages).size !== pages.length) return null;
+  return pages.sort((left, right) => left - right);
 }
 
 function safeError(cause: unknown, fallback = "The staging request could not be completed. Try again shortly."): string {

@@ -4,7 +4,7 @@ from functools import lru_cache
 import os
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse
 from starlette.concurrency import run_in_threadpool
 
@@ -158,6 +158,7 @@ def hosted_parsing_dispatch() -> tuple[FirestoreParsingCheckpointStore, CloudRun
 )
 async def submit_pdf_only_staging_attempt(
     source_pdf: UploadFile = File(..., media_type="application/pdf"),
+    physical_page_numbers: str | None = Form(default=None),
     admin: UserProfile = Depends(get_admin_user),
     service: CorpusStagingUploadService = Depends(corpus_staging_upload_service),
 ) -> CorpusStagingAttemptStatus:
@@ -168,6 +169,7 @@ async def submit_pdf_only_staging_attempt(
             pdf_content_type=source_pdf.content_type,
             pdf_bytes=pdf_bytes,
         )
+        selected_pages = _parse_page_selection(physical_page_numbers)
     except StagingUploadValidationError as error:
         raise HTTPException(
             status_code=error.status,
@@ -175,10 +177,32 @@ async def submit_pdf_only_staging_attempt(
         ) from None
     try:
         return await run_in_threadpool(
-            service.submit_pdf, actor_id=admin.user_id, pdf_bytes=pdf_bytes
+            service.submit_pdf, actor_id=admin.user_id, pdf_bytes=pdf_bytes,
+            physical_page_numbers=selected_pages,
         )
+    except StagingUploadValidationError as error:
+        raise HTTPException(
+            status_code=error.status,
+            detail=ApiError(code=error.code, message=error.message, status=error.status).model_dump(mode="json"),
+        ) from None
     except StagingPersistenceError:
         raise _staging_unavailable() from None
+
+
+def _parse_page_selection(value: str | None) -> list[int] | None:
+    if value is None or not value.strip():
+        return None
+    try:
+        pages = [int(part.strip()) for part in value.split(",")]
+    except ValueError:
+        raise StagingUploadValidationError(
+            "invalid_page_selection", "Choose up to five valid physical page numbers.", 422
+        ) from None
+    if len(pages) > 5 or any(page < 1 for page in pages) or len(set(pages)) != len(pages):
+        raise StagingUploadValidationError(
+            "invalid_page_selection", "Choose up to five unique physical page numbers starting at 1.", 422
+        )
+    return sorted(pages)
 
 
 @router.post(

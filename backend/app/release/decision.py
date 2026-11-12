@@ -289,10 +289,36 @@ class ReleaseDecisionService:
         if attestation is None or attestation.decision != "attested":
             raise ReleaseDecisionError("release evidence requires a completed batch attestation")
         exception_ids = {record.item_id for record in review.exceptions}
+        refusal_ids = {
+            record.item_id for record in review.exceptions
+            if record.expected_refusal and record.status != "stale"
+        }
         decisions = {decision.item_id: decision for decision in attestation.exception_decisions}
         exception_records = {record.item_id: record for record in review.exceptions}
+        assessment_ids = [assessment.item_id for assessment in attestation.semantic_assessments]
+        assessment_record_ids = [assessment.assessment_id for assessment in attestation.semantic_assessments]
+        assessments_by_item = {assessment.item_id: assessment for assessment in attestation.semantic_assessments}
+        required_assessment_ids = set(summary.sampled_item_ids) | refusal_ids
         if (
-            attestation.generation_id != summary.generation_id
+            attestation.semantic_assessment_binding != "exact_output"
+            or len(assessment_ids) != len(set(assessment_ids))
+            or len(assessment_record_ids) != len(set(assessment_record_ids))
+            or set(assessment_ids) != required_assessment_ids
+            or set(attestation.refusal_confirmation_item_ids) != refusal_ids
+            or any(
+                (stage := self.stages.get(run.run_id, assessment.item_id)) is None
+                or stage.output_digest != assessment.output_digest
+                or stage.reviewed_output_digest != assessment.output_digest
+                or run.candidate_snapshot is None
+                or assessment.scorer_version != run.candidate_snapshot.scorer_version
+                for assessment in attestation.semantic_assessments
+            )
+            or any(
+                assessments_by_item.get(item_id) is None
+                or assessments_by_item[item_id].refusal_judgment is not True
+                for item_id in refusal_ids
+            )
+            or attestation.generation_id != summary.generation_id
             or attestation.run_id != summary.run_id
             or attestation.corpus_version_id != summary.corpus_version_id
             or attestation.candidate_snapshot_sha256 != summary.candidate_snapshot_sha256
@@ -305,12 +331,23 @@ class ReleaseDecisionService:
                 or decision.corpus_version_id != summary.corpus_version_id
                 or decision.candidate_snapshot_sha256 != summary.candidate_snapshot_sha256
                 or decision.decision_version != summary.decision_version
-                or decision.decision == "attested"
+                or (decision.decision == "attested" and (
+                    decision.item_id not in refusal_ids
+                    or not decision.expected_refusal
+                    or not decision.corpus_scope_confirmed
+                ))
                 or decision.sample_identity != exception_records[decision.item_id].sample_identity
                 for decision in decisions.values()
             )
+            or any(
+                decisions.get(item_id) is None
+                or decisions[item_id].decision != "attested"
+                or not decisions[item_id].expected_refusal
+                or not decisions[item_id].corpus_scope_confirmed
+                for item_id in refusal_ids
+            )
         ):
-            raise ReleaseDecisionError("release evidence batch attestation is stale or incomplete")
+            raise ReleaseDecisionError("release evidence batch attestation is stale, incomplete, or unbound")
 
     def _validate_gates(self, request: ReleaseDecisionRequest, run: EvaluationRun) -> None:
         metrics = {metric.metric_name: metric for metric in run.metrics}

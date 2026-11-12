@@ -305,8 +305,13 @@ def _decision(
         record.item_id for record in review.exceptions
         if record.expected_refusal and record.status != "stale"
     }
+    legacy_unbound = request.decision == "attested" and not {
+        "semantic_assessments", "refusal_confirmation_item_ids"
+    }.intersection(request.model_fields_set)
     confirmed_refusal_ids = set(request.refusal_confirmation_item_ids)
-    if request.decision == "attested" and confirmed_refusal_ids != refusal_ids:
+    if legacy_unbound and refusal_ids:
+        raise BatchReviewConflictError("legacy batch attestations cannot confirm explicit refusals")
+    if not legacy_unbound and request.decision == "attested" and confirmed_refusal_ids != refusal_ids:
         raise BatchReviewConflictError("all and only current refusal exceptions require corpus-scope confirmation")
     if request.decision == "rejected" and confirmed_refusal_ids:
         raise BatchReviewConflictError("a rejected batch cannot carry refusal confirmations")
@@ -319,16 +324,25 @@ def _decision(
             raise BatchReviewConflictError("refusal confirmation requires an attested exception decision")
         if request.decision == "rejected" and exception_decision.decision == "attested":
             raise BatchReviewConflictError("a rejected batch cannot attest an exception")
-    if request.decision == "attested":
+    if request.decision == "attested" and not legacy_unbound:
         assessment_by_item = {assessment.item_id: assessment for assessment in semantic_assessments}
         required_assessment_ids = set(review.summary.sampled_item_ids) | refusal_ids
-        if set(assessment_by_item) != required_assessment_ids:
+        if (
+            len(assessment_by_item) != len(semantic_assessments)
+            or len({assessment.assessment_id for assessment in semantic_assessments}) != len(semantic_assessments)
+            or set(assessment_by_item) != required_assessment_ids
+        ):
             raise BatchReviewConflictError("sampled items and confirmed refusals require exact-output semantic assessment")
         if {assessment.assessment_id for assessment in semantic_assessments} != {
             selected.assessment_id for selected in request.semantic_assessments
         }:
             raise BatchReviewConflictError("semantic assessments do not match the requested immutable references")
-    elif request.semantic_assessments or semantic_assessments:
+        if any(
+            next(reference for reference in semantic_assessments if reference.item_id == item_id).refusal_judgment is not True
+            for item_id in refusal_ids
+        ):
+            raise BatchReviewConflictError("confirmed refusals require a positive exact-output refusal assessment")
+    elif request.decision == "rejected" and (request.semantic_assessments or semantic_assessments):
         raise BatchReviewConflictError("a rejected batch cannot carry semantic assessment attestations")
     return DurableBatchAttestation(
         generation_id=review.summary.generation_id,
@@ -366,6 +380,11 @@ def _decision(
         ],
         semantic_assessments=list(semantic_assessments),
         refusal_confirmation_item_ids=sorted(confirmed_refusal_ids),
+        semantic_assessment_binding=(
+            "exact_output"
+            if request.decision == "attested" and not legacy_unbound
+            else "legacy_unbound"
+        ),
     )
 
 

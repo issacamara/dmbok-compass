@@ -94,7 +94,7 @@ def evidence(item_id: str, *, status: str = "eligible", category: str = "definit
     )
 
 
-def assessment_reference(item_id: str) -> DurableSemanticAssessmentReference:
+def assessment_reference(item_id: str, *, refusal_judgment: bool | None = None) -> DurableSemanticAssessmentReference:
     return DurableSemanticAssessmentReference(
         item_id=item_id,
         assessment_id=f"assessment-{item_id}",
@@ -102,6 +102,7 @@ def assessment_reference(item_id: str) -> DurableSemanticAssessmentReference:
         scorer_version="scorer-v1",
         reviewer_actor="admin",
         reviewed_at=datetime(2026, 11, 5, tzinfo=UTC),
+        refusal_judgment=refusal_judgment,
     )
 
 
@@ -204,11 +205,21 @@ def test_refusal_exception_requires_explicit_corpus_scope_confirmation_and_asses
     repository = InMemoryBatchReviewRepository()
     stored = repository.create_or_get(review)
     selection = BatchSemanticAssessmentSelection(item_id="item-refusal", assessment_id="assessment-item-refusal")
-    refusal_ref = assessment_reference("item-refusal")
+    refusal_ref = assessment_reference("item-refusal", refusal_judgment=True)
     sample_id = review.summary.sampled_item_ids[0]
     sample_selection = BatchSemanticAssessmentSelection(item_id=sample_id, assessment_id=f"assessment-{sample_id}")
     sample_ref = assessment_reference(sample_id)
     decisions = [{"item_id": "item-refusal", "decision": "attested"}]
+
+    legacy_repository = InMemoryBatchReviewRepository()
+    legacy_repository.create_or_get(review)
+    with pytest.raises(BatchReviewConflictError, match="legacy batch attestations cannot confirm"):
+        legacy_repository.attest(
+            review,
+            BatchAttestationRequest(decision="attested", exception_decisions=decisions),
+            actor="admin",
+            decided_at=datetime.now(UTC),
+        )
 
     with pytest.raises(BatchReviewConflictError, match="corpus-scope confirmation"):
         repository.attest(
@@ -221,6 +232,20 @@ def test_refusal_exception_requires_explicit_corpus_scope_confirmation_and_asses
             actor="admin",
             decided_at=datetime.now(UTC),
             semantic_assessments=(sample_ref, refusal_ref),
+        )
+
+    with pytest.raises(BatchReviewConflictError, match="positive exact-output refusal assessment"):
+        repository.attest(
+            stored,
+            BatchAttestationRequest(
+                decision="attested",
+                exception_decisions=decisions,
+                semantic_assessments=[sample_selection, selection],
+                refusal_confirmation_item_ids=["item-refusal"],
+            ),
+            actor="admin",
+            decided_at=datetime.now(UTC),
+            semantic_assessments=(sample_ref, assessment_reference("item-refusal", refusal_judgment=False)),
         )
 
     confirmed = repository.attest(

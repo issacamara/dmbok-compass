@@ -336,6 +336,7 @@ class DurableSemanticAssessmentReference(ContractModel):
     scorer_version: str = Field(min_length=1, max_length=128)
     reviewer_actor: str = Field(min_length=1, max_length=128)
     reviewed_at: datetime
+    refusal_judgment: bool | None = None
 
 
 class BatchAttestationRequest(ContractModel):
@@ -373,6 +374,7 @@ class BatchAttestationResult(ContractModel):
     exception_decisions: list[ExplicitExceptionDecision] = Field(default_factory=list, max_length=MAX_EVALUATION_IMPORT_ITEMS)
     semantic_assessments: list[DurableSemanticAssessmentReference] = Field(default_factory=list, max_length=MAX_EVALUATION_IMPORT_ITEMS)
     refusal_confirmation_item_ids: list[str] = Field(default_factory=list, max_length=MAX_EVALUATION_IMPORT_ITEMS)
+    semantic_assessment_binding: Literal["exact_output", "legacy_unbound"] = "legacy_unbound"
     decision_metadata: ReviewDecisionMetadata
 
 
@@ -512,6 +514,9 @@ class DurableBatchAttestation(ContractModel):
     exception_decisions: list[DurableExceptionDecision] = Field(default_factory=list, max_length=MAX_EVALUATION_IMPORT_ITEMS)
     semantic_assessments: list[DurableSemanticAssessmentReference] = Field(default_factory=list, max_length=MAX_EVALUATION_IMPORT_ITEMS)
     refusal_confirmation_item_ids: list[str] = Field(default_factory=list, max_length=MAX_EVALUATION_IMPORT_ITEMS)
+    # Missing values on pre-v2.9 durable records deserialize as unbound, so they
+    # cannot be mistaken for exact-output release evidence.
+    semantic_assessment_binding: Literal["exact_output", "legacy_unbound"] = "legacy_unbound"
 
 
 class CitationEvidence(ContractModel):

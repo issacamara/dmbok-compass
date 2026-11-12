@@ -13,9 +13,11 @@ from app.contracts import (
     EvaluationReportEligibility,
     EvaluationRun,
     DurableBatchAttestation,
+    DurableExceptionDecision,
     DurableExceptionRecord,
     DurableRepresentativeSampleEntry,
     DurableReviewSummary,
+    DurableSemanticAssessmentReference,
     RunBoundSupportEvidence,
     VerifiedChunkChoice,
     UserProfile,
@@ -48,7 +50,10 @@ class EvidenceStore:
 
 
 class AttestedReviewStore:
-    def __init__(self, run: EvaluationRun, *, decision: str = "attested", valid: bool = True) -> None:
+    def __init__(
+        self, run: EvaluationRun, *, decision: str = "attested", valid: bool = True,
+        semantic_assessment_binding: str = "exact_output",
+    ) -> None:
         snapshot = run.candidate_snapshot
         assert snapshot is not None
         digest = candidate_digest(snapshot)
@@ -91,6 +96,15 @@ class AttestedReviewStore:
             actor="admin",
             decided_at=datetime(2026, 11, 5, tzinfo=timezone.utc),
             decision_version="batch-review-v1",
+            semantic_assessment_binding=semantic_assessment_binding,
+            semantic_assessments=[DurableSemanticAssessmentReference(
+                item_id=item_id,
+                assessment_id=f"assessment-{item_id}",
+                output_digest="a" * 64,
+                scorer_version="scorer-v1",
+                reviewer_actor="reviewer",
+                reviewed_at=datetime(2026, 11, 5, tzinfo=timezone.utc),
+            ) for item_id in sample_ids] if semantic_assessment_binding == "exact_output" else [],
         )
 
     def get(self, *, generation_id: str, run_id: str) -> BatchReview | None:
@@ -141,8 +155,8 @@ class StageStore:
                 run_id=run.run_id, item_id=item_id, retrieval_status="succeeded",
                 generation_status="succeeded", assessment_status="reviewed",
                 output_handle="output" if stale_output else None,
-                output_digest="b" * 64 if stale_output else None,
-                reviewed_output_digest="a" * 64 if stale_output else None,
+                output_digest="b" * 64 if stale_output else "a" * 64,
+                reviewed_output_digest="a" * 64,
             )
             for item_id in run.selected_item_ids
         }
@@ -319,6 +333,83 @@ def test_approval_requires_a_complete_attestation_bound_to_the_run() -> None:
         )
 
 
+def test_approval_rejects_legacy_unbound_batch_attestation() -> None:
+    run = completed_run()
+    with pytest.raises(ValueError, match="unbound"):
+        service(run, batch_reviews=AttestedReviewStore(
+            run, semantic_assessment_binding="legacy_unbound",
+        )).record(ReleaseDecisionRequest(**request()))
+
+
+def test_release_accepts_refusal_exception_only_with_scope_and_positive_exact_assessment() -> None:
+    run = completed_run()
+    item_id = run.selected_item_ids[-1]
+    batch = AttestedReviewStore(run)
+    exception = DurableExceptionRecord(
+        generation_id=run.dataset_version_id,
+        run_id=run.run_id,
+        candidate_snapshot_sha256=batch.review.summary.candidate_snapshot_sha256,
+        corpus_version_id=run.corpus_version_id,
+        sample_identity="refusal-exception",
+        item_id=item_id,
+        candidate_chunk_ids=[],
+        content_hashes=[],
+        provenance_digests=[],
+        status="exception",
+        reason="explicit_unanswerable",
+        expected_refusal=True,
+        decision_version="batch-review-v1",
+    )
+    batch.review = BatchReview(
+        summary=batch.review.summary.model_copy(update={
+            "status": "exception",
+            "eligible_count": len(run.selected_item_ids) - 1,
+            "exception_count": 1,
+        }),
+        samples=batch.review.samples,
+        exceptions=(exception,),
+    )
+    refusal_decision = DurableExceptionDecision(
+        generation_id=run.dataset_version_id,
+        run_id=run.run_id,
+        candidate_snapshot_sha256=batch.review.summary.candidate_snapshot_sha256,
+        corpus_version_id=run.corpus_version_id,
+        sample_identity=exception.sample_identity,
+        item_id=item_id,
+        decision="attested",
+        actor="admin",
+        decided_at=datetime(2026, 11, 5, tzinfo=timezone.utc),
+        decision_version="batch-review-v1",
+        expected_refusal=True,
+        corpus_scope_confirmed=True,
+    )
+    refusal_assessment = DurableSemanticAssessmentReference(
+        item_id=item_id,
+        assessment_id=f"assessment-{item_id}",
+        output_digest="a" * 64,
+        scorer_version="scorer-v1",
+        reviewer_actor="reviewer",
+        reviewed_at=datetime(2026, 11, 5, tzinfo=timezone.utc),
+        refusal_judgment=True,
+    )
+    batch.result = batch.result.model_copy(update={
+        "exception_decisions": [refusal_decision],
+        "semantic_assessments": [*batch.result.semantic_assessments, refusal_assessment],
+        "refusal_confirmation_item_ids": [item_id],
+    })
+
+    assert service(run, batch_reviews=batch).record(ReleaseDecisionRequest(**request()))
+
+    batch.result = batch.result.model_copy(update={
+        "semantic_assessments": [
+            *batch.result.semantic_assessments[:-1],
+            refusal_assessment.model_copy(update={"refusal_judgment": False}),
+        ],
+    })
+    with pytest.raises(ValueError, match="stale, incomplete, or unbound"):
+        service(run, batch_reviews=batch).record(ReleaseDecisionRequest(**request()))
+
+
 def test_approval_requires_explicit_decisions_for_every_batch_exception() -> None:
     run = completed_run()
     batch = AttestedReviewStore(run)
@@ -344,7 +435,7 @@ def test_approval_requires_explicit_decisions_for_every_batch_exception() -> Non
         samples=batch.review.samples,
         exceptions=(exception,),
     )
-    with pytest.raises(ValueError, match="batch attestation is stale or incomplete"):
+    with pytest.raises(ValueError, match="batch attestation is stale, incomplete, or unbound"):
         service(run, batch_reviews=batch).record(ReleaseDecisionRequest(**request()))
 
 

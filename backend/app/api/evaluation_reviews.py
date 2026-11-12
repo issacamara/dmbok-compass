@@ -300,6 +300,12 @@ def _semantic_assessment_references(
     outputs: OutputStore,
     stages: EvaluationStageStore,
 ) -> tuple[DurableSemanticAssessmentReference, ...]:
+    if request.decision == "attested" and not {
+        "semantic_assessments", "refusal_confirmation_item_ids"
+    }.intersection(request.model_fields_set):
+        # Preserve the pre-exact-output request shape. The repository rejects
+        # this path when the review contains any explicit refusal.
+        return ()
     if request.decision == "rejected":
         if request.semantic_assessments:
             raise HTTPException(status_code=409, detail={
@@ -374,6 +380,7 @@ def _semantic_assessment_references(
             scorer_version=record.scorer_version,
             reviewer_actor=record.reviewer_actor,
             reviewed_at=record.reviewed_at,
+            refusal_judgment=record.refusal_judgment,
         ))
     return tuple(result)
 
@@ -663,5 +670,6 @@ def attest_review(
         exception_decisions=request.exception_decisions,
         semantic_assessments=attestation.semantic_assessments,
         refusal_confirmation_item_ids=attestation.refusal_confirmation_item_ids,
+        semantic_assessment_binding=attestation.semantic_assessment_binding,
         decision_metadata=_decision_metadata(attestation),
     )

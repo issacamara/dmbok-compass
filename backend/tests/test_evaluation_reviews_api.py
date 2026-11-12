@@ -145,6 +145,7 @@ def test_review_projection_is_browser_safe_and_attestation_is_compare_and_set() 
         )
         assert attested.status_code == 200, attested.text
         assert attested.json()["status"] == "attested"
+        assert attested.json()["semantic_assessment_binding"] == "exact_output"
         repeated = client.post(
             "/api/admin/evaluations/run-v1/batch-attestation",
             json={
@@ -155,6 +156,28 @@ def test_review_projection_is_browser_safe_and_attestation_is_compare_and_set() 
         )
         assert repeated.status_code == 409
         assert len(repository._attestations) == 1
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_legacy_batch_attestation_payload_remains_accepted_but_is_unbound() -> None:
+    _, repository, _, _ = fixture()
+    try:
+        response = TestClient(app).post(
+            "/api/admin/evaluations/run-v1/batch-attestation",
+            json={
+                "decision": "attested",
+                "exception_decisions": [{
+                    "item_id": "item-2", "decision": "inapplicable", "reason": "No support.",
+                }],
+            },
+        )
+        assert response.status_code == 200, response.text
+        payload = response.json()
+        assert payload["semantic_assessment_binding"] == "legacy_unbound"
+        assert payload["semantic_assessments"] == []
+        assert payload["refusal_confirmation_item_ids"] == []
+        assert next(iter(repository._attestations.values())).semantic_assessment_binding == "legacy_unbound"
     finally:
         app.dependency_overrides.clear()
 
@@ -228,7 +251,11 @@ def test_partial_attestation_is_safe_conflict_and_does_not_write() -> None:
         client = TestClient(app)
         response = client.post(
             "/api/admin/evaluations/run-v1/batch-attestation",
-            json={"decision": "attested", "exception_decisions": []},
+            json={
+                "decision": "attested",
+                "exception_decisions": [],
+                "semantic_assessments": [],
+            },
         )
         assert response.status_code == 409
         assert "incomplete_semantic_attestation" in response.text

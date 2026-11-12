@@ -150,7 +150,7 @@ class FirestoreCandidateOutputStore:
             "output": output,
             "output_digest": audit.output_digest,
             "generated_at": generated_at.isoformat(),
-            "expires_at": (generated_at + MAX_RAW_OUTPUT_AGE).isoformat(),
+            "expires_at": generated_at + MAX_RAW_OUTPUT_AGE,
             "policy_id": POLICY_ID,
             "source": source,
         }
@@ -258,6 +258,8 @@ def _utc(value: datetime) -> datetime:
 
 
 def _parse_datetime(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return _utc(value)
     if not isinstance(value, str):
         return None
     try:

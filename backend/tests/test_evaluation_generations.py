@@ -9,7 +9,7 @@ import pytest
 from google.api_core.exceptions import AlreadyExists
 
 from app.contracts import (
-    CorpusServingBinding, CorpusVersion, DatasetExclusion, DatasetHead, DocumentChunk, EvaluationDataset,
+    CorpusServingBinding, CorpusVersion, DatasetExclusion, DocumentChunk, EvaluationDataset,
     EvaluationItem, EvaluationRowV2, EvaluationRun, GoldAnnotation,
 )
 from app.corpus.versions import hierarchical_validation_evidence

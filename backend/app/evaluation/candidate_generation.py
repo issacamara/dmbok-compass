@@ -77,6 +77,8 @@ class CandidateRevisionStore(Protocol):
         self, operation_key: str, *, corpus_version_id: str | None = None
     ) -> DatasetHead | None: ...
 
+    def get_dataset_exclusion_questions(self) -> tuple[tuple[object, str], ...]: ...
+
 
 class CandidateCorpusStore(Protocol):
     def get(self, version_id: str) -> CorpusVersion | None: ...
@@ -286,9 +288,19 @@ async def _generate_candidate_revision(
 ) -> CandidateGenerationReport:
 
     head = store.corpus_head(corpus_version_id)
-    current_rows = store.get_revision(head) if head else ()
+    historical_rows = store.get_revision(head) if head else ()
     old_head = head
+    get_exclusions = getattr(store, "get_dataset_exclusion_questions", None)
+    exclusions = tuple(get_exclusions()) if callable(get_exclusions) else ()
+    excluded_questions = tuple(question for _, question in exclusions)
+    excluded_keys = {_normalize_question_key(question) for question in excluded_questions}
+    current_rows = tuple(
+        row for row in historical_rows
+        if _row_support_is_current(row, source_map)
+        and not _is_near_duplicate(row.question, excluded_keys)
+    )
     seen_questions = {_normalize_question_key(row.question) for row in current_rows}
+    seen_questions.update(_normalize_question_key(question) for question in excluded_questions)
     rows: list[EvaluationRowV2] = []
     rejected = 0
     calls = _generation_call_limit(target_count)
@@ -593,6 +605,51 @@ def _is_near_duplicate(question: str, existing_keys: set[str]) -> bool:
         if similarity >= _NEAR_DUPLICATE_THRESHOLD:
             return True
     return False
+
+
+def normalized_question_key(question: str) -> str:
+    """Expose the canonical content-word identity used for row deduplication."""
+    return _normalize_question_key(question)
+
+
+def is_near_duplicate_question(question: str, existing_questions: tuple[str, ...]) -> bool:
+    """Check an incoming question against normalized exact and near duplicates."""
+    return _is_near_duplicate(
+        question, {_normalize_question_key(existing) for existing in existing_questions}
+    )
+
+
+def _row_support_is_current(row: EvaluationRowV2, sources: dict[str, ChildDocumentChunk]) -> bool:
+    """Keep preserved answerable rows only while every binding matches current parses."""
+    if row.expected_refusal:
+        return bool(row.scope_rationale and not row.source_spans and not row.relevant_child_ids and not row.parent_ids)
+    if not row.source_spans or not row.relevant_child_ids or not row.parent_ids:
+        return False
+    children = [sources.get(child_id) for child_id in row.relevant_child_ids]
+    if any(child is None for child in children):
+        return False
+    bound_children = [child for child in children if child is not None]
+    if {child.parent_id for child in bound_children} != set(row.parent_ids):
+        return False
+    available_spans = [span for child in bound_children for span in child.source_spans]
+    for raw_span in row.source_spans:
+        start_matches = [
+            span for span in available_spans
+            if span.span_id == raw_span.span_id
+            and span.block_id == raw_span.block_id
+            and span.page == raw_span.physical_page
+            and span.printed_page_label == raw_span.printed_page_label
+            and span.start_offset <= raw_span.start_offset
+            and raw_span.end_offset <= span.end_offset
+        ]
+        if len(start_matches) != 1:
+            return False
+        source_span = start_matches[0]
+        start = raw_span.start_offset - source_span.start_offset
+        end = raw_span.end_offset - source_span.start_offset
+        if source_span.text[start:end] != raw_span.raw_text:
+            return False
+    return True
 
 
 def _usage(tokens: int, known: bool) -> int | None:

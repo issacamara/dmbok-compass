@@ -389,7 +389,7 @@ def test_llamacloud_rejects_malformed_nested_list_item():
         _parse_result(payload, "12", SOURCE["sha256"], b"raw")
 
 
-def test_llamacloud_adapter_uses_account_default_tier_and_fixed_provider_route():
+def test_llamacloud_adapter_uses_validated_tier_and_fixed_provider_route():
     class Parsing:
         def create(self, **kwargs):
             self.kwargs = kwargs
@@ -400,7 +400,7 @@ def test_llamacloud_adapter_uses_account_default_tier_and_fixed_provider_route()
     provider.version = "latest"
 
     assert provider.submit(pdf=PDF, idempotency_key="operation", route="llamacloud") == "job-1"
-    assert "tier" not in provider.client.parsing.kwargs
+    assert provider.client.parsing.kwargs["tier"] == "cost_effective"
     assert provider.client.parsing.kwargs["upload_file"] == ("source.pdf", PDF, "application/pdf")
     with pytest.raises(ParsingError, match="route"):
         provider.submit(pdf=PDF, idempotency_key="operation", route="other")

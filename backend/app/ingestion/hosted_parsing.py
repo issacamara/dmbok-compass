@@ -64,6 +64,7 @@ class LlamaCloudParsingProvider:
         if route != "llamacloud":
             raise ParsingError("unsupported hosted parsing route")
         response = self.client.parsing.create(
+            tier="cost_effective",
             version=self.version,
             upload_file=("source.pdf", pdf, "application/pdf"),
         )

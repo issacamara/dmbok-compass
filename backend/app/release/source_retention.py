@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
 import re
-from typing import Iterable, Protocol
+from typing import Iterable, Literal, Protocol
 
 
 _SHA256 = re.compile(r"^[a-f0-9]{64}$")
@@ -87,6 +87,108 @@ class ReferenceSnapshot:
 
 class ReleaseReferenceReader(Protocol):
     def snapshot(self) -> ReferenceSnapshot: ...
+
+
+RecoveryArtifactKind = Literal["source", "parsing", "map", "approval", "dataset", "review"]
+
+
+@dataclass(frozen=True, slots=True)
+class RecoveryArtifact:
+    """One immutable input needed to reproduce or review a release."""
+
+    kind: RecoveryArtifactKind
+    identity: str
+    content_sha256: str
+    created_at: datetime
+
+    def __post_init__(self) -> None:
+        if self.kind not in {
+            "source", "parsing", "map", "approval", "dataset", "review"
+        }:
+            raise SourceRetentionError("recovery artifact kind is unsupported")
+        if not self.identity or self.identity.strip() != self.identity:
+            raise SourceRetentionError("recovery artifact identity must be normalized and non-empty")
+        if not _SHA256.fullmatch(self.content_sha256):
+            raise SourceRetentionError(
+                "recovery artifact content hash must be a lowercase SHA-256 digest"
+            )
+        if self.created_at.tzinfo is None:
+            raise SourceRetentionError("recovery artifact creation time must be timezone-aware")
+
+    @property
+    def key(self) -> tuple[str, str, str]:
+        return (self.kind, self.identity, self.content_sha256)
+
+
+@dataclass(frozen=True, slots=True)
+class ReleaseRecoveryReference:
+    release_id: str
+    corpus_version_id: str
+    artifact: RecoveryArtifact
+    role: Literal["active", "rollback"]
+    validated: bool = True
+
+    def __post_init__(self) -> None:
+        if not self.release_id or self.release_id.strip() != self.release_id:
+            raise SourceRetentionError("recovery reference release ID must be normalized and non-empty")
+        if (
+            not self.corpus_version_id
+            or self.corpus_version_id.strip() != self.corpus_version_id
+        ):
+            raise SourceRetentionError("recovery reference corpus ID must be normalized and non-empty")
+        if self.role not in {"active", "rollback"}:
+            raise SourceRetentionError("recovery reference role must be active or rollback")
+        if not isinstance(self.validated, bool):
+            raise SourceRetentionError("recovery reference validation state must be boolean")
+
+
+@dataclass(frozen=True, slots=True)
+class RecoveryReferenceSnapshot:
+    references: tuple[ReleaseRecoveryReference, ...]
+    fingerprint: str
+
+    @classmethod
+    def from_references(
+        cls, references: Iterable[ReleaseRecoveryReference]
+    ) -> "RecoveryReferenceSnapshot":
+        ordered = tuple(
+            sorted(
+                references,
+                key=lambda item: (
+                    item.release_id,
+                    item.artifact.kind,
+                    item.artifact.identity,
+                ),
+            )
+        )
+        material = json.dumps(
+            [
+                {
+                    "release_id": item.release_id,
+                    "corpus_version_id": item.corpus_version_id,
+                    "artifact": item.artifact.key,
+                    "role": item.role,
+                    "validated": item.validated,
+                }
+                for item in ordered
+            ],
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        return cls(ordered, sha256(material.encode("utf-8")).hexdigest())
+
+
+class RecoveryReferenceReader(Protocol):
+    def snapshot(self) -> RecoveryReferenceSnapshot: ...
+
+
+@dataclass(frozen=True, slots=True)
+class RecoveryInventory:
+    dry_run: bool
+    reference_fingerprint: str
+    protected: tuple[RecoveryArtifact, ...]
+    eligible: tuple[RecoveryArtifact, ...]
+    refused: tuple[RecoveryArtifact, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -177,4 +279,60 @@ def inventory(
         protected=tuple(sorted(set(protected), key=lambda source: source.key)),
         eligible=tuple(sorted(candidates, key=lambda source: source.key)),
         refused=tuple(sorted(refused, key=lambda source: source.key)),
+    )
+
+
+def inventory_recovery_artifacts(
+    artifacts: Iterable[RecoveryArtifact],
+    references: RecoveryReferenceSnapshot,
+    *,
+    now: datetime,
+    policy: RetentionPolicy = RetentionPolicy(),
+    rebuildable: Iterable[tuple[str, str, str]] = (),
+    reader: RecoveryReferenceReader | None = None,
+    dry_run: bool = True,
+) -> RecoveryInventory:
+    """Inventory exact corpus and evaluation inputs; never delete them.
+
+    Only an exact, verified rebuild path makes an unreferenced old artifact
+    cleanup-eligible. Active/rollback references and recent artifacts remain
+    protected; incomplete or unrecoverable records are refused.
+    """
+
+    if not dry_run:
+        raise SourceRetentionError("recovery retention only supports dry-run inventories")
+    if now.tzinfo is None:
+        raise SourceRetentionError("now must be timezone-aware")
+    if any(not reference.validated for reference in references.references):
+        raise SourceRetentionError("unvalidated recovery references cannot authorize cleanup")
+
+    by_key: dict[tuple[str, str, str], RecoveryArtifact] = {}
+    for artifact in artifacts:
+        previous = by_key.setdefault(artifact.key, artifact)
+        if previous != artifact:
+            raise SourceRetentionError("recovery artifact identity has conflicting metadata")
+    artifact_list = tuple(by_key.values())
+    protected_keys = {reference.artifact.key for reference in references.references}
+    rebuildable_keys = {tuple(item) for item in rebuildable}
+    cutoff = now.astimezone(timezone.utc) - timedelta(days=policy.max_age_days)
+    protected: list[RecoveryArtifact] = []
+    eligible: list[RecoveryArtifact] = []
+    refused: list[RecoveryArtifact] = []
+    for artifact in artifact_list:
+        if artifact.key in protected_keys or artifact.created_at.astimezone(timezone.utc) >= cutoff:
+            protected.append(artifact)
+        elif artifact.key in rebuildable_keys:
+            eligible.append(artifact)
+        else:
+            refused.append(artifact)
+
+    if reader is not None and reader.snapshot().fingerprint != references.fingerprint:
+        raise ConcurrentReferenceChange("recovery references changed during retention inventory")
+
+    return RecoveryInventory(
+        dry_run=True,
+        reference_fingerprint=references.fingerprint,
+        protected=tuple(sorted(set(protected), key=lambda item: item.key)),
+        eligible=tuple(sorted(eligible, key=lambda item: item.key)),
+        refused=tuple(sorted(refused, key=lambda item: item.key)),
     )

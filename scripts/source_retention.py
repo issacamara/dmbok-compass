@@ -14,12 +14,16 @@ from pathlib import Path
 import sys
 
 from app.release.source_retention import (
+    RecoveryArtifact,
+    RecoveryReferenceSnapshot,
+    ReleaseRecoveryReference,
     ReferenceSnapshot,
     ReleaseSourceReference,
     RetentionPolicy,
     SourceGeneration,
     SourceRetentionError,
     inventory,
+    inventory_recovery_artifacts,
 )
 
 
@@ -28,6 +32,15 @@ def _source(payload: dict[str, object]) -> SourceGeneration:
         bucket=str(payload["bucket"]),
         object_name=str(payload["object_name"]),
         generation=int(payload["generation"]),
+        content_sha256=str(payload["content_sha256"]),
+        created_at=datetime.fromisoformat(str(payload["created_at"]).replace("Z", "+00:00")),
+    )
+
+
+def _recovery_artifact(payload: dict[str, object]) -> RecoveryArtifact:
+    return RecoveryArtifact(
+        kind=str(payload["kind"]),  # type: ignore[arg-type]
+        identity=str(payload["identity"]),
         content_sha256=str(payload["content_sha256"]),
         created_at=datetime.fromisoformat(str(payload["created_at"]).replace("Z", "+00:00")),
     )
@@ -68,6 +81,26 @@ def main(argv: list[str] | None = None) -> int:
             explicit_generations=(tuple(item) for item in payload.get("explicit_generations", ())),
             rebuildable=(tuple(item) for item in payload.get("rebuildable", ())),
         )
+        recovery_artifacts = tuple(
+            _recovery_artifact(item) for item in payload.get("recovery_artifacts", ())
+        )
+        recovery_references = tuple(
+            ReleaseRecoveryReference(
+                release_id=str(item["release_id"]),
+                corpus_version_id=str(item["corpus_version_id"]),
+                artifact=_recovery_artifact(item["artifact"]),
+                role=str(item["role"]),  # type: ignore[arg-type]
+                validated=item.get("validated", True),  # type: ignore[arg-type]
+            )
+            for item in payload.get("recovery_references", ())
+        )
+        recovery = inventory_recovery_artifacts(
+            recovery_artifacts,
+            RecoveryReferenceSnapshot.from_references(recovery_references),
+            now=datetime.fromisoformat(args.now.replace("Z", "+00:00")) if args.now else datetime.now(timezone.utc),
+            policy=RetentionPolicy(args.max_age_days, args.additional_retained_generations),
+            rebuildable=(tuple(item) for item in payload.get("rebuildable_recovery_artifacts", ())),
+        )
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError, SourceRetentionError) as exc:
         print(f"source retention inventory rejected: {exc}", file=sys.stderr)
         return 1
@@ -79,6 +112,12 @@ def main(argv: list[str] | None = None) -> int:
         "protected": [source.key for source in result.protected],
         "eligible": [source.key for source in result.eligible],
         "refused": [source.key for source in result.refused],
+        "recovery": {
+            "reference_fingerprint": recovery.reference_fingerprint,
+            "protected": [artifact.key for artifact in recovery.protected],
+            "eligible": [artifact.key for artifact in recovery.eligible],
+            "refused": [artifact.key for artifact in recovery.refused],
+        },
     }, default=str, sort_keys=True))
     return 0
 

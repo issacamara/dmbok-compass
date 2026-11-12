@@ -145,3 +145,43 @@ def test_expiry_cleanup_is_idempotent_and_marks_recovery() -> None:
     assert result.recovery is True
     assert repeated.deleted_attempt_ids == ()
     assert store.get_raw(actor=admin(), attempt_id="attempt-1") is None
+
+
+def test_raw_output_is_unavailable_at_expiry_before_cleanup_runs() -> None:
+    client = Firestore()
+    store = FirestoreCandidateOutputStore(client)
+    generated = datetime(2026, 9, 20, tzinfo=timezone.utc)
+    put(store, generated_at=generated)
+
+    expires_at = client.data["evaluation_candidate_outputs/attempt-1"]["expires_at"]
+    assert isinstance(expires_at, datetime)
+    assert expires_at == generated + timedelta(days=30)
+    assert store.get_raw(
+        actor=admin(), attempt_id="attempt-1", now=generated + timedelta(days=30)
+    ) is None
+    assert "evaluation_candidate_outputs/attempt-1" in client.data
+
+    audit = store.cleanup_expired(actor=admin(), now=generated + timedelta(days=30))
+
+    assert audit.deleted_attempt_ids == ("attempt-1",)
+    assert "evaluation_candidate_outputs/attempt-1" not in client.data
+    assert store.get_audit("attempt-1").output_digest
+
+
+def test_raw_output_retention_accepts_existing_iso_expiry_values() -> None:
+    client = Firestore()
+    store = FirestoreCandidateOutputStore(client)
+    generated = datetime(2026, 9, 20, tzinfo=timezone.utc)
+    put(store, generated_at=generated)
+    client.data["evaluation_candidate_outputs/attempt-1"]["expires_at"] = (
+        generated + timedelta(days=30)
+    ).isoformat()
+
+    assert store.get_raw(
+        actor=admin(), attempt_id="attempt-1", now=generated + timedelta(days=30)
+    ) is None
+    result = store.cleanup_expired(actor=admin(), now=generated + timedelta(days=30))
+
+    assert result.deleted_attempt_ids == ("attempt-1",)
+    assert store.get_raw(actor=admin(), attempt_id="attempt-1") is None
+    assert store.get_audit("attempt-1").output_digest

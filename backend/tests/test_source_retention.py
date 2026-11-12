@@ -7,12 +7,16 @@ import pytest
 
 from app.release.source_retention import (
     ConcurrentReferenceChange,
+    RecoveryArtifact,
+    RecoveryReferenceSnapshot,
+    ReleaseRecoveryReference,
     ReferenceSnapshot,
     ReleaseSourceReference,
     RetentionPolicy,
     SourceGeneration,
     SourceRetentionError,
     inventory,
+    inventory_recovery_artifacts,
 )
 
 
@@ -94,3 +98,76 @@ def test_inventory_rejects_non_dry_run_and_unvalidated_reference() -> None:
         inventory((item,), refs, now=NOW)
     with pytest.raises(SourceRetentionError, match="only supports dry-run"):
         inventory((), ReferenceSnapshot.from_references(()), now=NOW, dry_run=False)
+
+
+def recovery_artifact(kind: str, identity: str, *, days_old: int = 60) -> RecoveryArtifact:
+    return RecoveryArtifact(
+        kind=kind,  # type: ignore[arg-type]
+        identity=identity,
+        content_sha256=(len(identity) % 15 + 1) * "a"
+        + "0" * (63 - len(identity) % 15),
+        created_at=NOW - timedelta(days=days_old),
+    )
+
+
+def test_recovery_inventory_protects_all_active_and_rollback_inputs() -> None:
+    kinds = ("source", "parsing", "map", "approval", "dataset", "review")
+    artifacts = tuple(recovery_artifact(kind, f"{kind}-identity") for kind in kinds)
+    references = RecoveryReferenceSnapshot.from_references(
+        tuple(
+            ReleaseRecoveryReference(
+                "active" if index % 2 == 0 else "rollback",
+                f"corpus-{index}",
+                artifact,
+                "active" if index % 2 == 0 else "rollback",
+            )
+            for index, artifact in enumerate(artifacts)
+        )
+    )
+
+    result = inventory_recovery_artifacts(artifacts, references, now=NOW)
+
+    assert {item.kind for item in result.protected} == set(kinds)
+    assert result.eligible == result.refused == ()
+    assert result.dry_run is True
+
+
+def test_recovery_inventory_requires_exact_rebuild_path_for_unreferenced_inputs() -> None:
+    rebuildable = recovery_artifact("parsing", "gs://bucket/attempt/parse.json#7")
+    failed_attempt = recovery_artifact("map", "gs://bucket/attempt/map.json#8")
+    recent = recovery_artifact("review", "review/run/item", days_old=1)
+    refs = RecoveryReferenceSnapshot.from_references(())
+
+    result = inventory_recovery_artifacts(
+        (rebuildable, failed_attempt, recent),
+        refs,
+        now=NOW,
+        rebuildable=(rebuildable.key,),
+    )
+
+    assert result.eligible == (rebuildable,)
+    assert result.refused == (failed_attempt,)
+    assert result.protected == (recent,)
+
+
+def test_recovery_inventory_fails_closed_on_reference_change_or_unvalidated_record() -> None:
+    item = recovery_artifact("dataset", "dataset/corpus/revision-4")
+    first = RecoveryReferenceSnapshot.from_references((
+        ReleaseRecoveryReference("release", "corpus", item, "active"),
+    ))
+    changed = RecoveryReferenceSnapshot.from_references(())
+
+    class ChangingReader:
+        def snapshot(self) -> RecoveryReferenceSnapshot:
+            return changed
+
+    with pytest.raises(ConcurrentReferenceChange):
+        inventory_recovery_artifacts((item,), first, now=NOW, reader=ChangingReader())
+
+    invalid = RecoveryReferenceSnapshot.from_references((
+        ReleaseRecoveryReference("release", "corpus", item, "active", validated=False),
+    ))
+    with pytest.raises(SourceRetentionError, match="unvalidated recovery references"):
+        inventory_recovery_artifacts((item,), invalid, now=NOW)
+    with pytest.raises(SourceRetentionError, match="only supports dry-run"):
+        inventory_recovery_artifacts((), changed, now=NOW, dry_run=False)

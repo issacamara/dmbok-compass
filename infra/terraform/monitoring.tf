@@ -26,6 +26,18 @@ locals {
       filter      = "textPayload:\"dmbok_retrieval_failure\""
       description = "Content-free retrieval failure markers."
     }
+    parsing_stage_events = {
+      filter      = "jsonPayload.stage=\"parsing\" AND (jsonPayload.stage_status=\"succeeded\" OR jsonPayload.stage_status=\"failed\" OR jsonPayload.stage_status=\"awaiting_budget\")"
+      description = "Content-free parsing stage success, failure, and budget-pause events."
+    }
+    generation_stage_events = {
+      filter      = "jsonPayload.stage=\"generation\" AND (jsonPayload.stage_status=\"succeeded\" OR jsonPayload.stage_status=\"failed\" OR jsonPayload.stage_status=\"awaiting_budget\")"
+      description = "Content-free dataset generation success, failure, and budget-pause events."
+    }
+    judging_stage_events = {
+      filter      = "jsonPayload.stage=\"judging\" AND (jsonPayload.stage_status=\"succeeded\" OR jsonPayload.stage_status=\"failed\" OR jsonPayload.stage_status=\"awaiting_budget\")"
+      description = "Content-free judging stage success, failure, and budget-pause events."
+    }
   }
 }
 

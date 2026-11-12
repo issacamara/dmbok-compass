@@ -171,6 +171,9 @@ def test_paired_upload_persists_one_attempt_with_immutable_generations_and_hashe
             "attempt_id", "revision", "state", "completed_stage", "preview",
             "correction_codes", "parent_count", "child_count", "chunk_count",
             "staged_corpus_version_id", "hosted_parsing_state", "parsing_output_sha256", "error",
+            "parsing_page_count", "parsing_block_count", "parsing_usage_kind", "parsing_usage_units",
+            "candidate_generation_state", "candidate_generation_count", "candidate_generation_target",
+            "candidate_generation_rejected_count", "candidate_generation_usage_tokens",
         }
         assert body["parsing_output_sha256"] is None
         assert not any("uri" in key for key in body)

@@ -14,8 +14,9 @@ from google.cloud import firestore, storage
 
 from app.ingestion.hosted_parsing import (
     FirestoreParsingCheckpointStore, HostedParsingCoordinator,
-    LlamaCloudParsingProvider, ParsingError,
+    LlamaCloudParsingProvider, ParsingError, ParsingOutcomeUnknown,
 )
+from app.telemetry import LoggingTelemetryAdapter, stage_event
 from app.provider_allowance import ProviderAccountCapabilities
 from app.provider_allowance_firestore import FirestoreProviderAllowanceStore
 from app.settings import ParsingConfiguration
@@ -65,9 +66,12 @@ def _run(terminated: Event) -> None:
         print(json.dumps({"event": "hosted_parsing_idle"}))
         return
     attempt_id, record = queued
+    telemetry = LoggingTelemetryAdapter()
+    telemetry.emit(stage_event("parsing", "resumed" if record.get("remote_job_id") else "started"))
     source = record.get("source")
     if not isinstance(source, dict) or source.get("bucket") != bucket_name:
         checkpoint_store.record_status(attempt_id, "failed", error_code="source_binding_invalid")
+        telemetry.emit(stage_event("parsing", "failed", error=ParsingError("invalid source binding")))
         return
 
     storage_client = storage.Client(project=project)
@@ -78,9 +82,11 @@ def _run(terminated: Event) -> None:
         pdf = source_blob.download_as_bytes(timeout=60)
     except Exception:
         checkpoint_store.record_status(attempt_id, "failed", error_code="source_unavailable")
+        telemetry.emit(stage_event("parsing", "failed", error=ParsingError("source unavailable")))
         return
     if hashlib.sha256(pdf).hexdigest() != source.get("sha256"):
         checkpoint_store.record_status(attempt_id, "failed", error_code="source_digest_mismatch")
+        telemetry.emit(stage_event("parsing", "failed", error=ParsingError("source digest mismatch")))
         return
 
     allowances = FirestoreProviderAllowanceStore(database)
@@ -110,7 +116,27 @@ def _run(terminated: Event) -> None:
         poll_interval_seconds=3,
         stop_requested=terminated.is_set,
     )
-    outcome = coordinator.run(attempt_id=attempt_id, source=source, pdf=pdf)
+    try:
+        outcome = coordinator.run(attempt_id=attempt_id, source=source, pdf=pdf)
+    except ParsingOutcomeUnknown:
+        telemetry.emit(stage_event("parsing", "awaiting_budget"))
+        return
+    except Exception as exc:
+        telemetry.emit(stage_event("parsing", "failed", error=exc))
+        raise RuntimeError("hosted parsing stage failed") from None
+    if outcome.state == "awaiting_budget":
+        event = stage_event("parsing", "awaiting_budget")
+    elif outcome.state == "failed":
+        event = stage_event("parsing", "failed")
+    elif outcome.state == "awaiting_review":
+        event = stage_event(
+            "parsing", "succeeded",
+            completed_count=outcome.block_count, total_count=outcome.block_count,
+            usage_kind=outcome.usage_kind, usage_units=outcome.usage_units,
+        )
+    else:
+        event = stage_event("parsing", "resumed" if terminated.is_set() else "started")
+    telemetry.emit(event)
     print(json.dumps({
         "event": "hosted_parsing_finished",
         "state": outcome.state,

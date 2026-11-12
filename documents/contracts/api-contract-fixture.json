@@ -11,7 +11,14 @@
     "corpus_version",
     "configuration_version",
     "error_class",
-    "model_attempts"
+    "model_attempts",
+    "event",
+    "stage",
+    "stage_status",
+    "completed_count",
+    "total_count",
+    "usage_kind",
+    "usage_units"
   ],
   "ephemeralInteractionFields": [
     "question",

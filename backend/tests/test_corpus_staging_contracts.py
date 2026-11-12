@@ -53,3 +53,27 @@ def test_staging_contract_rejects_invalid_ranges_and_incomplete_terminal_state()
         CorpusStagingAttemptStatus(
             attempt_id="attempt-staged", revision=1, state="staged", chunk_count=2
         )
+
+
+def test_staging_status_exposes_safe_parse_and_candidate_generation_progress() -> None:
+    status = CorpusStagingAttemptStatus(
+        attempt_id="attempt-review", revision=1, state="awaiting_review",
+        preview=[], parsing_page_count=12, parsing_block_count=38,
+        parsing_usage_kind="credits", parsing_usage_units=15,
+        candidate_generation_state="running", candidate_generation_count=40,
+        candidate_generation_target=200, candidate_generation_rejected_count=3,
+        candidate_generation_usage_tokens=9000,
+    )
+
+    payload = status.model_dump(mode="json", exclude_none=True)
+    assert payload["parsing_page_count"] == 12
+    assert payload["parsing_usage_kind"] == "credits"
+    assert payload["candidate_generation_count"] == 40
+    assert payload["candidate_generation_target"] == 200
+    assert payload["candidate_generation_usage_tokens"] == 9000
+
+    with pytest.raises(ValidationError):
+        CorpusStagingAttemptStatus(
+            attempt_id="attempt-review", revision=1, state="awaiting_review",
+            preview=[], parsing_usage_units=0,
+        )

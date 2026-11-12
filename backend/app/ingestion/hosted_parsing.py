@@ -103,7 +103,11 @@ class ParsingCheckpointStore(Protocol):
 
     def record_reservation(self, attempt_id: str, reservation: Mapping[str, Any]) -> None: ...
 
-    def record_status(self, attempt_id: str, state: str, *, error_code: str | None = None) -> None: ...
+    def record_status(
+        self, attempt_id: str, state: str, *, error_code: str | None = None,
+        page_count: int | None = None, block_count: int | None = None,
+        usage_kind: str | None = None, usage_units: int | None = None,
+    ) -> None: ...
 
 
 class ParsingArtifactStore(Protocol):
@@ -265,9 +269,19 @@ class FirestoreParsingCheckpointStore:
 
         self.transaction_runner(self.client.transaction(), apply)
 
-    def record_status(self, attempt_id: str, state: str, *, error_code: str | None = None) -> None:
+    def record_status(
+        self, attempt_id: str, state: str, *, error_code: str | None = None,
+        page_count: int | None = None, block_count: int | None = None,
+        usage_kind: str | None = None, usage_units: int | None = None,
+    ) -> None:
         if state not in {"awaiting_budget", "parsing", "awaiting_review", "failed"}:
             raise ValueError("invalid hosted parsing state")
+        if page_count is not None and page_count < 0 or block_count is not None and block_count < 0:
+            raise ValueError("parsing counts must be non-negative")
+        if usage_units is not None and (type(usage_units) is not int or usage_units < 0):
+            raise ValueError("parsing usage must be a non-negative integer")
+        if (usage_units is None) != (usage_kind is None):
+            raise ValueError("parsing usage value and kind must be provided together")
         reference = self.attempts.document(attempt_id)
 
         def apply(transaction: Any) -> None:
@@ -277,6 +291,10 @@ class FirestoreParsingCheckpointStore:
             payload = {
                 "parsing_state": state,
                 "parsing_error_code": error_code,
+                "parsing_page_count": page_count,
+                "parsing_block_count": block_count,
+                "parsing_usage_kind": usage_kind,
+                "parsing_usage_units": usage_units,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }
             transaction.update(reference, payload)
@@ -324,6 +342,10 @@ class ParsingRun:
     artifact: ParsingArtifact | None
     state: Literal["awaiting_budget", "parsing", "awaiting_review", "failed"]
     remote_job_id: str | None = None
+    page_count: int | None = None
+    block_count: int | None = None
+    usage_kind: str | None = None
+    usage_units: int | None = None
 
 
 class HostedParsingCoordinator:
@@ -385,7 +407,11 @@ class HostedParsingCoordinator:
             source_digest=source_digest,
         )
         if saved is not None:
-            return ParsingRun(saved, "awaiting_review", str(checkpoint.get("remote_job_id") or "") or None)
+            return ParsingRun(
+                saved, "awaiting_review", str(checkpoint.get("remote_job_id") or "") or None,
+                len({block.physical_page for block in saved.blocks}), len(saved.blocks),
+                checkpoint.get("parsing_usage_kind"), checkpoint.get("parsing_usage_units"),
+            )
 
         operation_key = f"corpus-parse:{self.mode}:{self.route}:{attempt_id}:{source_digest}"
         existing_operation_key = checkpoint.get("parsing_operation_key")
@@ -476,10 +502,16 @@ class HostedParsingCoordinator:
             "artifact_generation": stored.get("generation"),
             "remote_job_id": job_id,
         }
-        self.reconcile_allowance(operation_key, _usage_units(payload))
+        usage_kind, usage_units = _usage_detail(payload)
+        self.reconcile_allowance(operation_key, usage_units)
         self.checkpoints.record_artifact(attempt_id, identity)
-        self.checkpoints.record_status(attempt_id, "awaiting_review")
-        return ParsingRun(artifact, "awaiting_review", job_id)
+        page_count = len({block.physical_page for block in artifact.blocks})
+        block_count = len(artifact.blocks)
+        self.checkpoints.record_status(
+            attempt_id, "awaiting_review", page_count=page_count, block_count=block_count,
+            usage_kind=usage_kind, usage_units=usage_units,
+        )
+        return ParsingRun(artifact, "awaiting_review", job_id, page_count, block_count, usage_kind, usage_units)
 
 
 def _valid_source(source: Mapping[str, Any], bucket_name: str, attempt_id: str) -> bool:
@@ -657,13 +689,17 @@ def _sdk_model_dump(response: Any) -> Mapping[str, Any]:
 
 
 def _usage_units(payload: Any) -> int | None:
+    return _usage_detail(payload)[1]
+
+
+def _usage_detail(payload: Any) -> tuple[str | None, int | None]:
     if not isinstance(payload, Mapping):
-        return None
+        return None, None
     usage = payload.get("usage")
     if not isinstance(usage, Mapping):
-        return None
+        return None, None
     for key in ("pages", "units", "credits"):
         value = usage.get(key)
         if type(value) is int and value >= 0:
-            return value
-    return None
+            return key, value
+    return None, None

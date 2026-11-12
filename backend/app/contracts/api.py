@@ -859,10 +859,29 @@ class CorpusStagingAttemptStatus(ContractModel):
     staged_corpus_version_id: str | None = Field(default=None, min_length=1, max_length=128)
     hosted_parsing_state: Literal["queued", "awaiting_budget", "parsing", "awaiting_review", "failed"] | None = None
     parsing_output_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
+    parsing_page_count: int | None = Field(default=None, ge=0)
+    parsing_block_count: int | None = Field(default=None, ge=0)
+    parsing_usage_kind: Literal["pages", "units", "credits"] | None = None
+    parsing_usage_units: int | None = Field(default=None, ge=0)
+    candidate_generation_state: Literal["queued", "running", "awaiting_budget", "published", "failed"] | None = None
+    candidate_generation_count: int | None = Field(default=None, ge=0)
+    candidate_generation_target: int | None = Field(default=None, ge=0)
+    candidate_generation_rejected_count: int | None = Field(default=None, ge=0)
+    candidate_generation_usage_tokens: int | None = Field(default=None, ge=0)
     error: "ApiError | None" = None
 
     @model_validator(mode="after")
     def validate_state_payload(self) -> "CorpusStagingAttemptStatus":
+        if (self.parsing_usage_kind is None) != (self.parsing_usage_units is None):
+            raise ValueError("parsing usage requires both a value and its unit kind")
+        if (self.candidate_generation_count is None) != (self.candidate_generation_target is None):
+            raise ValueError("candidate generation progress requires both counts")
+        if (
+            self.candidate_generation_count is not None
+            and self.candidate_generation_target is not None
+            and self.candidate_generation_count > self.candidate_generation_target
+        ):
+            raise ValueError("candidate generation progress exceeds its target")
         if self.state == "awaiting_review" and self.preview is None:
             raise ValueError("awaiting_review requires a validated preview")
         if self.state == "failed" and self.error is None:

@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 import hashlib
 import re
 import unicodedata
-from typing import Literal, Protocol
+from typing import Callable, Literal, Protocol
 
 from pydantic import ValidationError
 
@@ -131,6 +131,7 @@ async def generate_candidate_revision(
     generator_configuration_version: str,
     operation_key: str,
     operation_owner_id: str | None = None,
+    progress_callback: Callable[[int, int, int | None, int], None] | None = None,
     allowance: AllowanceStageResult,
     allowance_store: ProviderAllowanceStore,
     allowance_capabilities: ProviderAccountCapabilities,
@@ -215,6 +216,7 @@ async def generate_candidate_revision(
             store=store,
             target_count=target_count,
             usage=usage,
+            progress_callback=progress_callback,
         )
     finally:
         if not usage.reconciled:
@@ -285,6 +287,7 @@ async def _generate_candidate_revision(
     store: CandidateRevisionStore,
     target_count: int,
     usage: _UsageAccumulator,
+    progress_callback: Callable[[int, int, int | None, int], None] | None,
 ) -> CandidateGenerationReport:
 
     head = store.corpus_head(corpus_version_id)
@@ -382,6 +385,8 @@ async def _generate_candidate_revision(
                 continue
             rows.append(row)
             seen_questions.add(question_key)
+        if progress_callback is not None:
+            progress_callback(len(rows), target_count, _usage(usage.tokens, usage.known), rejected)
 
     if not rows:
         return _report(

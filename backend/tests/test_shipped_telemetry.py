@@ -12,7 +12,7 @@ import logging.config
 from pathlib import Path
 
 from app.contracts.api import AnswerResponse, QuotaStatus, RetrievalTrace
-from app.telemetry import LoggingTelemetryAdapter, error_event, response_event
+from app.telemetry import LoggingTelemetryAdapter, error_event, response_event, stage_event
 
 ROOT = Path(__file__).parents[2]
 BACKEND = Path(__file__).parents[1]
@@ -71,6 +71,51 @@ def test_terraform_filters_match_emitted_typed_fields_and_unknown_usage() -> Non
     assert error_event_payload["outcome"] == "error"
     assert fallback_event_payload["provider_model"] == "fallback-model"
     assert "token_estimate" not in fallback_event_payload
+
+
+def test_stage_events_are_content_free_and_match_parsing_and_generation_metrics(capsys) -> None:
+    root = logging.getLogger()
+    telemetry = logging.getLogger("dmbok_compass.telemetry")
+    root_handlers = root.handlers[:]
+    telemetry_handlers = telemetry.handlers[:]
+    telemetry_level = telemetry.level
+    telemetry_propagate = telemetry.propagate
+    terraform = TERRAFORM_PATH.read_text()
+    try:
+        logging.config.dictConfig(json.loads(CONFIG_PATH.read_text()))
+        adapter = LoggingTelemetryAdapter()
+        for stage in ("parsing", "generation", "judging"):
+            adapter.emit(stage_event(stage, "succeeded", **(
+                {"completed_count": 8, "total_count": 8, "usage_kind": "credits", "usage_units": 15}
+                if stage == "parsing" else {}
+            )))
+            adapter.emit(stage_event(stage, "failed", error=ValueError("CANARY PROVIDER RESPONSE")))
+            adapter.emit(stage_event(stage, "awaiting_budget"))
+
+        lines = [line for line in capsys.readouterr().out.splitlines() if line]
+        events = [json.loads(line) for line in lines]
+        expected = {
+            (stage, status)
+            for stage in ("parsing", "generation", "judging")
+            for status in ("succeeded", "failed", "awaiting_budget")
+        }
+        assert {(event["stage"], event["stage_status"]) for event in events} == expected
+        assert events[0]["usage_kind"] == "credits" and events[0]["usage_units"] == 15
+        assert all("usage_kind" not in event and "usage_units" not in event for event in events[1:])
+        assert all(event.get("error_class") == "ValueError" for event in events if event["stage_status"] == "failed")
+        assert all("CANARY" not in line for line in lines)
+        filters = [line for line in terraform.splitlines() if "filter" in line]
+        for stage, status in expected:
+            assert any(
+                f'jsonPayload.stage=\\\"{stage}\\\"' in line
+                and f'jsonPayload.stage_status=\\\"{status}\\\"' in line
+                for line in filters
+            )
+    finally:
+        root.handlers = root_handlers
+        telemetry.handlers = telemetry_handlers
+        telemetry.setLevel(telemetry_level)
+        telemetry.propagate = telemetry_propagate
 
 
 def test_shipped_config_enables_telemetry_without_content_handlers() -> None:

@@ -1,3 +1,13 @@
+mock_provider "google" {
+  mock_data "google_storage_bucket" {
+    defaults = {
+      name = "dev-dmbok-compass-tfstate"
+    }
+  }
+}
+
+mock_provider "google-beta" {}
+
 run "monitoring_contract" {
   command = plan
 
@@ -25,8 +35,8 @@ run "monitoring_contract" {
   }
 
   assert {
-    condition     = length(google_logging_metric.operational) == 6
-    error_message = "All six content-free operational log metrics must be provisioned."
+    condition     = length(google_logging_metric.operational) == 9
+    error_message = "All nine content-free operational log metrics must be provisioned."
   }
 
   assert {

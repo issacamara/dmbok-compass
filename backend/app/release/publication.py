@@ -5,6 +5,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from hashlib import sha256
 from threading import RLock
 from typing import Any, Protocol
 
@@ -35,7 +36,10 @@ class PublishedRelease:
 class ServingReleaseStore(Protocol):
     def current(self) -> PublishedRelease | None: ...
     def previous(self) -> PublishedRelease | None: ...
-    def publish(self, release: PublishedRelease, *, expected_previous_release_id: str | None) -> PublishedRelease: ...
+    def publish(
+        self, release: PublishedRelease, *, expected_previous_release_id: str | None,
+        expected_dataset_revision: int, expected_dataset_sha256: str,
+    ) -> PublishedRelease: ...
     def rollback(self, *, expected_current_release_id: str) -> PublishedRelease: ...
 
 
@@ -45,7 +49,17 @@ class InMemoryServingReleaseStore:
     def __init__(self) -> None:
         self._current: PublishedRelease | None = None
         self._previous: PublishedRelease | None = None
+        self._dataset_heads: dict[str, tuple[int, str]] = {}
         self._lock = RLock()
+
+    def set_dataset_head(self, corpus_version_id: str, *, revision: int, dataset_sha256: str) -> None:
+        """Set the visible dataset head for deterministic compare-and-set tests."""
+        with self._lock:
+            self._dataset_heads[corpus_version_id] = (revision, dataset_sha256)
+
+    def dataset_head(self, corpus_version_id: str) -> tuple[int, str] | None:
+        with self._lock:
+            return self._dataset_heads.get(corpus_version_id)
 
     def current(self) -> PublishedRelease | None:
         with self._lock:
@@ -55,11 +69,18 @@ class InMemoryServingReleaseStore:
         with self._lock:
             return deepcopy(self._previous)
 
-    def publish(self, release: PublishedRelease, *, expected_previous_release_id: str | None) -> PublishedRelease:
+    def publish(
+        self, release: PublishedRelease, *, expected_previous_release_id: str | None,
+        expected_dataset_revision: int, expected_dataset_sha256: str,
+    ) -> PublishedRelease:
         with self._lock:
             current_id = self._current.release_id if self._current else None
             if current_id != expected_previous_release_id:
                 raise ConcurrentPublicationError("serving release changed before publication could commit")
+            if self._dataset_heads.get(release.corpus_version_id) != (
+                expected_dataset_revision, expected_dataset_sha256
+            ):
+                raise ConcurrentPublicationError("corpus dataset revision changed before publication could commit")
             self._previous = self._current
             self._current = release
             return deepcopy(release)
@@ -130,6 +151,8 @@ class ReleasePublisher:
                 published_at=self.clock(),
             ),
             expected_previous_release_id=expected_previous_release_id,
+            expected_dataset_revision=candidate.dataset_revision,
+            expected_dataset_sha256=candidate.dataset_revision_sha256,
         )
 
 
@@ -150,8 +173,15 @@ class FirestoreServingReleaseStore:
             return None
         return _decode(snapshot.to_dict()["previous"])
 
-    def publish(self, release: PublishedRelease, *, expected_previous_release_id: str | None) -> PublishedRelease:
+    def publish(
+        self, release: PublishedRelease, *, expected_previous_release_id: str | None,
+        expected_dataset_revision: int, expected_dataset_sha256: str,
+    ) -> PublishedRelease:
         from google.cloud import firestore
+
+        dataset_head = self.client.collection("evaluation_dataset_heads_v2").document(
+            sha256(release.corpus_version_id.encode()).hexdigest()
+        )
 
         @firestore.transactional
         def apply(transaction: Any) -> PublishedRelease:
@@ -159,6 +189,14 @@ class FirestoreServingReleaseStore:
             current = snapshot.to_dict().get("release_id") if snapshot.exists else None
             if current != expected_previous_release_id:
                 raise ConcurrentPublicationError("serving release changed before publication could commit")
+            head_snapshot = dataset_head.get(transaction=transaction)
+            head = head_snapshot.to_dict() if head_snapshot.exists else {}
+            if (
+                head.get("corpus_version_id") != release.corpus_version_id
+                or head.get("revision") != expected_dataset_revision
+                or head.get("dataset_sha256") != expected_dataset_sha256
+            ):
+                raise ConcurrentPublicationError("corpus dataset revision changed before publication could commit")
             current_data = snapshot.to_dict() if snapshot.exists else {}
             transaction.set(self.reference, {
                 **asdict(release),

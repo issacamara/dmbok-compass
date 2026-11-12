@@ -7,8 +7,10 @@ from fastapi import HTTPException
 from app.contracts import CorpusServingBinding, CorpusValidationEvidence, CorpusVersion, ReleaseDecision
 from app.release import (
     ConcurrentPublicationError,
+    FirestoreServingReleaseStore,
     InMemoryServingReleaseStore,
     PublicationError,
+    PublishedRelease,
     ReleaseCandidateBinding,
     ReleaseManifest,
     ReleasePublisher,
@@ -79,8 +81,14 @@ def manifest() -> ReleaseManifest:
     )
 
 
-def test_publication_is_the_only_serving_transition_and_preserves_tuple() -> None:
+def serving_store() -> InMemoryServingReleaseStore:
     store = InMemoryServingReleaseStore()
+    store.set_dataset_head("corpus-v2", revision=4, dataset_sha256="2" * 64)
+    return store
+
+
+def test_publication_is_the_only_serving_transition_and_preserves_tuple() -> None:
+    store = serving_store()
     published = ReleasePublisher(store, clock=lambda: datetime(2026, 10, 22, tzinfo=timezone.utc)).publish(
         decision(), manifest(), corpus(), expected_previous_release_id=None
     )
@@ -92,7 +100,7 @@ def test_publication_is_the_only_serving_transition_and_preserves_tuple() -> Non
 
 
 def test_compare_and_set_has_one_winner_and_rejects_stale_previous_release() -> None:
-    store = InMemoryServingReleaseStore()
+    store = serving_store()
     publisher = ReleasePublisher(store)
     first = publisher.publish(decision(), manifest(), corpus(), expected_previous_release_id=None)
 
@@ -101,6 +109,10 @@ def test_compare_and_set_has_one_winner_and_rejects_stale_previous_release() -> 
         "serving_binding": next_corpus.serving_binding.model_copy(update={"corpus_version_id": "corpus-v3"}),
     })
     next_binding = candidate_binding(corpus_version_id="corpus-v3")
+    store.set_dataset_head(
+        "corpus-v3", revision=next_binding.dataset_revision,
+        dataset_sha256=next_binding.dataset_revision_sha256,
+    )
     next_digest = release_candidate_digest(next_binding)
     next_decision = decision().model_copy(update={
         "release_id": "release-v3", "corpus_version_id": "corpus-v3", "candidate_digest": next_digest,
@@ -119,7 +131,7 @@ def test_compare_and_set_has_one_winner_and_rejects_stale_previous_release() -> 
 
 
 def test_publication_rejects_unready_or_unapproved_candidates() -> None:
-    publisher = ReleasePublisher(InMemoryServingReleaseStore())
+    publisher = ReleasePublisher(serving_store())
     with pytest.raises(PublicationError):
         publisher.publish(decision().model_copy(update={"decision": "rejected"}), manifest(), corpus(), expected_previous_release_id=None)
     with pytest.raises(PublicationError):
@@ -127,7 +139,7 @@ def test_publication_rejects_unready_or_unapproved_candidates() -> None:
 
 
 def test_publication_rejects_wrong_candidate_tuple_and_stale_decision() -> None:
-    publisher = ReleasePublisher(InMemoryServingReleaseStore())
+    publisher = ReleasePublisher(serving_store())
     wrong_manifest_binding = candidate_binding(corpus_manifest_sha256="9" * 64)
     wrong_manifest = manifest().model_copy(update={
         "candidate_binding": wrong_manifest_binding,
@@ -158,23 +170,65 @@ def test_publish_endpoint_revalidates_approved_tuple_before_switching_serving(mo
     import firebase_admin.firestore
 
     from app import main
-    from app.release import ReleaseDecisionError
-
     decision_record = decision()
+    store = serving_store()
 
     class DecisionService:
         decisions = SimpleNamespace(get=lambda release_id: decision_record)
-        manifests = SimpleNamespace(get=lambda release_id: SimpleNamespace(corpus_version_id="corpus-v2"))
+        manifests = SimpleNamespace(get=lambda release_id: manifest())
 
         def record(self, request):
             assert request.evaluation_run_id == decision_record.evaluation_run_id
-            raise ReleaseDecisionError("release evidence is stale or does not match the current dataset revision")
+            # Revalidation observed the approved revision. A dataset edit lands
+            # after that read but before the serving transaction starts.
+            assert store.dataset_head("corpus-v2") == (4, "2" * 64)
+            store.set_dataset_head("corpus-v2", revision=5, dataset_sha256="9" * 64)
+            return decision_record
 
     monkeypatch.setattr("app.identity._firebase_app", lambda: object())
     monkeypatch.setattr(firebase_admin.firestore, "client", lambda *, app: object())
+    monkeypatch.setattr(main, "startup_configuration", lambda: SimpleNamespace(vector_collection="chunks-v2"))
+    monkeypatch.setattr(
+        main, "FirestoreCorpusVersionStore",
+        lambda client, *, vector_collection: SimpleNamespace(get=lambda corpus_id: corpus()),
+    )
+    monkeypatch.setattr(main, "FirestoreServingReleaseStore", lambda client: store)
 
     with pytest.raises(HTTPException) as error:
         main.publish_release("release-v2", None, decision_service=DecisionService())
 
     assert error.value.status_code == 409
     assert error.value.detail["code"] == "release_not_publishable"
+    assert store.current() is None
+
+
+def test_firestore_publication_transaction_fences_dataset_head(monkeypatch) -> None:
+    from hashlib import sha256
+    from google.cloud import firestore
+
+    from test_evaluation_generations import FakeFirestore
+
+    client = FakeFirestore()
+    head_id = sha256("corpus-v2".encode()).hexdigest()
+    client.data[f"evaluation_dataset_heads_v2/{head_id}"] = {
+        "corpus_version_id": "corpus-v2", "revision": 5, "dataset_sha256": "9" * 64,
+    }
+
+    def transactional(function):
+        return lambda transaction: function(transaction)
+
+    monkeypatch.setattr(firestore, "transactional", transactional)
+    store = FirestoreServingReleaseStore(client)
+    release = PublishedRelease(
+        release_id="release-v2", artifact_id="artifact", configuration_version_id="config-v2",
+        corpus_version_id="corpus-v2", vector_collection="chunks-v2", vector_schema_version="2",
+        source_uri="gs://corpus/source.pdf", published_at=datetime(2026, 10, 22, tzinfo=timezone.utc),
+    )
+
+    with pytest.raises(ConcurrentPublicationError, match="dataset revision changed"):
+        store.publish(
+            release, expected_previous_release_id=None,
+            expected_dataset_revision=4, expected_dataset_sha256="2" * 64,
+        )
+
+    assert "release_state/serving" not in client.data

@@ -44,6 +44,8 @@ from app.evaluation.support import (
 from app.rag import LangChainRagFactory, LangChainRagSettings
 from app.settings import RuntimeConfiguration
 
+_CANDIDATE_DATASET_TARGET = 200
+
 
 class FirestoreEvaluationCandidateSnapshotResolver(EvaluationCandidateSnapshotResolver):
     """Resolve an evaluation candidate once, before durable dispatch."""
@@ -333,6 +335,32 @@ def _prepare_candidate_evaluation(client: firestore.Client, project: str, runtim
             configuration_version_id=stage.configuration_version,
             model_version_id=stage.model,
         )
+        committed_rows = store.get_revision(committed_head)
+        completed_count = len(committed_rows)
+        target_count = attempt.get("candidate_generation_target")
+        if type(target_count) is not int or target_count < completed_count:
+            target_count = _CANDIDATE_DATASET_TARGET
+        rejected_count = attempt.get("candidate_generation_rejected_count")
+        if type(rejected_count) is not int or rejected_count < 0:
+            rejected_count = None
+        usage_tokens = attempt.get("candidate_generation_usage_tokens")
+        if type(usage_tokens) is not int or usage_tokens < 0:
+            usage_tokens = None
+        staging.update_candidate_generation_status(
+            attempt_id=attempt_id,
+            state="published",
+            completed_count=completed_count,
+            target_count=target_count,
+            rejected_count=rejected_count,
+            usage_tokens=usage_tokens,
+        )
+        telemetry.emit(stage_event(
+            "generation", "succeeded",
+            completed_count=completed_count,
+            total_count=target_count,
+            usage_kind="tokens" if usage_tokens is not None else None,
+            usage_units=usage_tokens,
+        ))
         return
     owner_id = uuid4().hex
     if not store.claim_operation(
@@ -404,7 +432,7 @@ def _prepare_candidate_evaluation(client: firestore.Client, project: str, runtim
             allowance_store=allowances,
             allowance_capabilities=capabilities,
             store=store,
-            target_count=200,
+            target_count=_CANDIDATE_DATASET_TARGET,
         ))
         if report.status == "awaiting_budget":
             store.release_operation(operation_key, owner_id=owner_id, status="awaiting_budget")
@@ -442,7 +470,7 @@ def _prepare_candidate_evaluation(client: firestore.Client, project: str, runtim
         claims.release(operation_claim_id, owner_id=dispatch_owner_id)
         staging.update_candidate_generation_status(attempt_id=attempt_id, state="failed")
         telemetry.emit(stage_event("generation", "failed", error=exc))
-        raise
+        raise RuntimeError("candidate dataset generation failed") from None
 
 
 def _configured_evaluation_service():

@@ -76,6 +76,14 @@ export function EvaluationPanel({ token }: EvaluationPanelProps) {
   }, [run, runId, token]);
 
   useEffect(() => {
+    setAssessmentContexts({});
+    setAssessmentDecisions({});
+    setAssessmentErrors({});
+    setAssessmentBusy(null);
+    setRefusalConfirmations({});
+  }, [runId]);
+
+  useEffect(() => {
     if (!runId || run?.status !== "completed") { setReview(null); return; }
     let current = true;
     setReviewLoading(true); setReviewError(""); setReview(null);

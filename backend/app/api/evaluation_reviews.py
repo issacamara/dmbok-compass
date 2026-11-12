@@ -21,7 +21,6 @@ from app.contracts import (
     IndividualEvidenceDecisionResult,
     IndividualEvidenceReview,
     RepresentativeSampleEntry,
-    ParentChunk,
     RunBoundSupportEvidence,
     ReviewDecisionMetadata,
     ReviewProjection,

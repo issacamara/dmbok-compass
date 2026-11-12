@@ -570,6 +570,13 @@ export const TELEMETRY_FIELDS = [
   "configuration_version",
   "error_class",
   "model_attempts",
+  "event",
+  "stage",
+  "stage_status",
+  "completed_count",
+  "total_count",
+  "usage_kind",
+  "usage_units",
 ] as const;
 
 export type TelemetryField = (typeof TELEMETRY_FIELDS)[number];

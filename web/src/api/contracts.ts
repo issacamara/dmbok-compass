@@ -86,6 +86,7 @@ export interface CorpusStagingAttemptStatus {
   chunk_count: number | null;
   staged_corpus_version_id: string | null;
   hosted_parsing_state?: HostedParsingState | null;
+  physical_page_numbers?: number[] | null;
   parsing_output_sha256?: string | null;
   parsing_page_count?: number | null;
   parsing_block_count?: number | null;

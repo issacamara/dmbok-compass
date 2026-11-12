@@ -161,13 +161,20 @@ class FirestoreCandidateOutputStore:
             raise CandidateOutputAlreadyExists("attempt_id is already bound to an evaluator output") from exc
         return audit
 
-    def get_raw(self, *, actor: UserProfile, attempt_id: str) -> str | None:
+    def get_raw(
+        self, *, actor: UserProfile, attempt_id: str, now: datetime | None = None
+    ) -> str | None:
         _authorize(actor)
         snapshot = self.raw.document(attempt_id).get()
         if not snapshot.exists:
             return None
         payload = snapshot.to_dict()
-        if payload.get("policy_id") != POLICY_ID:
+        expires_at = _parse_datetime(payload.get("expires_at"))
+        if (
+            payload.get("policy_id") != POLICY_ID
+            or expires_at is None
+            or expires_at <= _utc(now or datetime.now(timezone.utc))
+        ):
             return None
         return payload.get("output") if isinstance(payload.get("output"), str) else None
 

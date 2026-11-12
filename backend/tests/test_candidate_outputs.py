@@ -145,3 +145,21 @@ def test_expiry_cleanup_is_idempotent_and_marks_recovery() -> None:
     assert result.recovery is True
     assert repeated.deleted_attempt_ids == ()
     assert store.get_raw(actor=admin(), attempt_id="attempt-1") is None
+
+
+def test_raw_output_is_unavailable_at_expiry_before_cleanup_runs() -> None:
+    client = Firestore()
+    store = FirestoreCandidateOutputStore(client)
+    generated = datetime(2026, 9, 20, tzinfo=timezone.utc)
+    put(store, generated_at=generated)
+
+    assert store.get_raw(
+        actor=admin(), attempt_id="attempt-1", now=generated + timedelta(days=30)
+    ) is None
+    assert "evaluation_candidate_outputs/attempt-1" in client.data
+
+    audit = store.cleanup_expired(actor=admin(), now=generated + timedelta(days=30))
+
+    assert audit.deleted_attempt_ids == ("attempt-1",)
+    assert "evaluation_candidate_outputs/attempt-1" not in client.data
+    assert store.get_audit("attempt-1").output_digest

@@ -71,13 +71,6 @@ def _prepare_fakes(
     )
     staging = StagingStore(None)
     staging.attempt.update(previous_progress or {})
-    store = SimpleNamespace(
-        operation_head=lambda *_args, **_kwargs: committed_head,
-        get_revision=lambda _head: tuple(committed_rows),
-        claim_operation=lambda *_args, **_kwargs: True,
-        release_operation=lambda *_args, **_kwargs: None,
-        get_parse_derived_records=lambda **_kwargs: ((), ()),
-    )
     claims = SimpleNamespace(release=lambda *_args, **_kwargs: None)
     allowances = SimpleNamespace(stage_reservation=lambda *_args, **_kwargs: SimpleNamespace(status="staged"))
 

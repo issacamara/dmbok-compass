@@ -47,7 +47,7 @@ describe("AdminPanel", () => {
   it("reports service failures without claiming an update succeeded", async () => {
     adminApi.listUsers.mockRejectedValue(new Error("offline"));
     render(<AdminPanel token="firebase-token" onSignOut={vi.fn()} />);
-    expect(await screen.findByRole("alert")).toHaveTextContent(/could not load administrator controls/i);
+    expect(await screen.findByText(/could not load administrator controls/i, { selector: 'p[role="alert"]' })).toBeInTheDocument();
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
   });
 
@@ -78,6 +78,6 @@ describe("AdminPanel", () => {
     adminApi.listUsers.mockRejectedValue({ status: 403 });
     render(<AdminPanel token="firebase-token" onSignOut={vi.fn()} />);
 
-    expect(await screen.findByRole("alert")).toHaveTextContent(/do not have administrator access/i);
+    expect(await screen.findByText(/do not have administrator access/i, { selector: 'p[role="alert"]' })).toBeInTheDocument();
   });
 });

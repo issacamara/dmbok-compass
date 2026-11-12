@@ -18,6 +18,7 @@ import app.evaluation.worker as worker_module
 import app.provider_allowance_firestore as allowance_module
 import app.provider_allowance as allowance_contract_module
 import app.settings as settings_module
+import app.telemetry as telemetry_module
 import model.candidate_generation as candidate_model_module
 
 
@@ -28,13 +29,15 @@ CORPUS_ID = "corpus-364"
 
 
 class StagingStore:
-    def __init__(self, _client) -> None:
+    def __init__(self, _client, *, cleanup_failure=None, cleanup_calls=None) -> None:
         self.attempt = {
             "attempt_id": ATTEMPT_ID,
             "state": "staged",
             "staged_corpus_version_id": CORPUS_ID,
         }
         self.updates: list[dict[str, object]] = []
+        self.cleanup_failure = cleanup_failure
+        self.cleanup_calls = cleanup_calls if cleanup_calls is not None else []
 
     def get(self, *, attempt_id: str):
         assert attempt_id == ATTEMPT_ID
@@ -42,6 +45,10 @@ class StagingStore:
 
     def update_candidate_generation_status(self, **values) -> None:
         self.updates.append(values)
+        if values["state"] == "failed":
+            self.cleanup_calls.append("status")
+            if self.cleanup_failure == "status":
+                raise RuntimeError("CANARY STATUS CLEANUP")
         self.attempt["candidate_generation_state"] = values["state"]
         for key, value in (
             ("candidate_generation_count", values.get("completed_count")),
@@ -60,6 +67,7 @@ def _prepare_fakes(
     committed_rows=(),
     previous_progress: dict[str, object] | None = None,
     generation_error: Exception | None = None,
+    cleanup_failure: str | None = None,
 ):
     stage = SimpleNamespace(
         route="vertex", model="candidate-model", configuration_version="cfg-v1",
@@ -69,9 +77,15 @@ def _prepare_fakes(
         generation_timeout_ms=1_000, output_token_cap=128,
         vector_collection="candidate-vectors", runtime=SimpleNamespace(location="us-central1"),
     )
-    staging = StagingStore(None)
+    cleanup_calls: list[str] = []
+    staging = StagingStore(None, cleanup_failure=cleanup_failure, cleanup_calls=cleanup_calls)
     staging.attempt.update(previous_progress or {})
-    claims = SimpleNamespace(release=lambda *_args, **_kwargs: None)
+    def release_claim(*_args, **_kwargs):
+        cleanup_calls.append("claim")
+        if cleanup_failure == "claim":
+            raise RuntimeError("CANARY CLAIM CLEANUP")
+
+    claims = SimpleNamespace(release=release_claim)
     allowances = SimpleNamespace(stage_reservation=lambda *_args, **_kwargs: SimpleNamespace(status="staged"))
 
     class CandidateDispatcher:
@@ -105,6 +119,9 @@ def _prepare_fakes(
             return True
 
         def release_operation(self, *_args, **_kwargs):
+            cleanup_calls.append("operation")
+            if cleanup_failure == "operation":
+                raise RuntimeError("CANARY OPERATION CLEANUP")
             return None
 
         def get_parse_derived_records(self, **_kwargs):
@@ -132,6 +149,16 @@ def _prepare_fakes(
             raise generation_error
         raise AssertionError("generation is not expected in a committed-head replay")
 
+    original_telemetry_adapter = telemetry_module.LoggingTelemetryAdapter
+
+    class TestTelemetryAdapter(original_telemetry_adapter):
+        def emit(self, event) -> None:
+            if event.stage_status == "failed":
+                cleanup_calls.append("telemetry")
+                if cleanup_failure == "telemetry":
+                    raise RuntimeError("CANARY TELEMETRY CLEANUP")
+            super().emit(event)
+
     monkeypatch.setattr(staging_module, "FirestoreCorpusStagingAttemptStore", lambda _client: staging)
     monkeypatch.setattr(automatic_module, "CandidateExplorationPublisher", CandidatePublisher)
     monkeypatch.setattr(automatic_module, "candidate_generator_fingerprint", lambda *_args: "fingerprint-v1")
@@ -143,6 +170,7 @@ def _prepare_fakes(
     monkeypatch.setattr(allowance_module, "FirestoreProviderAllowanceStore", lambda _client: allowances)
     monkeypatch.setattr(allowance_contract_module, "ProviderAccountCapabilities", AllowanceCapabilities)
     monkeypatch.setattr(settings_module, "EvaluationStageConfiguration", StageConfiguration)
+    monkeypatch.setattr(telemetry_module, "LoggingTelemetryAdapter", TestTelemetryAdapter)
     monkeypatch.setattr(candidate_model_module, "EvaluationCandidateAdapter", CandidateAdapter)
     monkeypatch.setattr(generation_module, "generate_candidate_revision", generate)
     monkeypatch.setenv("CORPUS_STAGING_ATTEMPT_ID", ATTEMPT_ID)
@@ -257,9 +285,14 @@ def test_committed_candidate_replay_target_never_falls_below_rows(monkeypatch, c
     assert event["total_count"] == 225
 
 
-def test_candidate_generation_failure_stderr_suppresses_provider_canary(monkeypatch, capsys) -> None:
+@pytest.mark.parametrize("cleanup_failure", [None, "operation", "claim", "status", "telemetry"])
+def test_candidate_generation_failure_cleanup_is_best_effort_and_sanitized(
+    monkeypatch, capsys, cleanup_failure
+) -> None:
     staging, runtime = _prepare_fakes(
-        monkeypatch, generation_error=RuntimeError("CANARY PROVIDER BODY and credential detail")
+        monkeypatch,
+        generation_error=RuntimeError("CANARY PROVIDER BODY and credential detail"),
+        cleanup_failure=cleanup_failure,
     )
 
     def action() -> None:
@@ -272,4 +305,8 @@ def test_candidate_generation_failure_stderr_suppresses_provider_canary(monkeypa
     assert "CANARY" not in output
     assert "CANARY" not in stderr
     assert "candidate dataset generation failed" in stderr
-    assert staging.updates[-1]["state"] == "failed"
+    assert [call for call in staging.cleanup_calls] == ["operation", "claim", "status", "telemetry"]
+    if cleanup_failure == "status":
+        assert staging.attempt["candidate_generation_state"] == "running"
+    else:
+        assert staging.attempt["candidate_generation_state"] == "failed"

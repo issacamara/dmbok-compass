@@ -466,10 +466,20 @@ def _prepare_candidate_evaluation(client: firestore.Client, project: str, runtim
             "generated_count": report.generated_count,
         }))
     except Exception as exc:
-        store.release_operation(operation_key, owner_id=owner_id, status="failed")
-        claims.release(operation_claim_id, owner_id=dispatch_owner_id)
-        staging.update_candidate_generation_status(attempt_id=attempt_id, state="failed")
-        telemetry.emit(stage_event("generation", "failed", error=exc))
+        cleanup_actions = (
+            lambda: store.release_operation(operation_key, owner_id=owner_id, status="failed"),
+            lambda: claims.release(operation_claim_id, owner_id=dispatch_owner_id),
+            lambda: staging.update_candidate_generation_status(attempt_id=attempt_id, state="failed"),
+        )
+        for cleanup in cleanup_actions:
+            try:
+                cleanup()
+            except Exception:
+                pass
+        try:
+            telemetry.emit(stage_event("generation", "failed", error=exc))
+        except Exception:
+            pass
         raise RuntimeError("candidate dataset generation failed") from None
 
 

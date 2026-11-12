@@ -7,7 +7,9 @@ import pytest
 
 from app.contracts import (
     BatchAttestationRequest,
+    BatchSemanticAssessmentSelection,
     CorpusServingBinding,
+    DurableSemanticAssessmentReference,
     EvaluationCandidateSnapshot,
     EvaluationDataset,
     EvaluationItem,
@@ -67,7 +69,7 @@ def run(item_ids: list[str]) -> EvaluationRun:
     )
 
 
-def evidence(item_id: str, *, status: str = "eligible", category: str = "definitions") -> RunBoundSupportEvidence:
+def evidence(item_id: str, *, status: str = "eligible", category: str = "definitions", expected_refusal: bool = False) -> RunBoundSupportEvidence:
     del category  # Category is intentionally owned by the dataset item.
     choice = VerifiedChunkChoice(
         chunk_id=f"chunk-{item_id}",
@@ -88,6 +90,19 @@ def evidence(item_id: str, *, status: str = "eligible", category: str = "definit
         verified_chunks=[choice] if status == "eligible" else [],
         selected_chunk=choice if status == "eligible" else None,
         reason=None if status == "eligible" else f"{status}-support",
+        expected_refusal=expected_refusal,
+    )
+
+
+def assessment_reference(item_id: str, *, refusal_judgment: bool | None = None) -> DurableSemanticAssessmentReference:
+    return DurableSemanticAssessmentReference(
+        item_id=item_id,
+        assessment_id=f"assessment-{item_id}",
+        output_digest=sha256(item_id.encode()).hexdigest(),
+        scorer_version="scorer-v1",
+        reviewer_actor="admin",
+        reviewed_at=datetime(2026, 11, 5, tzinfo=UTC),
+        refusal_judgment=refusal_judgment,
     )
 
 
@@ -159,12 +174,14 @@ def test_attestation_is_compare_and_set_and_repeated_decision_is_rejected() -> N
     request = BatchAttestationRequest(
         decision="attested",
         exception_decisions=[{"item_id": "item-missing", "decision": "inapplicable", "reason": "Not answerable."}],
+        semantic_assessments=[BatchSemanticAssessmentSelection(item_id="item-1", assessment_id="assessment-item-1")],
     )
     decision = repository.attest(
         stored,
         request,
         actor="admin",
         decided_at=datetime(2026, 10, 31, tzinfo=UTC),
+        semantic_assessments=(assessment_reference("item-1"),),
     )
     assert decision.sampled_item_ids == stored.summary.sampled_item_ids
     assert decision.exception_decisions[0].item_id == "item-missing"
@@ -176,6 +193,76 @@ def test_attestation_is_compare_and_set_and_repeated_decision_is_rejected() -> N
     stale = stored.__class__(summary=changed, samples=stored.samples, exceptions=stored.exceptions)
     with pytest.raises(BatchReviewStaleError):
         repository.attest(stale, request, actor="admin", decided_at=datetime.now(UTC))
+
+
+def test_refusal_exception_requires_explicit_corpus_scope_confirmation_and_assessment() -> None:
+    item_ids = ["item-1", "item-refusal"]
+    review = create_batch_review(
+        run(item_ids),
+        dataset(item_ids),
+        [evidence("item-1"), evidence("item-refusal", status="missing", expected_refusal=True)],
+    )
+    repository = InMemoryBatchReviewRepository()
+    stored = repository.create_or_get(review)
+    selection = BatchSemanticAssessmentSelection(item_id="item-refusal", assessment_id="assessment-item-refusal")
+    refusal_ref = assessment_reference("item-refusal", refusal_judgment=True)
+    sample_id = review.summary.sampled_item_ids[0]
+    sample_selection = BatchSemanticAssessmentSelection(item_id=sample_id, assessment_id=f"assessment-{sample_id}")
+    sample_ref = assessment_reference(sample_id)
+    decisions = [{"item_id": "item-refusal", "decision": "attested"}]
+
+    legacy_repository = InMemoryBatchReviewRepository()
+    legacy_repository.create_or_get(review)
+    with pytest.raises(BatchReviewConflictError, match="legacy batch attestations cannot confirm"):
+        legacy_repository.attest(
+            review,
+            BatchAttestationRequest(decision="attested", exception_decisions=decisions),
+            actor="admin",
+            decided_at=datetime.now(UTC),
+        )
+
+    with pytest.raises(BatchReviewConflictError, match="corpus-scope confirmation"):
+        repository.attest(
+            stored,
+            BatchAttestationRequest(
+                decision="attested",
+                exception_decisions=decisions,
+                semantic_assessments=[sample_selection, selection],
+            ),
+            actor="admin",
+            decided_at=datetime.now(UTC),
+            semantic_assessments=(sample_ref, refusal_ref),
+        )
+
+    with pytest.raises(BatchReviewConflictError, match="positive exact-output refusal assessment"):
+        repository.attest(
+            stored,
+            BatchAttestationRequest(
+                decision="attested",
+                exception_decisions=decisions,
+                semantic_assessments=[sample_selection, selection],
+                refusal_confirmation_item_ids=["item-refusal"],
+            ),
+            actor="admin",
+            decided_at=datetime.now(UTC),
+            semantic_assessments=(sample_ref, assessment_reference("item-refusal", refusal_judgment=False)),
+        )
+
+    confirmed = repository.attest(
+        stored,
+        BatchAttestationRequest(
+            decision="attested",
+            exception_decisions=decisions,
+            semantic_assessments=[sample_selection, selection],
+            refusal_confirmation_item_ids=["item-refusal"],
+        ),
+        actor="admin",
+        decided_at=datetime.now(UTC),
+        semantic_assessments=(sample_ref, refusal_ref),
+    )
+    assert confirmed.refusal_confirmation_item_ids == ["item-refusal"]
+    refusal_decision = next(item for item in confirmed.exception_decisions if item.item_id == "item-refusal")
+    assert refusal_decision.expected_refusal and refusal_decision.corpus_scope_confirmed
 
 
 def test_no_eligible_candidates_is_not_a_reviewable_batch() -> None:
@@ -217,9 +304,16 @@ def test_firestore_repository_reads_the_durable_attestation_after_restart() -> N
     repository.create_or_get(review)
     expected = repository.attest(
         review,
-        BatchAttestationRequest(decision="attested"),
+        BatchAttestationRequest(
+            decision="attested",
+            semantic_assessments=[
+                BatchSemanticAssessmentSelection(item_id=item_id, assessment_id=f"assessment-{item_id}")
+                for item_id in review.summary.sampled_item_ids
+            ],
+        ),
         actor="admin-1",
         decided_at=datetime(2026, 11, 5, tzinfo=UTC),
+        semantic_assessments=tuple(assessment_reference(item_id) for item_id in review.summary.sampled_item_ids),
     )
 
     restarted = FirestoreBatchReviewRepository(client)

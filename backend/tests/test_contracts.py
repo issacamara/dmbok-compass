@@ -333,6 +333,9 @@ def test_batch_review_contracts_bind_durable_records_and_audit_decisions() -> No
     assert sample.status == "attested"
     assert exception.item_id == durable_decision.item_id == "item-2"
     assert attestation.exception_decisions[0].candidate_snapshot_sha256 == common["candidate_snapshot_sha256"]
+    assert DurableBatchAttestation.model_validate(
+        attestation.model_dump(exclude={"semantic_assessment_binding"})
+    ).semantic_assessment_binding == "legacy_unbound"
 
     with pytest.raises(ValidationError):
         ExplicitExceptionDecision(item_id="item-2", decision="rejected")

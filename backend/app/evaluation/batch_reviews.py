@@ -16,6 +16,7 @@ from app.contracts import (
     DurableBatchAttestation,
     DurableExceptionDecision,
     DurableExceptionRecord,
+    DurableSemanticAssessmentReference,
     DurableRepresentativeSampleEntry,
     DurableReviewSummary,
     EvaluationDataset,
@@ -72,6 +73,7 @@ class BatchReviewRepository(Protocol):
         *,
         actor: str,
         decided_at: datetime,
+        semantic_assessments: tuple[DurableSemanticAssessmentReference, ...] = (),
     ) -> DurableBatchAttestation: ...
 
     def attestation(self, review: BatchReview) -> DurableBatchAttestation | None: ...
@@ -115,6 +117,10 @@ def create_batch_review(
     for item_evidence in evidence:
         if item_evidence.item_id in by_evidence:
             raise BatchReviewError("evidence contains duplicate item IDs")
+        try:
+            item_evidence = RunBoundSupportEvidence.model_validate(item_evidence.model_dump())
+        except ValueError as exc:
+            raise BatchReviewError("support evidence does not contain a complete verified mapping") from exc
         _validate_evidence_binding(item_evidence, run, snapshot_digest)
         by_evidence[item_evidence.item_id] = item_evidence
 
@@ -268,8 +274,13 @@ def _exception_record(
         parent_id=evidence.parent_id,
         parent_content_hash=evidence.parent_content_hash,
         parent_span_sha256=evidence.parent_span_sha256,
-        status="inapplicable" if evidence.match_status == "inapplicable" else "exception",
+        status=(
+            "stale" if evidence.reason == "stale_source_evidence"
+            else "inapplicable" if evidence.match_status == "inapplicable"
+            else "exception"
+        ),
         reason=evidence.reason or evidence.match_status,
+        expected_refusal=evidence.expected_refusal,
         decision_version=decision_version,
     )
 
@@ -280,6 +291,7 @@ def _decision(
     *,
     actor: str,
     decided_at: datetime,
+    semantic_assessments: tuple[DurableSemanticAssessmentReference, ...],
 ) -> DurableBatchAttestation:
     if not actor:
         raise BatchReviewError("authenticated actor is required")
@@ -289,8 +301,49 @@ def _decision(
     actual_ids = {decision.item_id for decision in request.exception_decisions}
     if actual_ids != expected_ids:
         raise BatchReviewConflictError("all and only current exceptions require explicit decisions")
-    if any(decision.decision == "attested" for decision in request.exception_decisions):
-        raise BatchReviewConflictError("an exception cannot become approved support without a selected chunk")
+    refusal_ids = {
+        record.item_id for record in review.exceptions
+        if record.expected_refusal and record.status != "stale"
+    }
+    legacy_unbound = request.decision == "attested" and not {
+        "semantic_assessments", "refusal_confirmation_item_ids"
+    }.intersection(request.model_fields_set)
+    confirmed_refusal_ids = set(request.refusal_confirmation_item_ids)
+    if legacy_unbound and refusal_ids:
+        raise BatchReviewConflictError("legacy batch attestations cannot confirm explicit refusals")
+    if not legacy_unbound and request.decision == "attested" and confirmed_refusal_ids != refusal_ids:
+        raise BatchReviewConflictError("all and only current refusal exceptions require corpus-scope confirmation")
+    if request.decision == "rejected" and confirmed_refusal_ids:
+        raise BatchReviewConflictError("a rejected batch cannot carry refusal confirmations")
+    decision_by_id = {decision.item_id: decision for decision in request.exception_decisions}
+    for record in review.exceptions:
+        exception_decision = decision_by_id[record.item_id]
+        if exception_decision.decision == "attested" and record.item_id not in refusal_ids:
+            raise BatchReviewConflictError("an exception cannot become approved support without a selected chunk")
+        if record.item_id in refusal_ids and request.decision == "attested" and exception_decision.decision != "attested":
+            raise BatchReviewConflictError("refusal confirmation requires an attested exception decision")
+        if request.decision == "rejected" and exception_decision.decision == "attested":
+            raise BatchReviewConflictError("a rejected batch cannot attest an exception")
+    if request.decision == "attested" and not legacy_unbound:
+        assessment_by_item = {assessment.item_id: assessment for assessment in semantic_assessments}
+        required_assessment_ids = set(review.summary.sampled_item_ids) | refusal_ids
+        if (
+            len(assessment_by_item) != len(semantic_assessments)
+            or len({assessment.assessment_id for assessment in semantic_assessments}) != len(semantic_assessments)
+            or set(assessment_by_item) != required_assessment_ids
+        ):
+            raise BatchReviewConflictError("sampled items and confirmed refusals require exact-output semantic assessment")
+        if {assessment.assessment_id for assessment in semantic_assessments} != {
+            selected.assessment_id for selected in request.semantic_assessments
+        }:
+            raise BatchReviewConflictError("semantic assessments do not match the requested immutable references")
+        if any(
+            next(reference for reference in semantic_assessments if reference.item_id == item_id).refusal_judgment is not True
+            for item_id in refusal_ids
+        ):
+            raise BatchReviewConflictError("confirmed refusals require a positive exact-output refusal assessment")
+    elif request.decision == "rejected" and (request.semantic_assessments or semantic_assessments):
+        raise BatchReviewConflictError("a rejected batch cannot carry semantic assessment attestations")
     return DurableBatchAttestation(
         generation_id=review.summary.generation_id,
         run_id=review.summary.run_id,
@@ -315,10 +368,23 @@ def _decision(
                 actor=actor,
                 decided_at=decided_at.astimezone(UTC),
                 decision_version=review.summary.decision_version,
+                expected_refusal=next(record.expected_refusal for record in review.exceptions if record.item_id == decision.item_id),
+                corpus_scope_confirmed=(
+                    request.decision == "attested"
+                    and decision.item_id in confirmed_refusal_ids
+                    and decision.decision == "attested"
+                ),
                 reason=decision.reason,
             )
             for decision in request.exception_decisions
         ],
+        semantic_assessments=list(semantic_assessments),
+        refusal_confirmation_item_ids=sorted(confirmed_refusal_ids),
+        semantic_assessment_binding=(
+            "exact_output"
+            if request.decision == "attested" and not legacy_unbound
+            else "legacy_unbound"
+        ),
     )
 
 
@@ -355,6 +421,7 @@ class InMemoryBatchReviewRepository:
         *,
         actor: str,
         decided_at: datetime,
+        semantic_assessments: tuple[DurableSemanticAssessmentReference, ...] = (),
     ) -> DurableBatchAttestation:
         with self._lock:
             stored = self._reviews.get(review.key)
@@ -362,7 +429,10 @@ class InMemoryBatchReviewRepository:
                 raise BatchReviewStaleError("batch review is not the current immutable snapshot")
             if review.key in self._attestations:
                 raise BatchReviewConflictError("batch review has already been decided")
-            result = _decision(review, request, actor=actor, decided_at=decided_at)
+            result = _decision(
+                review, request, actor=actor, decided_at=decided_at,
+                semantic_assessments=semantic_assessments,
+            )
             self._attestations[review.key] = result
             return result
 
@@ -442,11 +512,15 @@ class FirestoreBatchReviewRepository:
         *,
         actor: str,
         decided_at: datetime,
+        semantic_assessments: tuple[DurableSemanticAssessmentReference, ...] = (),
     ) -> DurableBatchAttestation:
         current = self.get(generation_id=review.summary.generation_id, run_id=review.summary.run_id)
         if current is None or current != review:
             raise BatchReviewStaleError("batch review is not the current immutable snapshot")
-        result = _decision(review, request, actor=actor, decided_at=decided_at)
+        result = _decision(
+            review, request, actor=actor, decided_at=decided_at,
+            semantic_assessments=semantic_assessments,
+        )
         reference = self.attestations.document(review.key)
         try:
             reference.create(result.model_dump(mode="json"))

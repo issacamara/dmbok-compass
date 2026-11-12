@@ -300,6 +300,7 @@ class ExceptionRecord(ContractModel):
     section: str | None = Field(default=None, min_length=1, max_length=500)
     status: Literal["exception", "stale", "inapplicable"]
     reason: str = Field(min_length=1, max_length=500)
+    expected_refusal: bool = False
     decision: ReviewDecisionMetadata | None = None
 
 
@@ -319,11 +320,32 @@ class ExplicitExceptionDecision(ContractModel):
         return self
 
 
+class BatchSemanticAssessmentSelection(ContractModel):
+    """Exact-output human assessment selected for one sampled run item."""
+
+    item_id: str = Field(min_length=1, max_length=128)
+    assessment_id: str = Field(min_length=1, max_length=256)
+
+
+class DurableSemanticAssessmentReference(ContractModel):
+    """Auditable reference to the exact output assessment in a batch decision."""
+
+    item_id: str = Field(min_length=1, max_length=128)
+    assessment_id: str = Field(min_length=1, max_length=256)
+    output_digest: str = Field(pattern=r"^[a-f0-9]{64}$")
+    scorer_version: str = Field(min_length=1, max_length=128)
+    reviewer_actor: str = Field(min_length=1, max_length=128)
+    reviewed_at: datetime
+    refusal_judgment: bool | None = None
+
+
 class BatchAttestationRequest(ContractModel):
     """Browser-safe compare-and-set command; server-owned identities are omitted."""
 
     decision: BatchAttestationDecision
     exception_decisions: list[ExplicitExceptionDecision] = Field(default_factory=list, max_length=MAX_EVALUATION_IMPORT_ITEMS)
+    semantic_assessments: list[BatchSemanticAssessmentSelection] = Field(default_factory=list, max_length=MAX_EVALUATION_IMPORT_ITEMS)
+    refusal_confirmation_item_ids: list[str] = Field(default_factory=list, max_length=MAX_EVALUATION_IMPORT_ITEMS)
     reason: str | None = Field(default=None, min_length=1, max_length=500)
 
     @model_validator(mode="after")
@@ -331,6 +353,12 @@ class BatchAttestationRequest(ContractModel):
         item_ids = [decision.item_id for decision in self.exception_decisions]
         if len(item_ids) != len(set(item_ids)):
             raise ValueError("exception decisions must contain unique item IDs")
+        assessment_item_ids = [assessment.item_id for assessment in self.semantic_assessments]
+        assessment_ids = [assessment.assessment_id for assessment in self.semantic_assessments]
+        if len(assessment_item_ids) != len(set(assessment_item_ids)) or len(assessment_ids) != len(set(assessment_ids)):
+            raise ValueError("semantic assessment selections must have unique items and IDs")
+        if len(self.refusal_confirmation_item_ids) != len(set(self.refusal_confirmation_item_ids)):
+            raise ValueError("refusal confirmations must contain unique item IDs")
         if self.decision == "rejected" and not self.reason:
             raise ValueError("rejected batch attestations require a reason")
         if self.decision == "attested" and self.reason is not None:
@@ -344,6 +372,9 @@ class BatchAttestationResult(ContractModel):
     status: BatchReviewStatus
     decision: BatchAttestationDecision
     exception_decisions: list[ExplicitExceptionDecision] = Field(default_factory=list, max_length=MAX_EVALUATION_IMPORT_ITEMS)
+    semantic_assessments: list[DurableSemanticAssessmentReference] = Field(default_factory=list, max_length=MAX_EVALUATION_IMPORT_ITEMS)
+    refusal_confirmation_item_ids: list[str] = Field(default_factory=list, max_length=MAX_EVALUATION_IMPORT_ITEMS)
+    semantic_assessment_binding: Literal["exact_output", "legacy_unbound"] = "legacy_unbound"
     decision_metadata: ReviewDecisionMetadata
 
 
@@ -436,6 +467,7 @@ class DurableExceptionRecord(ContractModel):
     parent_span_sha256: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     status: Literal["exception", "stale", "inapplicable"]
     reason: str = Field(min_length=1, max_length=500)
+    expected_refusal: bool = False
     decision_version: str = Field(min_length=1, max_length=64)
 
 
@@ -452,6 +484,8 @@ class DurableExceptionDecision(ContractModel):
     actor: str = Field(min_length=1, max_length=128)
     decided_at: datetime
     decision_version: str = Field(min_length=1, max_length=64)
+    expected_refusal: bool = False
+    corpus_scope_confirmed: bool = False
     reason: str | None = Field(default=None, min_length=1, max_length=500)
 
     @model_validator(mode="after")
@@ -460,6 +494,8 @@ class DurableExceptionDecision(ContractModel):
             raise ValueError("rejected and inapplicable exception decisions require a reason")
         if self.decision == "attested" and self.reason is not None:
             raise ValueError("attested exception decisions cannot contain a rejection reason")
+        if self.corpus_scope_confirmed and (self.decision != "attested" or not self.expected_refusal):
+            raise ValueError("corpus scope can only be confirmed for an attested refusal")
         return self
 
 
@@ -476,6 +512,11 @@ class DurableBatchAttestation(ContractModel):
     decided_at: datetime
     decision_version: str = Field(min_length=1, max_length=64)
     exception_decisions: list[DurableExceptionDecision] = Field(default_factory=list, max_length=MAX_EVALUATION_IMPORT_ITEMS)
+    semantic_assessments: list[DurableSemanticAssessmentReference] = Field(default_factory=list, max_length=MAX_EVALUATION_IMPORT_ITEMS)
+    refusal_confirmation_item_ids: list[str] = Field(default_factory=list, max_length=MAX_EVALUATION_IMPORT_ITEMS)
+    # Missing values on pre-v2.9 durable records deserialize as unbound, so they
+    # cannot be mistaken for exact-output release evidence.
+    semantic_assessment_binding: Literal["exact_output", "legacy_unbound"] = "legacy_unbound"
 
 
 class CitationEvidence(ContractModel):

@@ -5,7 +5,7 @@ from __future__ import annotations
 from hashlib import sha256
 import json
 from datetime import datetime, timezone
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
@@ -25,6 +25,8 @@ from app.contracts import (
     ReviewDecision,
     DocumentChunk,
     DatasetHead,
+    DatasetExclusion,
+    EvaluationRowV2,
 )
 from app.evaluation import (
     ConcurrentActivationError,
@@ -34,6 +36,7 @@ from app.evaluation import (
     EvaluationCorpusReadinessError,
     EvaluationRunError,
     ReviewStateError,
+    GenerationIntegrityError,
 )
 from app.api.evaluations import evaluation_service
 from app.evaluation.dataset import (
@@ -44,6 +47,7 @@ from app.evaluation.dataset import (
     GoldAnnotationRemap,
 )
 from app.evaluation.legacy_import_binding import bind_legacy_imports
+from app.evaluation.candidate_generation import is_near_duplicate_question, normalized_question_key
 from app.identity import get_admin_user
 from app.corpus.selection import uploaded_corpus_version_id
 
@@ -93,6 +97,66 @@ class EvaluationGenerationStore(Protocol):
     def bind_candidate_review(
         self, generation_id: str, item_id: str, candidate_review: CandidateGoldReview
     ) -> GoldAnnotation: ...
+
+    def corpus_head(self, corpus_version_id: str) -> DatasetHead | None: ...
+
+    def get_revision(self, head: DatasetHead) -> tuple[EvaluationRowV2, ...]: ...
+
+    def stage_revision(
+        self, corpus_version_id: str, revision: int, rows: tuple[EvaluationRowV2, ...]
+    ) -> DatasetHead: ...
+
+    def row_mutation_head(self, operation_key: str, *, fingerprint: str) -> DatasetHead | None: ...
+
+    def publish_row_mutation(
+        self, head: DatasetHead, *, expected_revision: int, operation_key: str,
+        fingerprint: str, actor_id: str, mutation: str, item_id: str,
+        exclusion: DatasetExclusion | None = None,
+    ) -> DatasetHead: ...
+
+    def get_parse_derived_records(
+        self, *, corpus_version_id: str
+    ) -> tuple[tuple[Any, ...], tuple[Any, ...]] | None: ...
+
+    def get_dataset_exclusion_questions(self) -> tuple[tuple[DatasetExclusion, str], ...]: ...
+
+
+class DatasetRowAdditionRequest(BaseModel):
+    expected_revision: int = Field(ge=1)
+    operation_key: str = Field(min_length=1, max_length=256)
+    question: str = Field(min_length=1, max_length=2000)
+    category: Literal["definitions", "explanations", "comparisons", "study", "scenarios"]
+    expected_outcome: Literal["answer", "qualified", "evidence_refusal"]
+    expected_answer_or_rubric: str = Field(min_length=1, max_length=10000)
+    supporting_passage: str | None = Field(default=None, min_length=1, max_length=20000)
+    scope_rationale: str | None = Field(default=None, min_length=1, max_length=5000)
+
+    @model_validator(mode="after")
+    def validate_support(self) -> "DatasetRowAdditionRequest":
+        if not self.operation_key.strip():
+            raise ValueError("operation key cannot be blank")
+        if self.expected_outcome == "evidence_refusal":
+            if not self.scope_rationale or self.supporting_passage is not None:
+                raise ValueError("refusal additions require a scope rationale and no supporting passage")
+        elif not self.supporting_passage:
+            raise ValueError("answerable additions require a supporting passage")
+        return self
+
+
+class DatasetRowRemovalRequest(BaseModel):
+    expected_revision: int = Field(ge=1)
+    operation_key: str = Field(min_length=1, max_length=256)
+
+    @model_validator(mode="after")
+    def validate_operation_key(self) -> "DatasetRowRemovalRequest":
+        if not self.operation_key.strip():
+            raise ValueError("operation key cannot be blank")
+        return self
+
+
+class DatasetRowMutationResponse(BaseModel):
+    head: DatasetHead
+    operation_key: str
 
 
 class CandidateBindingPayload(BaseModel):
@@ -372,6 +436,121 @@ async def upload_and_run_evaluation(
     )
 
 
+@router.post("/rows", response_model=DatasetRowMutationResponse, status_code=status.HTTP_201_CREATED)
+def add_evaluation_dataset_row(
+    request: DatasetRowAdditionRequest,
+    response: Response,
+    admin: UserProfile = Depends(get_admin_user),
+    store: EvaluationGenerationStore = Depends(evaluation_generation_store),
+    corpus_version_id: str = Depends(uploaded_corpus_version_id),
+) -> DatasetRowMutationResponse:
+    """Bind and add one admin-authored row to a new corpus-scoped revision."""
+    fingerprint = _row_operation_fingerprint("add", corpus_version_id, request.model_dump(mode="json"))
+    try:
+        replay = store.row_mutation_head(request.operation_key, fingerprint=fingerprint)
+        if replay is not None:
+            response.status_code = status.HTTP_200_OK
+            return DatasetRowMutationResponse(head=replay, operation_key=request.operation_key)
+        head = store.corpus_head(corpus_version_id)
+        _require_expected_revision(head, request.expected_revision)
+        current_rows = store.get_revision(head)
+        exclusions = store.get_dataset_exclusion_questions()
+        exclusion_questions = tuple(question for _, question in exclusions)
+        question_key = normalized_question_key(request.question)
+        exclusion_digest = sha256(question_key.encode("utf-8")).hexdigest()
+        if is_near_duplicate_question(request.question, tuple(row.question for row in current_rows)):
+            _reject(status.HTTP_409_CONFLICT, "duplicate_evaluation_question", "A matching or near-duplicate question already exists.")
+        if exclusion_digest in {exclusion.normalized_question_sha256 for exclusion, _ in exclusions} or is_near_duplicate_question(
+            request.question, exclusion_questions
+        ):
+            _reject(status.HTTP_409_CONFLICT, "excluded_evaluation_question", "A removed or near-duplicate question is excluded from future selections.")
+        records = store.get_parse_derived_records(corpus_version_id=corpus_version_id)
+        if records is None:
+            _reject(status.HTTP_409_CONFLICT, "evaluation_corpus_not_ready", "The selected corpus is not ready for row support validation.")
+        parents, children = records
+        item_id = "admin:" + sha256(f"{corpus_version_id}\0{question_key}".encode("utf-8")).hexdigest()[:32]
+        if request.expected_outcome == "evidence_refusal":
+            row = EvaluationRowV2(
+                item_id=item_id, origin="admin", question=request.question, category=request.category,
+                expected_outcome=request.expected_outcome,
+                expected_answer_or_rubric=request.expected_answer_or_rubric,
+                expected_refusal=True, scope_rationale=request.scope_rationale,
+            )
+        else:
+            bound, issues = bind_legacy_imports(
+                ((0, item_id, request.question, request.category, request.expected_answer_or_rubric,
+                  request.supporting_passage or ""),),
+                parents=tuple(parents), children=tuple(children),
+            )
+            if issues or len(bound) != 1:
+                _reject(status.HTTP_422_UNPROCESSABLE_ENTITY, "invalid_evaluation_row_support", "The supporting passage must uniquely match the selected corpus.")
+            row = EvaluationRowV2.model_validate({
+                **bound[0].row.model_dump(mode="json"),
+                "origin": "admin", "expected_outcome": request.expected_outcome,
+            })
+        staged = store.stage_revision(corpus_version_id, head.revision + 1, (*current_rows, row))
+        published = store.publish_row_mutation(
+            staged, expected_revision=request.expected_revision, operation_key=request.operation_key,
+            fingerprint=fingerprint, actor_id=admin.user_id, mutation="add", item_id=item_id,
+        )
+    except ConcurrentActivationError:
+        _reject(status.HTTP_409_CONFLICT, "dataset_revision_conflict", "The evaluation dataset changed; refresh it and retry.")
+    except GenerationIntegrityError:
+        _reject(status.HTTP_409_CONFLICT, "row_operation_conflict", "The operation key is already bound to a different row edit.")
+    except (EvaluationGenerationError, RuntimeError):
+        _reject(status.HTTP_503_SERVICE_UNAVAILABLE, "evaluation_dataset_mutation_failed", "The evaluation row could not be added.")
+    return DatasetRowMutationResponse(head=published, operation_key=request.operation_key)
+
+
+@router.post("/rows/{item_id}/remove", response_model=DatasetRowMutationResponse)
+def remove_evaluation_dataset_row(
+    item_id: str,
+    request: DatasetRowRemovalRequest,
+    admin: UserProfile = Depends(get_admin_user),
+    store: EvaluationGenerationStore = Depends(evaluation_generation_store),
+    corpus_version_id: str = Depends(uploaded_corpus_version_id),
+) -> DatasetRowMutationResponse:
+    """Remove one row by publishing a revision and an auditable exclusion."""
+    fingerprint = _row_operation_fingerprint(
+        "remove", corpus_version_id,
+        {"expected_revision": request.expected_revision, "item_id": item_id},
+    )
+    try:
+        replay = store.row_mutation_head(request.operation_key, fingerprint=fingerprint)
+        if replay is not None:
+            return DatasetRowMutationResponse(head=replay, operation_key=request.operation_key)
+        head = store.corpus_head(corpus_version_id)
+        _require_expected_revision(head, request.expected_revision)
+        current_rows = store.get_revision(head)
+        row = next((candidate for candidate in current_rows if candidate.item_id == item_id), None)
+        if row is None:
+            _reject(status.HTTP_404_NOT_FOUND, "evaluation_row_not_found", "The selected evaluation row no longer exists.")
+        if len(current_rows) == 1:
+            _reject(status.HTTP_409_CONFLICT, "evaluation_dataset_cannot_be_empty", "At least one row must remain in the dataset.")
+        key = normalized_question_key(row.question)
+        exclusion = DatasetExclusion(
+            corpus_version_id=corpus_version_id, item_id=row.item_id, lineage_id=row.item_id,
+            normalized_question_sha256=sha256(key.encode("utf-8")).hexdigest(),
+            revision=head.revision + 1, actor_id=admin.user_id, excluded_at=datetime.now(timezone.utc),
+        )
+        staged = store.stage_revision(
+            corpus_version_id, head.revision + 1,
+            tuple(candidate for candidate in current_rows if candidate.item_id != item_id),
+        )
+        published = store.publish_row_mutation(
+            staged, expected_revision=request.expected_revision, operation_key=request.operation_key,
+            fingerprint=fingerprint, actor_id=admin.user_id, mutation="remove", item_id=item_id,
+            exclusion=exclusion,
+        )
+    except ConcurrentActivationError:
+        _reject(status.HTTP_409_CONFLICT, "dataset_revision_conflict", "The evaluation dataset changed; refresh it and retry.")
+    except GenerationIntegrityError:
+        _reject(status.HTTP_409_CONFLICT, "row_operation_conflict", "The operation key is already bound to a different row edit.")
+    except (EvaluationGenerationError, RuntimeError):
+        _reject(status.HTTP_503_SERVICE_UNAVAILABLE, "evaluation_dataset_mutation_failed", "The evaluation row could not be removed.")
+    return DatasetRowMutationResponse(head=published, operation_key=request.operation_key)
+
+
 @router.get("/active", response_model=ActiveEvaluationDataset)
 def get_active_evaluation_dataset(
     _: UserProfile = Depends(get_admin_user),
@@ -561,3 +740,13 @@ def _validation_error(index: int, code: str, message: str) -> ImportValidationEr
 
 def _reject(status_code: int, code: str, message: str) -> None:
     raise HTTPException(status_code=status_code, detail={"code": code, "message": message})
+
+
+def _row_operation_fingerprint(mutation: str, corpus_version_id: str, request: dict[str, Any]) -> str:
+    payload = {"mutation": mutation, "corpus_version_id": corpus_version_id, "request": request}
+    return sha256(json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()).hexdigest()
+
+
+def _require_expected_revision(head: DatasetHead | None, expected_revision: int) -> None:
+    if head is None or head.revision != expected_revision:
+        _reject(status.HTTP_409_CONFLICT, "dataset_revision_conflict", "The evaluation dataset changed; refresh it and retry.")

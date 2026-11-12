@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from app.api.evaluation_datasets import evaluation_generation_store
 from app.api.evaluations import evaluation_service
 from app.corpus.selection import uploaded_corpus_version_id
-from app.contracts import EvaluationRun, UserProfile
+from app.contracts import DatasetHead, EvaluationRowV2, EvaluationRun, UserProfile
 from app.evaluation import (
     EvaluationCorpusReadinessError,
     EvaluationDispatchError,
@@ -174,6 +174,71 @@ def test_import_publishes_only_uniquely_bound_rows_to_row_v2() -> None:
     assert revision[0].relevant_child_ids == (children[0].chunk_id,)
     assert revision[0].parent_ids == (parents[0].parent_id,)
     assert service.calls == 1
+
+
+def test_admin_row_add_remove_replay_conflict_and_empty_set_protection() -> None:
+    firestore = FakeFirestore()
+    repository = _store(firestore)
+    initial = EvaluationRowV2(
+        item_id="initial-row", origin="admin", question="What is metadata?", category="definitions",
+        expected_outcome="evidence_refusal", expected_answer_or_rubric="Refuse outside scope.",
+        expected_refusal=True, scope_rationale="Outside this small fixture corpus.",
+    )
+    first = repository.stage_revision("uploaded-corpus", 1, (initial,))
+    repository.activate_revision(first, expected_revision=None)
+    children, parents = source_records()
+    repository.get_parse_derived_records = lambda *, corpus_version_id: (parents, children)
+    app.dependency_overrides[get_admin_user] = _admin
+    app.dependency_overrides[evaluation_generation_store] = lambda: repository
+    app.dependency_overrides[uploaded_corpus_version_id] = lambda: "uploaded-corpus"
+    client = TestClient(app)
+    add_payload = {
+        "expected_revision": 1,
+        "operation_key": "admin-add-one",
+        "question": "How does stewardship support governance?",
+        "category": "explanations",
+        "expected_outcome": "qualified",
+        "expected_answer_or_rubric": "Explain how the concepts relate.",
+        "supporting_passage": "Data quality requires clear ownership.",
+    }
+    try:
+        added = client.post("/api/admin/evaluation-datasets/rows", json=add_payload)
+        replay = client.post("/api/admin/evaluation-datasets/rows", json=add_payload)
+        reused_key = client.post("/api/admin/evaluation-datasets/rows", json={
+            **add_payload, "question": "A different manual question?"
+        })
+        added_head = DatasetHead.model_validate(added.json()["head"])
+        added_rows = repository.get_revision(added_head)
+        removed = client.post(
+            "/api/admin/evaluation-datasets/rows/initial-row/remove",
+            json={"expected_revision": 2, "operation_key": "admin-remove-one"},
+        )
+        empty = client.post(
+            f"/api/admin/evaluation-datasets/rows/{added_rows[1].item_id}/remove",
+            json={"expected_revision": 3, "operation_key": "admin-remove-last"},
+        )
+        stale = client.post("/api/admin/evaluation-datasets/rows", json={
+            **add_payload, "expected_revision": 2, "operation_key": "admin-stale-add"
+        })
+    finally:
+        app.dependency_overrides.clear()
+
+    assert added.status_code == status.HTTP_201_CREATED
+    assert replay.status_code == status.HTTP_200_OK
+    assert replay.json()["head"] == added.json()["head"]
+    assert reused_key.status_code == status.HTTP_409_CONFLICT
+    assert removed.status_code == status.HTTP_200_OK
+    assert empty.status_code == status.HTTP_409_CONFLICT
+    assert stale.status_code == status.HTTP_409_CONFLICT
+    removed_head = DatasetHead.model_validate(removed.json()["head"])
+    assert [row.item_id for row in repository.get_revision(first)] == ["initial-row"]
+    assert [row.origin for row in repository.get_revision(added_head)] == ["admin", "admin"]
+    assert len(repository.get_revision(removed_head)) == 1
+    assert repository.corpus_head("uploaded-corpus") == removed_head
+    exclusion, question = repository.get_dataset_exclusion_questions()[0]
+    assert question == "What is metadata?"
+    assert exclusion.actor_id == "admin"
+    assert exclusion.revision == removed_head.revision
 
 
 def test_rejections_and_storage_failures_leave_existing_active_generation_unchanged() -> None:

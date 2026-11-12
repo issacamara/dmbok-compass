@@ -145,6 +145,10 @@ class FakeStore:
         self.staged = 0
         self.head_reads = 0
         self.revision_reads = 0
+        self.exclusions = ()
+
+    def get_dataset_exclusion_questions(self):
+        return self.exclusions
 
     def corpus_head(self, corpus_version_id):
         self.head_reads += 1
@@ -612,6 +616,28 @@ def test_retryable_failure_retries_inside_allowance_and_keeps_old_rows():
     assert store.head.revision == 2
     assert store.rows[0] == old
     assert len(store.rows) == 2
+
+
+def test_regeneration_suppresses_reworded_exclusions_and_revalidates_preserved_support():
+    stale = existing_row().model_copy(update={
+        "item_id": "stale-row", "question": "What is the role of metadata?",
+        "relevant_child_ids": ("deleted-child",), "parent_ids": ("deleted-parent",),
+    })
+    store = FakeStore([stale])
+    store.head = DatasetHead(corpus_version_id=CORPUS, revision=1, dataset_sha256="a" * 64)
+    store.exclusions = ((object(), "How do data governance ownership responsibilities shape quality management outcomes?"),)
+    adapter = FakeAdapter([result([
+        answer_candidate("What outcomes shape quality management with data governance ownership responsibilities?"),
+        answer_candidate("How can stewardship improve data quality?", category="scenarios"),
+    ])])
+
+    report = generate(adapter, store, target_count=1)
+
+    assert report.status == "published"
+    assert report.generated_count == 1
+    assert report.rejected_count == 1
+    assert report.dataset_head.revision == 2
+    assert [row.question for row in store.rows] == ["How can stewardship improve data quality?"]
 
 
 def test_provider_failure_invalid_output_duplicates_and_budget_pause_preserve_old_head():

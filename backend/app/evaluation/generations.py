@@ -19,6 +19,7 @@ from google.cloud.firestore_v1.base_query import FieldFilter
 from app.contracts import (
     ActiveEvaluationGeneration,
     CandidateDatasetBinding,
+    DatasetExclusion,
     DatasetHead,
     EvaluationCandidateSnapshot,
     EvaluationRowV2,
@@ -107,6 +108,9 @@ class FirestoreEvaluationGenerationStore:
     revision_winners_collection_id = "evaluation_dataset_revision_winners_v2"
     run_snapshots_collection_id = "evaluation_run_snapshots_v2"
     candidate_operations_collection_id = "evaluation_candidate_generation_operations_v1"
+    row_mutation_operations_collection_id = "evaluation_row_mutation_operations_v1"
+    row_mutations_collection_id = "evaluation_row_mutations_v1"
+    row_exclusions_collection_id = "evaluation_dataset_exclusions_v1"
 
     def __init__(
         self,
@@ -122,6 +126,9 @@ class FirestoreEvaluationGenerationStore:
         self.revision_winners = client.collection(self.revision_winners_collection_id)
         self.run_snapshots = client.collection(self.run_snapshots_collection_id)
         self.candidate_operations = client.collection(self.candidate_operations_collection_id)
+        self.row_mutation_operations = client.collection(self.row_mutation_operations_collection_id)
+        self.row_mutations = client.collection(self.row_mutations_collection_id)
+        self.row_exclusions = client.collection(self.row_exclusions_collection_id)
         self._transaction_runner = transaction_runner
 
     def stage_revision(
@@ -182,6 +189,134 @@ class FirestoreEvaluationGenerationStore:
     def corpus_head(self, corpus_version_id: str) -> DatasetHead | None:
         snapshot = self.corpus_heads.document(_corpus_id(corpus_version_id)).get()
         return DatasetHead.model_validate(snapshot.to_dict()) if snapshot.exists else None
+
+    def row_mutation_head(self, operation_key: str, *, fingerprint: str) -> DatasetHead | None:
+        """Return an idempotent row-mutation result or reject key reuse."""
+        if not operation_key.strip():
+            raise ValueError("row operation key is required")
+        snapshot = self.row_mutation_operations.document(_operation_id(operation_key)).get()
+        if not snapshot.exists:
+            return None
+        payload = snapshot.to_dict()
+        if payload.get("operation_key") != operation_key or payload.get("fingerprint") != fingerprint:
+            raise GenerationIntegrityError("row operation key is already bound to another request")
+        if payload.get("status") != "published":
+            return None
+        try:
+            return DatasetHead.model_validate(payload["head"])
+        except (KeyError, TypeError, ValueError):
+            raise GenerationIntegrityError("row operation head is invalid") from None
+
+    def publish_row_mutation(
+        self,
+        head: DatasetHead,
+        *,
+        expected_revision: int,
+        operation_key: str,
+        fingerprint: str,
+        actor_id: str,
+        mutation: str,
+        item_id: str,
+        exclusion: DatasetExclusion | None = None,
+    ) -> DatasetHead:
+        """Atomically publish a row revision, operation result and audit/tombstone."""
+        if mutation not in {"add", "remove"} or not operation_key.strip() or not actor_id.strip():
+            raise ValueError("row mutation identity is invalid")
+        if exclusion is not None and (mutation != "remove" or exclusion.item_id != item_id):
+            raise ValueError("row exclusion does not match the mutation")
+        self.get_revision(head)
+        pointer = self.corpus_heads.document(_corpus_id(head.corpus_version_id))
+        winner = self.revision_winners.document(_revision_id(head.corpus_version_id, head.revision))
+        operation = self.row_mutation_operations.document(_operation_id(operation_key))
+        audit_id = _operation_id(operation_key)
+        audit = self.row_mutations.document(audit_id)
+        tombstone = self.row_exclusions.document(
+            _operation_id(operation_key)
+        ) if exclusion is not None else None
+
+        def apply(transaction: Any) -> DatasetHead:
+            current_snapshot = pointer.get(transaction=transaction)
+            winner_snapshot = winner.get(transaction=transaction)
+            operation_snapshot = operation.get(transaction=transaction)
+            if operation_snapshot.exists:
+                recorded = operation_snapshot.to_dict()
+                if recorded.get("operation_key") != operation_key or recorded.get("fingerprint") != fingerprint:
+                    raise GenerationIntegrityError("row operation key is already bound to another request")
+                if recorded.get("status") == "published":
+                    try:
+                        recorded_head = DatasetHead.model_validate(recorded["head"])
+                    except (KeyError, TypeError, ValueError):
+                        raise GenerationIntegrityError("row operation head is invalid") from None
+                    return recorded_head
+            current = DatasetHead.model_validate(current_snapshot.to_dict()) if current_snapshot.exists else None
+            if (current.revision if current else None) != expected_revision:
+                raise ConcurrentActivationError("corpus dataset revision changed before row mutation")
+            if head.corpus_version_id != (current.corpus_version_id if current else head.corpus_version_id):
+                raise GenerationIntegrityError("row revision belongs to another corpus")
+            if head.revision != (current.revision + 1 if current else 1):
+                raise EvaluationGenerationError("row revision must advance the corpus head by one")
+            if winner_snapshot.exists:
+                raise ConcurrentActivationError("corpus dataset revision is already published")
+            if tombstone is not None and tombstone.get(transaction=transaction).exists:
+                raise ConcurrentActivationError("row was already removed")
+            transaction.set(winner, head.model_dump(mode="json"))
+            transaction.set(pointer, head.model_dump(mode="json"))
+            transaction.set(operation, {
+                "operation_key": operation_key,
+                "fingerprint": fingerprint,
+                "corpus_version_id": head.corpus_version_id,
+                "status": "published",
+                "head": head.model_dump(mode="json"),
+            })
+            timestamp = datetime.now(timezone.utc).isoformat()
+            transaction.set(audit, {
+                "operation_key": operation_key,
+                "fingerprint": fingerprint,
+                "corpus_version_id": head.corpus_version_id,
+                "item_id": item_id,
+                "mutation": mutation,
+                "revision": head.revision,
+                "actor_id": actor_id,
+                "occurred_at": timestamp,
+            })
+            if tombstone is not None and exclusion is not None:
+                transaction.set(tombstone, exclusion.model_dump(mode="json"))
+            return head
+
+        return self._transaction_runner(self.client.transaction(), apply)
+
+    def get_dataset_exclusions(self) -> tuple[DatasetExclusion, ...]:
+        """Return durable exclusions across corpus versions for ambiguity checks."""
+        records: list[DatasetExclusion] = []
+        for snapshot in self.row_exclusions.stream():
+            try:
+                records.append(DatasetExclusion.model_validate(snapshot.to_dict()))
+            except (TypeError, ValueError):
+                raise GenerationIntegrityError("dataset exclusion is invalid") from None
+        return tuple(records)
+
+    def get_dataset_exclusion_questions(self) -> tuple[tuple[DatasetExclusion, str], ...]:
+        """Resolve excluded question text from the immutable revision before removal."""
+        resolved: list[tuple[DatasetExclusion, str]] = []
+        for exclusion in self.get_dataset_exclusions():
+            previous_revision = exclusion.revision - 1
+            if previous_revision < 1:
+                continue
+            winner = self.revision_winners.document(
+                _revision_id(exclusion.corpus_version_id, previous_revision)
+            ).get()
+            if not winner.exists:
+                raise GenerationIntegrityError("excluded row history is unavailable")
+            try:
+                head = DatasetHead.model_validate(winner.to_dict())
+            except (TypeError, ValueError):
+                raise GenerationIntegrityError("excluded row history is invalid") from None
+            rows = self.get_revision(head)
+            row = next((candidate for candidate in rows if candidate.item_id == exclusion.item_id), None)
+            if row is None:
+                raise GenerationIntegrityError("excluded row is missing from its historical revision")
+            resolved.append((exclusion, row.question))
+        return tuple(resolved)
 
     def activate_revision(
         self, head: DatasetHead, *, expected_revision: int | None, operation_key: str | None = None,

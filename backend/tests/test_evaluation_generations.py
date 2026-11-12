@@ -3,13 +3,14 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from hashlib import sha256
 
 import pytest
 from google.api_core.exceptions import AlreadyExists
 
 from app.contracts import (
-    CorpusServingBinding, CorpusVersion, DocumentChunk, EvaluationDataset,
-    EvaluationItem, EvaluationRun, GoldAnnotation,
+    CorpusServingBinding, CorpusVersion, DatasetExclusion, DocumentChunk, EvaluationDataset,
+    EvaluationItem, EvaluationRowV2, EvaluationRun, GoldAnnotation,
 )
 from app.corpus.versions import hierarchical_validation_evidence
 from app.evaluation.generations import (
@@ -221,6 +222,78 @@ def dataset(generation_id: str, *, approved: bool = False) -> EvaluationDataset:
 
 def store(client: FakeFirestore) -> FirestoreEvaluationGenerationStore:
     return FirestoreEvaluationGenerationStore(client, transaction_runner=run_fake_transaction)
+
+
+def row(item_id: str, question: str) -> EvaluationRowV2:
+    return EvaluationRowV2(
+        item_id=item_id, origin="admin", question=question, category="definitions",
+        expected_outcome="evidence_refusal", expected_answer_or_rubric="Refuse outside scope.",
+        expected_refusal=True, scope_rationale="Outside the corpus scope.",
+    )
+
+
+def test_row_mutation_publication_is_compare_and_set_and_idempotent() -> None:
+    repository = store(FakeFirestore())
+    first = repository.stage_revision("corpus-a", 1, (row("one", "What is metadata?"),))
+    repository.activate_revision(first, expected_revision=None)
+    second = repository.stage_revision("corpus-a", 2, (row("one", "What is metadata?"), row("two", "What is data quality?")))
+
+    published = repository.publish_row_mutation(
+        second, expected_revision=1, operation_key="add-1", fingerprint="request-digest",
+        actor_id="admin", mutation="add", item_id="two",
+    )
+
+    assert published == second
+    assert repository.row_mutation_head("add-1", fingerprint="request-digest") == second
+    with pytest.raises(GenerationIntegrityError, match="another request"):
+        repository.row_mutation_head("add-1", fingerprint="changed-request")
+    assert repository.get_revision(first) == (row("one", "What is metadata?"),)
+    assert repository.get_revision(second) == (row("one", "What is metadata?"), row("two", "What is data quality?"))
+
+
+def test_row_removal_publishes_actor_audit_and_durable_exclusion() -> None:
+    repository = store(FakeFirestore())
+    first = repository.stage_revision("corpus-a", 1, (row("one", "What is metadata?"), row("two", "What is data quality?")))
+    repository.activate_revision(first, expected_revision=None)
+    second = repository.stage_revision("corpus-a", 2, (row("one", "What is metadata?"),))
+    exclusion = DatasetExclusion(
+        corpus_version_id="corpus-a", item_id="two", lineage_id="two", normalized_question_sha256="a" * 64,
+        revision=2, actor_id="admin", excluded_at=datetime.now(timezone.utc),
+    )
+
+    repository.publish_row_mutation(
+        second, expected_revision=1, operation_key="remove-1", fingerprint="remove-digest",
+        actor_id="admin", mutation="remove", item_id="two", exclusion=exclusion,
+    )
+
+    assert repository.get_revision(second) == (row("one", "What is metadata?"),)
+    assert repository.get_dataset_exclusions() == (exclusion,)
+    assert repository.get_dataset_exclusion_questions() == ((exclusion, "What is data quality?"),)
+    audit = repository.client.data[f"{repository.row_mutations_collection_id}/{_operation_id_for_test('remove-1')}"]
+    assert (audit["mutation"], audit["actor_id"], audit["revision"]) == ("remove", "admin", 2)
+    assert "occurred_at" in audit
+
+
+def test_row_mutation_rejects_stale_concurrent_revision() -> None:
+    repository = store(FakeFirestore())
+    first = repository.stage_revision("corpus-a", 1, (row("one", "What is metadata?"),))
+    repository.activate_revision(first, expected_revision=None)
+    winner = repository.stage_revision("corpus-a", 2, (row("one", "What is metadata?"), row("two", "What is data quality?")))
+    stale = repository.stage_revision("corpus-a", 2, (row("one", "What is metadata?"), row("three", "What is governance?")))
+    repository.publish_row_mutation(
+        winner, expected_revision=1, operation_key="add-winner", fingerprint="winner",
+        actor_id="admin", mutation="add", item_id="two",
+    )
+
+    with pytest.raises(ConcurrentActivationError):
+        repository.publish_row_mutation(
+            stale, expected_revision=1, operation_key="add-stale", fingerprint="stale",
+            actor_id="admin", mutation="add", item_id="three",
+        )
+
+
+def _operation_id_for_test(operation_key: str) -> str:
+    return sha256(operation_key.encode()).hexdigest()
 
 
 def test_staging_writes_immutable_items_and_annotations_before_activation() -> None:
@@ -483,14 +556,15 @@ def test_v2_revision_failed_or_conflicting_publication_preserves_head() -> None:
 
 
 def test_v2_run_snapshot_survives_revision_change_and_restart() -> None:
-    from app.contracts import CandidateDatasetBinding, CorpusServingBinding, EvaluationCandidateSnapshot, EvaluationRowV2, ServingDatasetBinding
+    from app.contracts import CandidateDatasetBinding, CorpusServingBinding, DatasetExclusion, EvaluationCandidateSnapshot, EvaluationRowV2, ServingDatasetBinding
 
     client = FakeFirestore()
     repository = store(client)
     row = EvaluationRowV2(item_id="one", origin="generated", question="Out of scope?", category="study",
                           expected_outcome="evidence_refusal", expected_answer_or_rubric="Refuse",
                           expected_refusal=True, scope_rationale="Outside corpus")
-    first = repository.stage_revision("corpus", 1, (row,))
+    removed_row = row.model_copy(update={"item_id": "two", "question": "What is metadata?"})
+    first = repository.stage_revision("corpus", 1, (row, removed_row))
     repository.activate_revision(first, expected_revision=None)
     binding = CandidateDatasetBinding(attempt_id="attempt", corpus_version_id="corpus", dataset_revision=1)
     configuration = EvaluationCandidateSnapshot(
@@ -503,26 +577,43 @@ def test_v2_run_snapshot_survives_revision_change_and_restart() -> None:
         scorer_version="scorer", dependency_lock_sha256="c" * 64, integration_artifact="artifact", runtime_version="runtime",
     )
     snapshot = repository.create_run_snapshot(run_id="run", binding=binding, configuration_version_id="config",
-                                               configuration=configuration, item_ids=("one",))
-    second = repository.stage_revision("corpus", 2, (row.model_copy(update={"question": "Changed?"}),))
+                                               configuration=configuration, item_ids=("one", "two"))
+    second = repository.stage_revision("corpus", 2, (row,))
+    exclusion = DatasetExclusion(
+        corpus_version_id="corpus", item_id="two", lineage_id="two",
+        normalized_question_sha256="a" * 64, revision=2, actor_id="admin",
+        excluded_at=datetime.now(timezone.utc),
+    )
     with pytest.raises(ValueError, match="no serving release is selected"):
         repository.create_run_snapshot(
             run_id="unpublished", binding=ServingDatasetBinding(release_id="release", corpus_version_id="corpus", dataset_revision=2),
             configuration_version_id="config", configuration=configuration,
         )
-    repository.activate_revision(second, expected_revision=1)
+    repository.publish_row_mutation(
+        second, expected_revision=1, operation_key="remove-during-run", fingerprint="remove-row-two",
+        actor_id="admin", mutation="remove", item_id="two", exclusion=exclusion,
+    )
     restored, restored_configuration = store(client).get_run_snapshot("run")
     assert restored == snapshot
     assert restored.items[0].question == "Out of scope?"
+    assert [item.item_id for item in restored.items] == ["one", "two"]
+    assert repository.corpus_head("corpus") == second
+    assert repository.get_revision(second) == (row,)
     assert restored.selection == "subset"
     assert restored_configuration == configuration
+    future_binding = CandidateDatasetBinding(attempt_id="attempt-2", corpus_version_id="corpus", dataset_revision=2)
+    future_snapshot = repository.create_run_snapshot(
+        run_id="future-run", binding=future_binding, configuration_version_id="config",
+        configuration=configuration,
+    )
+    assert [item.item_id for item in future_snapshot.items] == ["one"]
     with pytest.raises(ValueError, match="no serving release is selected"):
         repository.create_run_snapshot(
             run_id="serving", binding=ServingDatasetBinding(release_id="release", corpus_version_id="corpus", dataset_revision=1),
             configuration_version_id="config", configuration=configuration,
         )
     assert store(client).create_run_snapshot(run_id="run", binding=binding, configuration_version_id="config",
-                                            configuration=configuration, item_ids=("one",)) == snapshot
+                                            configuration=configuration, item_ids=("one", "two")) == snapshot
     with pytest.raises(GenerationIntegrityError):
         store(client).create_run_snapshot(run_id="run", binding=binding, configuration_version_id="different",
                                           configuration=configuration, item_ids=("one",))

@@ -235,6 +235,28 @@ def test_committed_candidate_replay_keeps_unrecorded_usage_unknown(monkeypatch, 
     assert "usage_units" not in event
 
 
+def test_committed_candidate_replay_target_never_falls_below_rows(monkeypatch, capsys) -> None:
+    head = object()
+    staging, runtime = _prepare_fakes(
+        monkeypatch,
+        committed_head=head,
+        committed_rows=range(225),
+        previous_progress={"candidate_generation_state": "running"},
+    )
+
+    output, _stderr = _with_json_telemetry(
+        capsys,
+        lambda: worker_module._prepare_candidate_evaluation(object(), "project", runtime),
+    )
+
+    status = staging.updates[-1]
+    assert status["completed_count"] == 225
+    assert status["target_count"] == 225
+    event = json.loads(output.splitlines()[-1])
+    assert event["completed_count"] == 225
+    assert event["total_count"] == 225
+
+
 def test_candidate_generation_failure_stderr_suppresses_provider_canary(monkeypatch, capsys) -> None:
     staging, runtime = _prepare_fakes(
         monkeypatch, generation_error=RuntimeError("CANARY PROVIDER BODY and credential detail")

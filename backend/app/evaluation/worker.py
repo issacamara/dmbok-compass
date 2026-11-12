@@ -339,7 +339,7 @@ def _prepare_candidate_evaluation(client: firestore.Client, project: str, runtim
         completed_count = len(committed_rows)
         target_count = attempt.get("candidate_generation_target")
         if type(target_count) is not int or target_count < completed_count:
-            target_count = _CANDIDATE_DATASET_TARGET
+            target_count = max(_CANDIDATE_DATASET_TARGET, completed_count)
         rejected_count = attempt.get("candidate_generation_rejected_count")
         if type(rejected_count) is not int or rejected_count < 0:
             rejected_count = None

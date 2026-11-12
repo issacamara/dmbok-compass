@@ -5,11 +5,12 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
+from hashlib import sha256
 from threading import RLock
 from typing import Any, Protocol
 
 from app.contracts import CorpusVersion, ReleaseDecision
-from app.release.firestore import ReleaseManifest
+from app.release.firestore import ReleaseManifest, release_candidate_digest
 
 
 class PublicationError(ValueError):
@@ -35,7 +36,10 @@ class PublishedRelease:
 class ServingReleaseStore(Protocol):
     def current(self) -> PublishedRelease | None: ...
     def previous(self) -> PublishedRelease | None: ...
-    def publish(self, release: PublishedRelease, *, expected_previous_release_id: str | None) -> PublishedRelease: ...
+    def publish(
+        self, release: PublishedRelease, *, expected_previous_release_id: str | None,
+        expected_dataset_revision: int, expected_dataset_sha256: str,
+    ) -> PublishedRelease: ...
     def rollback(self, *, expected_current_release_id: str) -> PublishedRelease: ...
 
 
@@ -45,7 +49,17 @@ class InMemoryServingReleaseStore:
     def __init__(self) -> None:
         self._current: PublishedRelease | None = None
         self._previous: PublishedRelease | None = None
+        self._dataset_heads: dict[str, tuple[int, str]] = {}
         self._lock = RLock()
+
+    def set_dataset_head(self, corpus_version_id: str, *, revision: int, dataset_sha256: str) -> None:
+        """Set the visible dataset head for deterministic compare-and-set tests."""
+        with self._lock:
+            self._dataset_heads[corpus_version_id] = (revision, dataset_sha256)
+
+    def dataset_head(self, corpus_version_id: str) -> tuple[int, str] | None:
+        with self._lock:
+            return self._dataset_heads.get(corpus_version_id)
 
     def current(self) -> PublishedRelease | None:
         with self._lock:
@@ -55,11 +69,18 @@ class InMemoryServingReleaseStore:
         with self._lock:
             return deepcopy(self._previous)
 
-    def publish(self, release: PublishedRelease, *, expected_previous_release_id: str | None) -> PublishedRelease:
+    def publish(
+        self, release: PublishedRelease, *, expected_previous_release_id: str | None,
+        expected_dataset_revision: int, expected_dataset_sha256: str,
+    ) -> PublishedRelease:
         with self._lock:
             current_id = self._current.release_id if self._current else None
             if current_id != expected_previous_release_id:
                 raise ConcurrentPublicationError("serving release changed before publication could commit")
+            if self._dataset_heads.get(release.corpus_version_id) != (
+                expected_dataset_revision, expected_dataset_sha256
+            ):
+                raise ConcurrentPublicationError("corpus dataset revision changed before publication could commit")
             self._previous = self._current
             self._current = release
             return deepcopy(release)
@@ -91,9 +112,30 @@ class ReleasePublisher:
             raise PublicationError("only an approved release decision can be published")
         if decision.release_id != manifest.release_id or manifest.corpus_version_id != corpus.version_id:
             raise PublicationError("release decision, manifest and corpus do not match")
+        candidate = manifest.candidate_binding
+        binding = corpus.serving_binding
+        if (
+            candidate is None
+            or decision.candidate_digest is None
+            or release_candidate_digest(candidate) != manifest.candidate_digest
+            or decision.candidate_digest != manifest.candidate_digest
+            or decision.evaluation_run_id != manifest.evaluation_run_id
+            or decision.dataset_version_id != manifest.dataset_version_id
+            or candidate.evaluation_run_id != decision.evaluation_run_id
+            or candidate.dataset_version_id != decision.dataset_version_id
+            or candidate.corpus_version_id != decision.corpus_version_id
+            or candidate.judge_version != decision.scorer_version_id
+            or manifest.configuration_version_id != decision.configuration_version_id
+            or manifest.provider_version_id != decision.provider_version_id
+            or manifest.model_version_id != decision.model_version_id
+            or manifest.scorer_version_id != decision.scorer_version_id
+            or manifest.gate_report_ids != decision.gate_report_ids
+            or candidate.corpus_manifest_sha256 != (binding.ingestion_fingerprint if binding else None)
+            or candidate.corpus_configuration_sha256 != (binding.configuration_fingerprint if binding else None)
+        ):
+            raise PublicationError("release decision does not match the exact reviewed candidate")
         if corpus.status not in {"validated", "active"}:
             raise PublicationError("only a validated corpus can be published")
-        binding = corpus.serving_binding
         evidence = corpus.validation_evidence
         if binding is None or evidence is None or not evidence.index_ready or not evidence.filter_ready:
             raise PublicationError("corpus is not ready for serving")
@@ -109,6 +151,8 @@ class ReleasePublisher:
                 published_at=self.clock(),
             ),
             expected_previous_release_id=expected_previous_release_id,
+            expected_dataset_revision=candidate.dataset_revision,
+            expected_dataset_sha256=candidate.dataset_revision_sha256,
         )
 
 
@@ -129,8 +173,15 @@ class FirestoreServingReleaseStore:
             return None
         return _decode(snapshot.to_dict()["previous"])
 
-    def publish(self, release: PublishedRelease, *, expected_previous_release_id: str | None) -> PublishedRelease:
+    def publish(
+        self, release: PublishedRelease, *, expected_previous_release_id: str | None,
+        expected_dataset_revision: int, expected_dataset_sha256: str,
+    ) -> PublishedRelease:
         from google.cloud import firestore
+
+        dataset_head = self.client.collection("evaluation_dataset_heads_v2").document(
+            sha256(release.corpus_version_id.encode()).hexdigest()
+        )
 
         @firestore.transactional
         def apply(transaction: Any) -> PublishedRelease:
@@ -138,6 +189,14 @@ class FirestoreServingReleaseStore:
             current = snapshot.to_dict().get("release_id") if snapshot.exists else None
             if current != expected_previous_release_id:
                 raise ConcurrentPublicationError("serving release changed before publication could commit")
+            head_snapshot = dataset_head.get(transaction=transaction)
+            head = head_snapshot.to_dict() if head_snapshot.exists else {}
+            if (
+                head.get("corpus_version_id") != release.corpus_version_id
+                or head.get("revision") != expected_dataset_revision
+                or head.get("dataset_sha256") != expected_dataset_sha256
+            ):
+                raise ConcurrentPublicationError("corpus dataset revision changed before publication could commit")
             current_data = snapshot.to_dict() if snapshot.exists else {}
             transaction.set(self.reference, {
                 **asdict(release),

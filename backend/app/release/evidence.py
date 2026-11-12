@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from hashlib import sha256
+import json
 import re
 from typing import Any
 
@@ -146,9 +148,49 @@ def validate_durable_promotion(
         raise ReleaseEvidenceError("durable provider identity does not match the candidate")
     if manifest.get("model_version_id") != snapshot.get("primary_model"):
         raise ReleaseEvidenceError("durable model identity does not match the candidate")
-    candidate_binding = document["evaluation"].get("candidate_gold_binding")
-    if manifest.get("candidate_digest") and manifest["candidate_digest"] != candidate_binding.get("candidate_snapshot_sha256"):
-        raise ReleaseEvidenceError("durable candidate digest does not match the evidence")
+    candidate_binding = manifest.get("candidate_binding")
+    if not isinstance(candidate_binding, dict):
+        raise ReleaseEvidenceError("durable exact candidate binding is missing")
+    candidate_digest = manifest.get("candidate_digest")
+    canonical_binding = json.dumps(candidate_binding, sort_keys=True, separators=(",", ":"))
+    expected_candidate_digest = sha256(canonical_binding.encode("utf-8")).hexdigest()
+    if candidate_digest != expected_candidate_digest:
+        raise ReleaseEvidenceError("durable candidate digest does not match its exact binding")
+    if decision_record.get("candidate_digest") != candidate_digest or decision.get("candidate_digest") != candidate_digest:
+        raise ReleaseEvidenceError("durable decision does not approve the exact candidate binding")
+    for key in (
+        "evaluation_run_id", "dataset_version_id", "corpus_version_id", "judge_version",
+        "candidate_snapshot_sha256", "corpus_manifest_sha256", "corpus_configuration_sha256",
+        "dependency_lock_sha256", "integration_artifact", "runtime_version",
+    ):
+        _required_string(candidate_binding, key)
+    dataset_revision = candidate_binding.get("dataset_revision")
+    if not isinstance(dataset_revision, int) or dataset_revision < 1:
+        raise ReleaseEvidenceError("durable candidate dataset revision is invalid")
+    for key in (
+        "dataset_snapshot_sha256", "dataset_revision_sha256", "corpus_manifest_sha256",
+        "corpus_configuration_sha256", "candidate_snapshot_sha256", "generator_sha256",
+        "output_assessment_sha256", "context_policy_sha256", "dependency_lock_sha256",
+    ):
+        digest = candidate_binding.get(key)
+        if not isinstance(digest, str) or not HEX_DIGEST.fullmatch(digest):
+            raise ReleaseEvidenceError(f"durable candidate {key} must be SHA-256")
+    evaluation = document["evaluation"]
+    snapshot = evaluation["candidate_snapshot"]
+    gold_binding = evaluation["candidate_gold_binding"]
+    if (
+        candidate_binding["evaluation_run_id"] != evaluation["run_id"]
+        or candidate_binding["dataset_version_id"] != evaluation["dataset_version_id"]
+        or candidate_binding["corpus_version_id"] != evaluation["corpus_version_id"]
+        or candidate_binding["judge_version"] != snapshot["scorer_version"]
+        or candidate_binding["candidate_snapshot_sha256"] != gold_binding["candidate_snapshot_sha256"]
+        or candidate_binding["corpus_manifest_sha256"] != snapshot["corpus_binding"]["ingestion_fingerprint"]
+        or candidate_binding["corpus_configuration_sha256"] != snapshot["corpus_binding"]["configuration_fingerprint"]
+        or candidate_binding["dependency_lock_sha256"] != snapshot["dependency_lock_sha256"]
+        or candidate_binding["integration_artifact"] != snapshot["integration_artifact"]
+        or candidate_binding["runtime_version"] != snapshot["runtime_version"]
+    ):
+        raise ReleaseEvidenceError("durable exact candidate binding does not match evaluation evidence")
     artifact = document["artifact"]
     if delivery_manifest.get("commit") != artifact.get("commit"):
         raise ReleaseEvidenceError("delivery commit does not match the evidence artifact")
@@ -159,8 +201,10 @@ def validate_durable_promotion(
     binding = delivery_manifest.get("serving_binding")
     if not isinstance(binding, dict) or binding.get("corpus_version_id") != document["evaluation"].get("corpus_version_id"):
         raise ReleaseEvidenceError("delivery corpus binding does not match the evidence")
+    if binding.get("corpus_version_id") != candidate_binding["corpus_version_id"]:
+        raise ReleaseEvidenceError("delivery corpus binding does not match the approved candidate")
     configuration_digest = binding.get("configuration_digest")
-    if configuration_digest is not None and configuration_digest != snapshot.get("configuration_fingerprint"):
+    if configuration_digest != candidate_binding["corpus_configuration_sha256"]:
         raise ReleaseEvidenceError("delivery configuration identity does not match the candidate")
     return result
 

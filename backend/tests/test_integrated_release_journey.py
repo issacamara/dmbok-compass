@@ -28,7 +28,7 @@ from app.release.decision import (
     ReleaseDecisionService,
 )
 from test_evaluation_generations import FakeFirestore, run_fake_transaction
-from test_release_decision import AttestedReviewStore, StageStore, SupportEvidenceStore
+from test_release_decision import AttestedReviewStore, EvidenceStore, StageStore, SupportEvidenceStore
 
 
 def _snapshot(corpus_version_id: str) -> EvaluationCandidateSnapshot:
@@ -67,7 +67,7 @@ def _dataset(version: str) -> tuple[EvaluationDataset, list[DocumentChunk]]:
             dataset_version_id=version,
             category=("scenarios", "definitions", "explanations", "comparisons", "study")[index % 5],
         )
-        for index in range(30)
+        for index in range(40)
     ]
     annotations = [
         GoldAnnotation(
@@ -167,8 +167,24 @@ def test_evaluation_to_release_journey_is_version_bound_and_restart_safe() -> No
     assert completed.status == "completed"
 
     decisions = InMemoryReleaseDecisionStore()
+    evidence = EvidenceStore()
+    evidence.attach_run(completed)
+
+    class CurrentEvidence:
+        def report_eligibility(self, generation_id: str):
+            return generations.report_eligibility(generation_id)
+
+        def candidate_binding(self, generation_id: str):
+            return generations.candidate_binding(generation_id)
+
+        def get_run_snapshot(self, run_id: str):
+            return evidence.get_run_snapshot(run_id)
+
+        def corpus_head(self, corpus_version_id: str):
+            return evidence.corpus_head(corpus_version_id)
+
     release = ReleaseDecisionService(
-        runs, decisions, generations,
+        runs, decisions, CurrentEvidence(),
         batch_reviews=AttestedReviewStore(completed),
         support_evidence=SupportEvidenceStore(completed),
         stages=StageStore(completed),
@@ -196,6 +212,7 @@ def test_evaluation_to_release_journey_is_version_bound_and_restart_safe() -> No
             response_time_ms=1_000,
         ),
     )
+    evidence.attach_run(subset_completed)
     with pytest.raises(ReleaseDecisionError, match="exploratory"):
         release.record(_decision_request(subset_completed, release_id="release-subset"))
 

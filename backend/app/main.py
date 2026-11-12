@@ -618,21 +618,33 @@ def get_release_decision(
 def publish_release(
     release_id: str,
     _: UserProfile = Depends(get_admin_user),
+    decision_service: ReleaseDecisionService = Depends(release_decision_service),
 ) -> PublishedRelease:
     """Promote an approved, ready release into the serving pointer."""
     from app.identity import _firebase_app
     from firebase_admin import firestore
 
     client = firestore.client(app=_firebase_app())
-    decisions = FirestoreReleaseDecisionStore(client)
-    manifests = FirestoreReleaseManifestStore(client)
-    decision = decisions.get(release_id)
-    manifest = manifests.get(release_id)
+    decision = decision_service.decisions.get(release_id)
+    manifest = decision_service.manifests.get(release_id) if decision_service.manifests is not None else None
     if decision is None or manifest is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail={"code": "release_not_found", "message": "release decision or manifest was not found"},
         )
+    try:
+        # Re-run the decision gates against the current dataset head, output
+        # assessments, policy and reviews immediately before publication.
+        refreshed = decision_service.record(ReleaseDecisionRequest(
+            **decision.model_dump(exclude={"candidate_digest"})
+        ))
+        if refreshed != decision:
+            raise ReleaseDecisionError("the approved release tuple changed after review")
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "release_not_publishable", "message": str(exc)},
+        ) from exc
     configuration = getattr(app.state, "runtime_configuration", None) or startup_configuration()
     corpus_store = FirestoreCorpusVersionStore(client, vector_collection=configuration.vector_collection)
     corpus = corpus_store.get(manifest.corpus_version_id)

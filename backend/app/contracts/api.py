@@ -40,7 +40,7 @@ BatchAttestationDecision = Literal["attested", "rejected"]
 # values in sync with documents/contracts/api-contract-fixture.json.
 MAX_EVALUATION_IMPORT_BYTES = 1_048_576
 MAX_EVALUATION_IMPORT_ITEMS = 500
-MIN_APPROVED_GOLD_ITEMS = 30
+MIN_APPROVED_GOLD_ITEMS = 40
 MAX_APPROVED_GOLD_ITEMS = 50
 
 
@@ -730,7 +730,7 @@ class EvaluationReportEligibility(ContractModel):
         if self.eligibility == "release_evidence" and not (
             self.is_current_generation and MIN_APPROVED_GOLD_ITEMS <= self.approved_gold_count <= MAX_APPROVED_GOLD_ITEMS
         ):
-            raise ValueError("release evidence requires the current generation and 30–50 approved gold items")
+            raise ValueError("release evidence requires the current generation and 40–50 approved gold items")
         return self
 
 
@@ -1111,6 +1111,7 @@ class ReleaseDecision(ContractModel):
     model_version_id: str = Field(min_length=1, max_length=128)
     scorer_version_id: str = Field(min_length=1, max_length=128)
     gate_report_ids: list[str] = Field(min_length=1, max_length=100)
+    candidate_digest: str | None = Field(default=None, pattern=r"^[a-f0-9]{64}$")
     decision: Literal["pending", "approved", "rejected"]
     rationale: str = Field(min_length=1, max_length=5000)
     exception_approved: bool = False

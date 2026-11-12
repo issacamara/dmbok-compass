@@ -1,3 +1,4 @@
+from hashlib import sha256
 import json
 from pathlib import Path
 
@@ -120,6 +121,27 @@ def test_candidate_bundle_records_blockers_without_claiming_promotion() -> None:
 
 def test_durable_promotion_requires_exact_registry_and_delivery_identity() -> None:
     document = evidence_document()
+    candidate_binding = {
+        "evaluation_run_id": "eval-1",
+        "dataset_version_id": "dataset-v1",
+        "dataset_revision": 3,
+        "dataset_snapshot_sha256": "1" * 64,
+        "dataset_revision_sha256": "2" * 64,
+        "corpus_version_id": "corpus-v1",
+        "corpus_manifest_sha256": "a" * 64,
+        "corpus_configuration_sha256": "b" * 64,
+        "candidate_snapshot_sha256": "e" * 64,
+        "generator_sha256": "3" * 64,
+        "judge_version": "scorer-v1",
+        "output_assessment_sha256": "4" * 64,
+        "context_policy_sha256": "5" * 64,
+        "dependency_lock_sha256": "c" * 64,
+        "integration_artifact": "wheel-v1",
+        "runtime_version": "image@sha256:" + "d" * 64,
+    }
+    candidate_digest = sha256(
+        json.dumps(candidate_binding, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
     decision = {
         "decision": {
             "release_id": document["release_id"],
@@ -132,24 +154,40 @@ def test_durable_promotion_requires_exact_registry_and_delivery_identity() -> No
             "scorer_version_id": "scorer-v1",
             "gate_report_ids": ["gate-1"],
             "decision": "approved",
+            "candidate_digest": candidate_digest,
         },
         "actor_user_id": "sponsor-1",
         "decided_at": "2026-10-21T12:00:00+00:00",
+        "candidate_digest": candidate_digest,
     }
     manifest = {
         **decision["decision"],
         "gate_report_ids": ["gate-1"],
+        "candidate_binding": candidate_binding,
     }
     delivery = {
         "commit": document["artifact"]["commit"],
         "api_digest": document["artifact"]["api_digest"],
         "frontend_digest": document["artifact"]["frontend_digest"],
-        "serving_binding": {"corpus_version_id": "corpus-v1"},
+        "serving_binding": {"corpus_version_id": "corpus-v1", "configuration_digest": "b" * 64},
     }
 
     validate_durable_promotion(
         document, manifest=manifest, decision_record=decision, delivery_manifest=delivery
     )
+
+    changed_binding = {**candidate_binding, "dataset_revision": 4}
+    stale_manifest = {
+        **manifest,
+        "candidate_binding": changed_binding,
+        "candidate_digest": sha256(
+            json.dumps(changed_binding, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest(),
+    }
+    with pytest.raises(ReleaseEvidenceError, match="exact candidate"):
+        validate_durable_promotion(
+            document, manifest=stale_manifest, decision_record=decision, delivery_manifest=delivery
+        )
 
     delivery["commit"] = "different-commit"
     with pytest.raises(ReleaseEvidenceError, match="delivery commit"):

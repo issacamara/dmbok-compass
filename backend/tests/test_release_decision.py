@@ -101,7 +101,7 @@ class AttestedReviewStore:
                 item_id=item_id,
                 assessment_id=f"assessment-{item_id}",
                 output_digest="a" * 64,
-                scorer_version="scorer-v1",
+                scorer_version=snapshot.scorer_version,
                 reviewer_actor="reviewer",
                 reviewed_at=datetime(2026, 11, 5, tzinfo=timezone.utc),
             ) for item_id in sample_ids] if semantic_assessment_binding == "exact_output" else [],

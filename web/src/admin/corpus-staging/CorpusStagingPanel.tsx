@@ -21,6 +21,7 @@ function nextSubmissionId() {
 
 export function CorpusStagingPanel({ token }: { token: string }) {
   const [attemptId, setAttemptId] = useState(() => window.localStorage.getItem(ATTEMPT_KEY) ?? "");
+  const [existingAttemptId, setExistingAttemptId] = useState("");
   const [attempt, setAttempt] = useState<CorpusStagingAttemptStatus | null>(null);
   const [pdf, setPdf] = useState<File | null>(null);
   const [submissionId, setSubmissionId] = useState(() => window.localStorage.getItem(SUBMISSION_KEY) ?? nextSubmissionId());
@@ -107,6 +108,26 @@ export function CorpusStagingPanel({ token }: { token: string }) {
     finally { setBusy(false); }
   }
 
+  async function loadExistingAttempt() {
+    const id = existingAttemptId.trim();
+    if (!id) return;
+    setBusy(true); setError(""); setMessage("");
+    try {
+      const status = await getCorpusStagingStatus(token, id);
+      setAttemptId(status.attempt_id);
+      window.localStorage.setItem(ATTEMPT_KEY, status.attempt_id);
+      setAttempt(status);
+      if (status.state === "awaiting_review" && status.hosted_parsing_state === "awaiting_review" && !status.preview) {
+        const proposal = await proposeCorpusStagingStructure(token, status.attempt_id);
+        setAttempt(proposal);
+        setMessage("Review the generated outline and save any corrections before approval.");
+      } else {
+        setMessage("Opened the existing staging attempt.");
+      }
+    } catch (cause) { setError(safeError(cause, "Could not open this staging attempt. Check the ID or your access.")); }
+    finally { setBusy(false); }
+  }
+
   async function saveOutline() {
     if (!attempt?.preview) return;
     const entries: CorpusStagingStructureCorrectionEntry[] = attempt.preview.map((entry, index) => ({
@@ -151,6 +172,11 @@ export function CorpusStagingPanel({ token }: { token: string }) {
       <p>{error}</p><a href={attempt ? "#staging-refresh" : "#staging-pdf"}>Review staging controls</a>
     </div>}
     {message && <p className="status" role="status">{message}</p>}
+    <div className="staging-form">
+      <label htmlFor="staging-existing-attempt">Open an existing staging attempt</label>
+      <input id="staging-existing-attempt" type="text" value={existingAttemptId} onChange={(event) => setExistingAttemptId(event.target.value)} />
+      <button type="button" className="secondary" onClick={() => void loadExistingAttempt()} disabled={busy || !existingAttemptId.trim()}>Open attempt</button>
+    </div>
     <form className="staging-form" onSubmit={(event) => void submit(event)}>
       <label htmlFor="staging-pdf">Source PDF</label>
       <input id="staging-pdf" type="file" accept="application/pdf,.pdf" onChange={(event) => setPdf(event.target.files?.[0] ?? null)} />
@@ -161,6 +187,7 @@ export function CorpusStagingPanel({ token }: { token: string }) {
     </form>
     {attempt && <section className="staging-review" aria-labelledby="staging-review-title">
       <div className="section-heading"><h4 id="staging-review-title">Staging review</h4><button id="staging-refresh" className="secondary" type="button" onClick={() => void refresh()} disabled={busy}>Refresh status</button></div>
+      <p>Attempt ID: <code>{attempt.attempt_id}</code></p>
       <p role="status">Status: {(attempt.state === "queued" || attempt.state === "running" || attempt.state === "staged" || attempt.state === "failed" ? attempt.state : attempt.hosted_parsing_state ?? attempt.state).replaceAll("_", " ")}{attempt.completed_stage ? ` · completed ${attempt.completed_stage}` : ""}</p>
       {attempt.hosted_parsing_state === "awaiting_budget" && <div className="status"><p>Hosted parsing is waiting for available budget. No outline has been approved.</p><button type="button" className="secondary" onClick={() => void retryParsing()} disabled={busy}>Retry parsing</button></div>}
       {attempt.hosted_parsing_state === "parsing" && <div className="status"><p>Resume the saved parse job. The PDF will not be uploaded again.</p><button type="button" className="secondary" onClick={() => void retryParsing()} disabled={busy}>Resume parsing</button></div>}

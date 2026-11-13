@@ -41,8 +41,10 @@ def setup_retry(monkeypatch):
     }
     db.data["corpus_staging_attempts/a"] = deepcopy(attempt)
     for version_id in ("old", "new"):
-        db.data[f"corpus_versions/{version_id}"] = {"status": "staged", "source_uri": "gs://bucket/source#1",
-                                                     "serving_binding": {"vector_collection": "vectors"}}
+        db.data[f"corpus_versions/{version_id}"] = {
+            "version_id": version_id, "status": "staged", "source_uri": "gs://bucket/source#1",
+            "serving_binding": {"corpus_version_id": version_id, "vector_collection": "vectors"},
+        }
     repository = FirestoreCorpusStagingAttemptStore(db, transaction_runner=run_fake_transaction)
     approval = {"_map_artifact": map_artifact, "_approval_artifact": approval_artifact}
     queued, dispatched = repository.claim_approval(attempt_id="a", expected_revision=4, approval=approval)
@@ -112,3 +114,37 @@ def test_rebind_rejects_changed_source_or_existing_progress(setup_retry):
     with pytest.raises(StagingAttemptConflict, match="different corpus version"):
         rebind(setup_retry)
     assert "corpus_ingestion_runs/old" not in db.data
+
+
+def test_entrypoint_rebind_failure_stops_before_writer_and_keeps_old_identity(monkeypatch):
+    from types import SimpleNamespace
+    from app.ingestion import entrypoint
+
+    events = []
+    configuration = SimpleNamespace(runtime=SimpleNamespace(project="p", location="l"), vector_collection="vectors")
+    monkeypatch.setattr(entrypoint.RuntimeConfiguration, "from_environment", staticmethod(lambda: configuration))
+    monkeypatch.setattr(entrypoint.firestore, "Client", lambda **_: object())
+    monkeypatch.setattr(entrypoint, "FirestoreCorpusVersionStore", lambda *_, **__: object())
+    monkeypatch.setattr(entrypoint.storage, "Client", lambda **_: SimpleNamespace(bucket=lambda _: object()))
+    monkeypatch.setattr(entrypoint, "_download_pinned_source", lambda _b, _o, path, **_: (path.write_bytes(b"pdf"), 1)[1])
+    monkeypatch.setattr(entrypoint, "create_source_manifest", lambda **_: object())
+    monkeypatch.setattr(entrypoint, "_read_pinned_object", lambda *_: (b"data", "gs://bucket/object#1", "a" * 64))
+    monkeypatch.setattr(entrypoint, "build_and_stage_hierarchical_candidate", lambda **_: SimpleNamespace(
+        version=SimpleNamespace(version_id="new"), children=(object(),),
+    ))
+
+    def progress(state, _parents, _children, version, _count, *_rest):
+        events.append((state, version))
+        if state == "running" and version == "new":
+            raise StagingAttemptConflict("previous corpus cannot safely be rebound")
+
+    monkeypatch.setattr(entrypoint, "_staging_progress_callback", lambda **_: progress)
+    monkeypatch.setattr(entrypoint, "LangChainRagSettings", lambda **_: pytest.fail("writer must not start"))
+    monkeypatch.setenv("CORPUS_STAGING_ATTEMPT_ID", "a")
+    monkeypatch.setenv("CORPUS_BUCKET_NAME", "bucket")
+    monkeypatch.setenv("CORPUS_OBJECT_NAME", "source")
+    monkeypatch.delenv("CORPUS_CLEANUP_VERSION", raising=False)
+    monkeypatch.delenv("CORPUS_PARSING_ARTIFACT_URI", raising=False)
+    with pytest.raises(StagingAttemptConflict, match="cannot safely be rebound"):
+        entrypoint._run(lambda: False)
+    assert events == [("running", None), ("running", "new"), ("failed", None)]

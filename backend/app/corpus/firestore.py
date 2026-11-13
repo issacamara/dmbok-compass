@@ -185,13 +185,16 @@ class FirestoreCorpusVersionStore:
         if not old.exists or not new.exists:
             raise CorpusVersionError("both corpus versions must exist")
         old_data, new_data = old.to_dict(), new.to_dict()
-        if (old_data.get("status") != "staged" or new_data.get("status") != "staged"
+        if (old_data.get("version_id") != version_id or new_data.get("version_id") != replacement_id
+                or old_data.get("status") != "staged" or new_data.get("status") != "staged"
+                or not isinstance(old_data.get("source_uri"), str) or not old_data["source_uri"]
                 or old_data.get("source_uri") != new_data.get("source_uri")):
             raise CorpusVersionError("corpus versions are not compatible staged derivations")
         if run.exists and run.to_dict().get("status") not in {"failed", "interrupted"}:
             raise CorpusVersionError("old corpus ingestion is not safely stopped")
         binding = old_data.get("serving_binding")
-        if not isinstance(binding, dict) or not isinstance(binding.get("vector_collection"), str) or not binding["vector_collection"]:
+        if (not isinstance(binding, dict) or binding.get("corpus_version_id") != version_id
+                or not isinstance(binding.get("vector_collection"), str) or not binding["vector_collection"]):
             raise CorpusVersionError("old corpus vector binding is unavailable")
         parents = self.client.collection(PARENT_COLLECTION).where(
             filter=FieldFilter("corpus_version_id", "==", version_id)

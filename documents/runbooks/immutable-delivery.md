@@ -22,3 +22,24 @@ A hotfix branched from `main` must also be merged into `development` and built t
 Record the current Cloud Run API revision, job image digests, Firebase Hosting release, and corpus version before rollback. Route the API back to its previous revision with `gcloud run services update-traffic`, restore the prior Firebase Hosting release, and redeploy the prior image digest to the ingestion/evaluation jobs. If corpus state changed, restore its prior active version as described in the corpus recovery procedure. Verify health, citations, and the frontend before accepting the rollback. The previous deployment artifacts identify the source and deployment commits and image digest; do not rebuild the backend for rollback.
 
 The earlier manual release-evidence bundle and zero-traffic preview workflow is retired by this branch-driven process. The release-evidence storage and verification scripts remain in the repository for historical records and manual investigations.
+
+## v2.9 promotion and rollback rehearsal
+
+This rehearsal validates the release path without publishing to production. The development image under review is the immutable image built and deployed for commit `302076ad76709ff30d3298abe76c37c4b6414851` by development run [#96](https://github.com/issacamara/dmbok-compass/actions/runs/43463514198): `europe-west1-docker.pkg.dev/dev-dmbok-compass/dmbok-compass/api@sha256:8bd5f80506146691b2578d5209c200d28ab0f59f96f05a35b39b9184c47844e0`. The production workflow resolves that source digest, copies the image, and fails unless the destination digest matches. The production job remains behind its `production` environment gate; this rehearsal does not request approval, start the production workflow, activate a release, or deploy an image.
+
+Run the repeatable local checks from the repository root:
+
+```bash
+cd backend
+python -m pytest tests/test_delivery_rollback.py tests/test_recovery.py tests/test_source_retention.py
+```
+
+The rollback test uses synthetic current/previous manifests and the verified development image digest. It verifies that the forward plan preserves the exact API/admin image, the rollback plan restores the prior image and serving binding, and both protected-gate and owner approvals are required. The recovery verifier tests use isolated synthetic evidence to check the 24-hour restore bound, 30-backup limit, immutable source derivation, and serving-binding comparison. The reference-aware retention tests cover source, parse, map, approval, dataset, and review artifacts; active or rollback references protect them, missing recovery paths are refused, and concurrent reference changes abort the inventory.
+
+### Nonproduction rehearsal evidence (2026-11-13)
+
+- The v2.9 isolated development recovery drill used the Nov 13 source snapshot from 05:50:57 UTC. The restore request started at 17:11:37.891323 UTC; the restored database was visibly `Available/Ready` at 18:23:49 UTC, giving an observed recovery time of at most 1 hour, 12 minutes, and 12 seconds against the 24-hour objective. The console showed 30 retained backup copies with 30-day retention.
+- The rebuild-preview procedure validated the saved source, parsing, and reviewed structure-map bindings, then segmented approved sections with the repository-pinned `tiktoken==0.12.0` `cl100k_base` encoding. It produced 6 sections, 7 parent chunks, and 15 child chunks. The preview completed locally with no cloud writes and no active corpus pointer change.
+- The database restore and offline segmentation preview are separate recovery checks; this rehearsal did not restore the corpus serving pointer, perform embedding writes, run a serving evaluation against the restored database, or activate production. Production approval and deployment remain untouched.
+
+Retain each rollback input until the promoted release has passed verification and a fresh reference snapshot confirms that no active or rollback release still uses it. The cleanup inventory remains dry-run only; any later deletion requires a separate approved operation. The repository has no verified merge queue, so the epic integrator serializes merges after rechecking the PR head, current `development` base, review, and required checks. Do not run parallel final merges.

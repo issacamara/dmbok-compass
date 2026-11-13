@@ -43,7 +43,9 @@ describe("CorpusStagingPanel", () => {
     expect(screen.queryByRole("button", { name: /structure template/i })).not.toBeInTheDocument();
     await user.upload(screen.getByLabelText("Source PDF"), new File(["pdf"], "source.pdf", { type: "application/pdf" }));
     await user.click(screen.getByRole("button", { name: "Upload PDF and parse" }));
-    expect(api.submitPdfOnlyCorpusStagingAttempt).toHaveBeenCalledWith("admin-token", expect.any(File), [21, 25, 58, 78, 105]);
+    const submissionId = api.submitPdfOnlyCorpusStagingAttempt.mock.calls[0][3];
+    expect(api.submitPdfOnlyCorpusStagingAttempt).toHaveBeenCalledWith("admin-token", expect.any(File), [21, 25, 58, 78, 105], expect.any(String));
+    expect(window.localStorage.getItem("dmbok-compass.corpus-staging-submission")).not.toBe(submissionId);
     expect(await screen.findByLabelText("Section path for pages 1 to 2")).toHaveValue("Chapter 1");
     expect(api.proposeCorpusStagingStructure).toHaveBeenCalledWith("admin-token", "attempt-1");
 
@@ -54,6 +56,25 @@ describe("CorpusStagingPanel", () => {
     await user.click(screen.getByRole("button", { name: "Approve outline and create chunks" }));
     expect(api.approveCorpusStagingAttempt).toHaveBeenCalledWith("admin-token", "attempt-1", 4);
     expect(window.localStorage.getItem("dmbok-compass.corpus-staging-attempt")).toBe("attempt-1");
+  });
+
+  it("reuses the submission id after an uncertain upload across reloads", async () => {
+    const user = userEvent.setup();
+    api.submitPdfOnlyCorpusStagingAttempt.mockRejectedValueOnce(new Error("Upload response was lost"));
+    const first = render(<CorpusStagingPanel token="admin-token" />);
+    await user.upload(screen.getByLabelText("Source PDF"), new File(["pdf"], "source.pdf", { type: "application/pdf" }));
+    await user.click(screen.getByRole("button", { name: "Upload PDF and parse" }));
+    await screen.findByRole("alert");
+    const submissionId = api.submitPdfOnlyCorpusStagingAttempt.mock.calls[0][3];
+    first.unmount();
+
+    api.submitPdfOnlyCorpusStagingAttempt.mockResolvedValue({ ...reviewed, state: "validating", hosted_parsing_state: null, preview: null });
+    api.startCorpusStagingParse.mockResolvedValue({ ...reviewed, state: "validating", hosted_parsing_state: "awaiting_budget", preview: null });
+    render(<CorpusStagingPanel token="admin-token" />);
+    await user.upload(screen.getByLabelText("Source PDF"), new File(["pdf"], "source.pdf", { type: "application/pdf" }));
+    await user.click(screen.getByRole("button", { name: "Upload PDF and parse" }));
+    await waitFor(() => expect(api.submitPdfOnlyCorpusStagingAttempt).toHaveBeenCalledTimes(2));
+    expect(api.submitPdfOnlyCorpusStagingAttempt.mock.calls[1][3]).toBe(submissionId);
   });
 
   it("keeps incomplete matches editable and never implies approval", async () => {

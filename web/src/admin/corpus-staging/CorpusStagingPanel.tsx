@@ -10,12 +10,20 @@ import {
 import type { CorpusStagingAttemptStatus, CorpusStagingStructureCorrectionEntry } from "../../api/contracts";
 
 const ATTEMPT_KEY = "dmbok-compass.corpus-staging-attempt";
+const SUBMISSION_KEY = "dmbok-compass.corpus-staging-submission";
 const ACTIVE_PARSING_STATES = ["queued", "parsing"];
+
+function nextSubmissionId() {
+  const id = crypto.randomUUID();
+  window.localStorage.setItem(SUBMISSION_KEY, id);
+  return id;
+}
 
 export function CorpusStagingPanel({ token }: { token: string }) {
   const [attemptId, setAttemptId] = useState(() => window.localStorage.getItem(ATTEMPT_KEY) ?? "");
   const [attempt, setAttempt] = useState<CorpusStagingAttemptStatus | null>(null);
   const [pdf, setPdf] = useState<File | null>(null);
+  const [submissionId, setSubmissionId] = useState(() => window.localStorage.getItem(SUBMISSION_KEY) ?? nextSubmissionId());
   const [physicalPageSelection, setPhysicalPageSelection] = useState("21, 25, 58, 78, 105");
   const [sectionPaths, setSectionPaths] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
@@ -59,10 +67,11 @@ export function CorpusStagingPanel({ token }: { token: string }) {
     if (!pages) { setError("Enter up to five unique physical page numbers, separated by commas."); return; }
     setBusy(true);
     try {
-      const submitted = await submitPdfOnlyCorpusStagingAttempt(token, pdf, pages);
+      const submitted = await submitPdfOnlyCorpusStagingAttempt(token, pdf, pages, submissionId);
       setAttemptId(submitted.attempt_id);
       window.localStorage.setItem(ATTEMPT_KEY, submitted.attempt_id);
       setAttempt(submitted);
+      setSubmissionId(nextSubmissionId());
       const started = await startCorpusStagingParse(token, submitted.attempt_id);
       const parsed = started.hosted_parsing_state === "awaiting_review" && !started.preview
         ? await proposeCorpusStagingStructure(token, submitted.attempt_id)

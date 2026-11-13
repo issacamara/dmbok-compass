@@ -67,7 +67,7 @@ describe("administrator API", () => {
     const response = { attempt_id: "attempt/2", revision: 4, state: "awaiting_review" };
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(JSON.stringify(response), { status: 200 }));
     const pdf = new File(["pdf"], "source.pdf", { type: "application/pdf" });
-    await submitPdfOnlyCorpusStagingAttempt("token", pdf);
+    await submitPdfOnlyCorpusStagingAttempt("token", pdf, [21, 25, 58, 78, 105], "6a1f6b5f-279d-479b-84ba-1123bb606fd1");
     await startCorpusStagingParse("token", "attempt/2");
     await proposeCorpusStagingStructure("token", "attempt/2");
     await correctCorpusStagingStructure("token", "attempt/2", 4, [{ section_path: ["Chapter 1", "Overview"], block_ids: ["block-1"] }]);
@@ -79,6 +79,8 @@ describe("administrator API", () => {
       "/api/admin/corpus-staging/attempts/attempt%2F2/structure",
     ]);
     expect(fetchMock.mock.calls[0][1]).toEqual(expect.objectContaining({ method: "POST", body: expect.any(FormData) }));
+    expect((fetchMock.mock.calls[0][1]?.body as FormData).get("submission_id")).toBe("6a1f6b5f-279d-479b-84ba-1123bb606fd1");
+    expect((fetchMock.mock.calls[0][1]?.body as FormData).get("physical_page_numbers")).toBe("21,25,58,78,105");
     expect(fetchMock.mock.calls[3][1]).toEqual(expect.objectContaining({
       method: "PUT",
       body: JSON.stringify({ expected_revision: 4, entries: [{ section_path: ["Chapter 1", "Overview"], block_ids: ["block-1"] }] }),

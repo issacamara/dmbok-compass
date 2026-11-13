@@ -393,3 +393,25 @@ def test_markdown_table_rows_must_match_parsed_structured_rows():
 
     with pytest.raises(ValueError, match="Markdown table rows do not match"):
         segment_parents([section], corpus_version_id="v1")
+
+
+def test_markdown_table_unescapes_brackets_before_matching_structured_rows():
+    markdown = "| Name | Notes |\n| --- | --- |\n| first | cite \\[individuals\\] |"
+    section = LogicalSection(
+        ("Data",),
+        (SourceSpan(
+            page=3,
+            start_offset=0,
+            end_offset=len(markdown),
+            text=markdown,
+            span_id="table",
+            block_id="table",
+            block_kind="table",
+            table_rows=(("Name", "Notes"), ("first", "cite [individuals]")),
+        ),),
+    )
+
+    parents = segment_parents([section], corpus_version_id="v1")
+
+    assert parents.ready_for_promotion
+    assert parents.parents[0].source_spans[-1].text == "| first | cite \\[individuals\\] |"

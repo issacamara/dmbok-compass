@@ -529,7 +529,10 @@ def _markdown_table_cells(row: str) -> tuple[str, ...]:
         content = content[1:]
     if content.endswith("|") and not content.endswith("\\|"):
         content = content[:-1]
-    return tuple(cell.strip().replace("\\|", "|") for cell in re.split(r"(?<!\\)\|", content))
+    return tuple(
+        cell.strip().replace("\\|", "|").replace("\\[", "[").replace("\\]", "]")
+        for cell in re.split(r"(?<!\\)\|", content)
+    )
 
 
 def _list_units(source: SourceSpan) -> tuple[SourceSpan, ...]:

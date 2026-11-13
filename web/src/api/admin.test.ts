@@ -86,4 +86,15 @@ describe("administrator API", () => {
       body: JSON.stringify({ expected_revision: 4, entries: [{ section_path: ["Chapter 1", "Overview"], block_ids: ["block-1"] }] }),
     }));
   });
+
+  it("preserves safe error codes from administrator API responses", async () => {
+    vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+      detail: { code: "staging_attempt_not_parseable", message: "This attempt is not available for hosted parsing." },
+    }), { status: 409 }));
+
+    await expect(startCorpusStagingParse("token", "attempt-1")).rejects.toMatchObject({
+      status: 409,
+      code: "staging_attempt_not_parseable",
+    });
+  });
 });

@@ -174,13 +174,39 @@ describe("CorpusStagingPanel", () => {
     const user = userEvent.setup();
     window.localStorage.setItem("dmbok-compass.corpus-staging-attempt", "saved-id");
     api.getCorpusStagingStatus.mockResolvedValue(reviewed);
-    api.approveCorpusStagingAttempt.mockRejectedValue({ status: 409 });
+    api.approveCorpusStagingAttempt.mockRejectedValue({ status: 409, code: "stale_staging_attempt" });
     render(<CorpusStagingPanel token="admin-token" />);
     await waitFor(() => expect(api.getCorpusStagingStatus).toHaveBeenCalledWith("admin-token", "saved-id"));
     await user.click(await screen.findByRole("button", { name: "Approve outline and create chunks" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(/revision is stale/i);
     expect(screen.getByRole("button", { name: "Refresh status" })).toBeEnabled();
     expect(screen.getByRole("link", { name: "Review staging controls" })).toHaveAttribute("href", "#staging-refresh");
+  });
+
+  it("does not offer retry for a terminally failed parse and keeps refresh available", async () => {
+    const failed = { ...reviewed, state: "failed", hosted_parsing_state: "failed", preview: null };
+    window.localStorage.setItem("dmbok-compass.corpus-staging-attempt", failed.attempt_id);
+    api.getCorpusStagingStatus.mockResolvedValue(failed);
+    render(<CorpusStagingPanel token="admin-token" />);
+
+    expect(await screen.findByText(/upload the PDF to start a new attempt/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Retry parsing" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Refresh status" })).toBeEnabled();
+  });
+
+  it("reports a terminal parse conflict without calling it a stale review", async () => {
+    const user = userEvent.setup();
+    const parsing = { ...reviewed, state: "validating", preview: null, hosted_parsing_state: "parsing" };
+    window.localStorage.setItem("dmbok-compass.corpus-staging-attempt", parsing.attempt_id);
+    api.getCorpusStagingStatus.mockResolvedValue(parsing);
+    api.startCorpusStagingParse.mockRejectedValue({ status: 409, code: "staging_attempt_not_parseable" });
+    render(<CorpusStagingPanel token="admin-token" />);
+
+    await user.click(await screen.findByRole("button", { name: "Resume parsing" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/cannot be resumed/i);
+    expect(screen.getByRole("alert")).not.toHaveTextContent(/revision is stale/i);
+    expect(screen.getByRole("button", { name: "Refresh status" })).toBeEnabled();
   });
 
   it("renders bounded source excerpts and keyboard-usable controls at a narrow viewport", async () => {

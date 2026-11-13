@@ -177,7 +177,7 @@ def test_cloud_run_dispatch_uses_only_server_derived_pinned_variables() -> None:
     calls: list[dict[str, str]] = []
     dispatcher = CloudRunCorpusIngestionDispatcher(project="p", location="l", job_name="j", execute=calls.append)
     dispatcher.dispatch(
-        attempt_id=ATTEMPT,
+        attempt_id=ATTEMPT, dispatch_revision=5,
         source={"bucket": BUCKET, "object_name": "staging/source.pdf", "generation": 17},
         map_artifact={"bucket": BUCKET, "object_name": "staging/map.json", "generation": 18, "sha256": "a" * 64},
         approval_artifact={"bucket": BUCKET, "object_name": "staging/approval.json", "generation": 19, "sha256": "b" * 64},
@@ -187,7 +187,7 @@ def test_cloud_run_dispatch_uses_only_server_derived_pinned_variables() -> None:
         "CORPUS_SOURCE_GENERATION": "17", "CORPUS_STRUCTURE_MAP_URI": f"gs://{BUCKET}/staging/map.json#18",
         "CORPUS_STRUCTURE_MAP_SHA256": "a" * 64,
         "CORPUS_STRUCTURE_MAP_APPROVAL_URI": f"gs://{BUCKET}/staging/approval.json#19",
-        "CORPUS_STRUCTURE_MAP_APPROVAL_SHA256": "b" * 64, "CORPUS_STAGING_ATTEMPT_ID": ATTEMPT,
+        "CORPUS_STRUCTURE_MAP_APPROVAL_SHA256": "b" * 64, "CORPUS_STAGING_ATTEMPT_ID": ATTEMPT, "CORPUS_STAGING_DISPATCH_REVISION": "5",
     }]
 
 
@@ -230,7 +230,7 @@ def test_firestore_approval_claim_is_revision_bound_idempotent_and_retryable_aft
     assert database.data[f"corpus_staging_attempts/{ATTEMPT}"]["approval_artifact"] == approval_artifact
 
     progress = store.record_ingestion_progress(
-        attempt_id=ATTEMPT, source=source, map_artifact=map_artifact,
+        attempt_id=ATTEMPT, dispatch_revision=retried.revision, source=source, map_artifact=map_artifact,
         approval_artifact=approval_artifact, state="running", parent_count=1,
         child_count=0, corpus_version_id="candidate-version",
     )
@@ -238,7 +238,7 @@ def test_firestore_approval_claim_is_revision_bound_idempotent_and_retryable_aft
     assert progress.completed_stage == "ingestion"
     assert progress.parent_count == 1 and progress.child_count == 0
     interrupted = store.record_ingestion_progress(
-        attempt_id=ATTEMPT, source=source, map_artifact=map_artifact,
+        attempt_id=ATTEMPT, dispatch_revision=retried.revision, source=source, map_artifact=map_artifact,
         approval_artifact=approval_artifact, state="failed", parent_count=1,
         child_count=1, correction_code="job_interrupted",
     )
@@ -247,7 +247,7 @@ def test_firestore_approval_claim_is_revision_bound_idempotent_and_retryable_aft
     assert interrupted.error is not None and interrupted.error.code == "job_interrupted"
 
     execution_retry = store.record_ingestion_progress(
-        attempt_id=ATTEMPT, source=source, map_artifact=map_artifact,
+        attempt_id=ATTEMPT, dispatch_revision=retried.revision, source=source, map_artifact=map_artifact,
         approval_artifact=approval_artifact, state="running", parent_count=0,
         child_count=0,
     )
@@ -255,7 +255,7 @@ def test_firestore_approval_claim_is_revision_bound_idempotent_and_retryable_aft
     assert execution_retry.parent_count == 1 and execution_retry.child_count == 1
     assert execution_retry.error is None and execution_retry.correction_codes == []
     staged = store.record_ingestion_progress(
-        attempt_id=ATTEMPT, source=source, map_artifact=map_artifact,
+        attempt_id=ATTEMPT, dispatch_revision=retried.revision, source=source, map_artifact=map_artifact,
         approval_artifact=approval_artifact, state="staged", parent_count=1,
         child_count=2, chunk_count=2, corpus_version_id="candidate-version",
     )
@@ -263,7 +263,7 @@ def test_firestore_approval_claim_is_revision_bound_idempotent_and_retryable_aft
     assert staged.staged_corpus_version_id == "candidate-version"
     assert staged.chunk_count == 2
     repeated = store.record_ingestion_progress(
-        attempt_id=ATTEMPT, source=source, map_artifact=map_artifact,
+        attempt_id=ATTEMPT, dispatch_revision=retried.revision, source=source, map_artifact=map_artifact,
         approval_artifact=approval_artifact, state="running", parent_count=0,
         child_count=0,
     )
@@ -271,12 +271,12 @@ def test_firestore_approval_claim_is_revision_bound_idempotent_and_retryable_aft
 
     with pytest.raises(StagingAttemptConflict):
         store.record_ingestion_progress(
-            attempt_id=ATTEMPT, source=source, map_artifact={**map_artifact, "generation": 99},
+            attempt_id=ATTEMPT, dispatch_revision=retried.revision, source=source, map_artifact={**map_artifact, "generation": 99},
             approval_artifact=approval_artifact, state="running",
         )
     with pytest.raises(StagingAttemptConflict):
         store.record_ingestion_progress(
-            attempt_id=ATTEMPT, source=source, map_artifact=map_artifact,
+            attempt_id=ATTEMPT, dispatch_revision=retried.revision, source=source, map_artifact=map_artifact,
             approval_artifact=approval_artifact, state="running",
             corpus_version_id="different-candidate-version",
         )

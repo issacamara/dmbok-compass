@@ -35,6 +35,7 @@ def setup_retry(monkeypatch):
         "attempt_id": "a", "revision": 4, "state": "failed", "completed_stage": "ingestion",
         "error": {"code": "job_failed", "message": "failed", "status": 503, "retryable": True},
         "correction_codes": ["job_failed"], "dispatch_retryable": True, "dispatch_claimed": False,
+        "dispatch_revision": 3,
         "source": source, "structure": {"object_name": "structure"},
         "approved_map_artifact": map_artifact, "approval_artifact": approval_artifact,
         "staged_corpus_version_id": "old", "parent_count": 0, "child_count": 0,
@@ -54,7 +55,7 @@ def setup_retry(monkeypatch):
 
 def rebind(setup):
     db, store, source, map_artifact, approval_artifact = setup
-    return store.record_ingestion_progress(attempt_id="a", source=source, map_artifact=map_artifact,
+    return store.record_ingestion_progress(attempt_id="a", dispatch_revision=5, source=source, map_artifact=map_artifact,
                                            approval_artifact=approval_artifact, state="running",
                                            parent_count=0, child_count=0, corpus_version_id="new")
 
@@ -94,10 +95,34 @@ def test_retry_refuses_existing_records_or_active_writer(setup_retry, path, payl
     assert db.data[path] == payload
 
 
+@pytest.mark.parametrize("state,version", [("running", "old"), ("failed", "old"), ("running", None), ("failed", None)])
+def test_old_dispatch_callbacks_cannot_modify_queued_or_running_retry(setup_retry, state, version):
+    db, store, source, map_artifact, approval = setup_retry
+
+    def stale_callback():
+        before = deepcopy(db.data)
+        with pytest.raises(StagingAttemptConflict, match="stale"):
+            store.record_ingestion_progress(
+                attempt_id="a", dispatch_revision=3, source=source, map_artifact=map_artifact,
+                approval_artifact=approval, state=state, parent_count=0, child_count=0,
+                corpus_version_id=version,
+            )
+        assert db.data == before
+        assert db.data["corpus_staging_attempts/a"]["derivation_rebind_permitted"] is True
+
+    stale_callback()
+    store.record_ingestion_progress(
+        attempt_id="a", dispatch_revision=5, source=source, map_artifact=map_artifact,
+        approval_artifact=approval, state="running", parent_count=0, child_count=0,
+    )
+    stale_callback()
+    assert rebind(setup_retry).staged_corpus_version_id == "new"
+
+
 def test_rebind_rejects_changed_approval_or_unapproved_retry(setup_retry):
     db, store, source, map_artifact, approval = setup_retry
     with pytest.raises(StagingAttemptConflict, match="artifacts do not match"):
-        store.record_ingestion_progress(attempt_id="a", source=source,
+        store.record_ingestion_progress(attempt_id="a", dispatch_revision=5, source=source,
                                         map_artifact={**map_artifact, "generation": 99},
                                         approval_artifact=approval, state="running",
                                         parent_count=0, child_count=0, corpus_version_id="new")
@@ -145,6 +170,7 @@ def test_entrypoint_rebind_failure_stops_before_writer_and_keeps_old_identity(mo
     monkeypatch.setattr(entrypoint, "_staging_progress_callback", lambda **_: progress)
     monkeypatch.setattr(entrypoint, "LangChainRagSettings", lambda **_: pytest.fail("writer must not start"))
     monkeypatch.setenv("CORPUS_STAGING_ATTEMPT_ID", "a")
+    monkeypatch.setenv("CORPUS_STAGING_DISPATCH_REVISION", "5")
     monkeypatch.setenv("CORPUS_BUCKET_NAME", "bucket")
     monkeypatch.setenv("CORPUS_OBJECT_NAME", "source")
     monkeypatch.delenv("CORPUS_CLEANUP_VERSION", raising=False)
@@ -152,3 +178,23 @@ def test_entrypoint_rebind_failure_stops_before_writer_and_keeps_old_identity(mo
     with pytest.raises(StagingAttemptConflict, match="cannot safely be rebound"):
         entrypoint._run(lambda: False)
     assert events == [("running", None), ("running", "new"), ("failed", None)]
+
+
+@pytest.mark.parametrize("revision", [None, "0", "-1", "not-a-number"])
+def test_ingestion_fails_before_progress_when_dispatch_revision_is_missing_or_invalid(monkeypatch, revision):
+    from types import SimpleNamespace
+    from app.ingestion import entrypoint
+
+    configuration = SimpleNamespace(runtime=SimpleNamespace(project="p", location="l"), vector_collection="vectors")
+    monkeypatch.setattr(entrypoint.RuntimeConfiguration, "from_environment", staticmethod(lambda: configuration))
+    monkeypatch.setattr(entrypoint.firestore, "Client", lambda **_: object())
+    monkeypatch.setattr(entrypoint, "FirestoreCorpusVersionStore", lambda *_, **__: object())
+    monkeypatch.setattr(entrypoint, "_staging_progress_callback", lambda **_: pytest.fail("progress must not start"))
+    monkeypatch.setenv("CORPUS_STAGING_ATTEMPT_ID", "a")
+    monkeypatch.delenv("CORPUS_CLEANUP_VERSION", raising=False)
+    if revision is None:
+        monkeypatch.delenv("CORPUS_STAGING_DISPATCH_REVISION", raising=False)
+    else:
+        monkeypatch.setenv("CORPUS_STAGING_DISPATCH_REVISION", revision)
+    with pytest.raises(RuntimeError):
+        entrypoint._run(lambda: False)

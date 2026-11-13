@@ -44,7 +44,7 @@ export function CorpusStagingPanel({ token }: { token: string }) {
       const status = await getCorpusStagingStatus(token, id);
       setAttempt(status);
       if (status.state === "failed" || status.state === "staged") setMessage("");
-      if (status.state === "awaiting_review" && status.hosted_parsing_state === "awaiting_review" && !status.preview) {
+      if (status.state === "validating" && status.hosted_parsing_state === "awaiting_review" && !status.preview) {
         const proposal = await proposeCorpusStagingStructure(token, id);
         setAttempt(proposal);
         setMessage("Review the generated outline and save any corrections before approval.");
@@ -117,7 +117,7 @@ export function CorpusStagingPanel({ token }: { token: string }) {
       setAttemptId(status.attempt_id);
       window.localStorage.setItem(ATTEMPT_KEY, status.attempt_id);
       setAttempt(status);
-      if (status.state === "awaiting_review" && status.hosted_parsing_state === "awaiting_review" && !status.preview) {
+      if (status.state === "validating" && status.hosted_parsing_state === "awaiting_review" && !status.preview) {
         const proposal = await proposeCorpusStagingStructure(token, status.attempt_id);
         setAttempt(proposal);
         setMessage("Review the generated outline and save any corrections before approval.");

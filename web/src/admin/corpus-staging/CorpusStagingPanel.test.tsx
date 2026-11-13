@@ -155,6 +155,21 @@ describe("CorpusStagingPanel", () => {
     expect(api.getCorpusStagingStatus).toHaveBeenCalledTimes(2);
   });
 
+  it("resumes an existing parse job without requesting a new upload", async () => {
+    const user = userEvent.setup();
+    const parsing = { ...reviewed, state: "validating", preview: null, hosted_parsing_state: "parsing" };
+    window.localStorage.setItem("dmbok-compass.corpus-staging-attempt", parsing.attempt_id);
+    api.getCorpusStagingStatus.mockResolvedValueOnce(parsing).mockResolvedValue(parsing);
+    api.startCorpusStagingParse.mockResolvedValue(parsing);
+    render(<CorpusStagingPanel token="admin-token" />);
+
+    await user.click(await screen.findByRole("button", { name: "Resume parsing" }));
+
+    expect(api.startCorpusStagingParse).toHaveBeenCalledWith("admin-token", parsing.attempt_id);
+    expect(api.submitPdfOnlyCorpusStagingAttempt).not.toHaveBeenCalled();
+    expect(await screen.findByRole("status")).toHaveTextContent(/resumed the saved parse job/i);
+  });
+
   it("resumes the saved attempt, handles stale revisions, and keeps refresh available", async () => {
     const user = userEvent.setup();
     window.localStorage.setItem("dmbok-compass.corpus-staging-attempt", "saved-id");

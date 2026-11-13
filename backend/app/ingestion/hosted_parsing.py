@@ -20,6 +20,7 @@ from typing import Any, Literal, Protocol
 from pydantic import ValidationError
 
 from app.contracts import ParsedBlock, ParsingArtifact
+from app.telemetry import LoggingTelemetryAdapter, TelemetryAdapter, stage_event
 
 
 class ParsingError(RuntimeError):
@@ -89,7 +90,7 @@ class LlamaCloudParsingProvider:
         response = self.client.parsing.with_raw_response.get(
             job_id, expand=["items", "usage"]
         )
-        raw = response.content
+        raw = response.read()
         parsed = response.parse()
         return raw, _sdk_model_dump(parsed)
 
@@ -370,6 +371,7 @@ class HostedParsingCoordinator:
         monotonic: Callable[[], float] = time.monotonic,
         sleep: Callable[[float], None] = time.sleep,
         stop_requested: Callable[[], bool] = lambda: False,
+        telemetry: TelemetryAdapter | None = None,
     ) -> None:
         if max_units < 1 or deadline_seconds <= 0 or poll_interval_seconds <= 0:
             raise ValueError("invalid parsing bounds")
@@ -391,6 +393,7 @@ class HostedParsingCoordinator:
         self.monotonic = monotonic
         self.sleep = sleep
         self.stop_requested = stop_requested
+        self.telemetry = telemetry or LoggingTelemetryAdapter()
 
     def run(
         self, *, attempt_id: str, source: Mapping[str, Any], pdf: bytes,
@@ -499,8 +502,11 @@ class HostedParsingCoordinator:
             self.reconcile_allowance(operation_key, None)
             self.checkpoints.record_status(attempt_id, "failed", error_code="invalid_parser_output")
             return ParsingRun(None, "failed", job_id)
-        except Exception:
+        except Exception as error:
             self.checkpoints.record_status(attempt_id, "parsing", error_code="parser_result_unavailable")
+            self.telemetry.emit(stage_event(
+                "parsing", "failed", error=error, http_status_code=_http_status_code(error)
+            ))
             return ParsingRun(None, "parsing", job_id)
         usage_kind, usage_units = _usage_detail(payload)
         self.reconcile_allowance(operation_key, usage_units)
@@ -730,6 +736,14 @@ def _llama_cloud_blocks(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
     return blocks
 
 
+def _http_status_code(error: BaseException) -> int | None:
+    response = getattr(error, "response", None)
+    for value in (getattr(error, "status_code", None), getattr(response, "status_code", None)):
+        if type(value) is int and 100 <= value <= 599:
+            return value
+    return None
+
+
 def _sdk_model_dump(response: Any) -> Mapping[str, Any]:
     if hasattr(response, "model_dump"):
         value = response.model_dump(mode="json")
@@ -751,11 +765,11 @@ def _usage_units(payload: Any) -> int | None:
 def _usage_detail(payload: Any) -> tuple[str | None, int | None]:
     if not isinstance(payload, Mapping):
         return None, None
-    usage = payload.get("usage")
-    if not isinstance(usage, Mapping):
-        return None, None
-    for key in ("pages", "units", "credits"):
-        value = usage.get(key)
-        if type(value) is int and value >= 0:
-            return key, value
+    job = payload.get("job")
+    for usage in (payload.get("usage"), job.get("usage") if isinstance(job, Mapping) else None):
+        if isinstance(usage, Mapping):
+            for key in ("pages", "units", "credits"):
+                value = usage.get(key)
+                if type(value) is int and value >= 0:
+                    return key, value
     return None, None

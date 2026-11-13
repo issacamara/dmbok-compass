@@ -115,6 +115,7 @@ def _run(terminated: Event) -> None:
         deadline_seconds=840,
         poll_interval_seconds=3,
         stop_requested=terminated.is_set,
+        telemetry=telemetry,
     )
     try:
         outcome = coordinator.run(

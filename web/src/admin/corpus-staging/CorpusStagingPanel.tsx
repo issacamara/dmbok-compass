@@ -164,7 +164,7 @@ export function CorpusStagingPanel({ token }: { token: string }) {
       <p role="status">Status: {(attempt.state === "queued" || attempt.state === "running" || attempt.state === "staged" || attempt.state === "failed" ? attempt.state : attempt.hosted_parsing_state ?? attempt.state).replaceAll("_", " ")}{attempt.completed_stage ? ` · completed ${attempt.completed_stage}` : ""}</p>
       {attempt.hosted_parsing_state === "awaiting_budget" && <div className="status"><p>Hosted parsing is waiting for available budget. No outline has been approved.</p><button type="button" className="secondary" onClick={() => void retryParsing()} disabled={busy}>Retry parsing</button></div>}
       {attempt.hosted_parsing_state === "parsing" && <div className="status"><p>Resume the saved parse job. The PDF will not be uploaded again.</p><button type="button" className="secondary" onClick={() => void retryParsing()} disabled={busy}>Resume parsing</button></div>}
-      {attempt.hosted_parsing_state === "failed" && <div className="error"><p>Parsing did not complete. Refresh the attempt or retry parsing.</p><button type="button" className="secondary" onClick={() => void retryParsing()} disabled={busy}>Retry parsing</button></div>}
+      {attempt.hosted_parsing_state === "failed" && attempt.state !== "failed" && <div className="error"><p>Parsing did not complete. Refresh status or upload the PDF to start a new attempt.</p></div>}
       {attempt.preview && <>
         <h5>Generated outline</h5>
         <ul className="staging-entry-list">{attempt.preview.map((entry, index) => <li key={`${entry.entry_index}-${index}`}>
@@ -177,7 +177,7 @@ export function CorpusStagingPanel({ token }: { token: string }) {
         <button type="button" className="secondary" onClick={() => void saveOutline()} disabled={busy}>Save outline corrections</button>
       </>}
       {attempt.correction_codes.length > 0 && <p className="error">{attempt.correction_codes.map(correctionText).join("; ")}. Edit the outline and save corrections.</p>}
-      {attempt.state === "failed" && <p className="error">{attempt.error?.message ?? "Staging failed safely. Refresh status or retry parsing."}</p>}
+      {attempt.state === "failed" && <p className="error">{attempt.error?.message ?? "Staging failed safely. Refresh status or upload the PDF to start a new attempt."}</p>}
       {attempt.state === "staged" && <p className="status">Staged version {attempt.staged_corpus_version_id}; {attempt.parent_count ?? 0} parents and {attempt.chunk_count ?? attempt.child_count ?? 0} chunks. The active corpus is unchanged.</p>}
       <button type="button" disabled={!approvable || busy} onClick={() => void approve()}>Approve outline and create chunks</button>
     </section>}
@@ -193,7 +193,10 @@ function parsePhysicalPageSelection(value: string): number[] | null {
 }
 
 function safeError(cause: unknown, fallback = "The staging request could not be completed. Try again shortly."): string {
-  if (typeof cause === "object" && cause !== null && "status" in cause && cause.status === 409) return "This reviewed revision is stale. Refresh and review the current outline before saving or approving.";
+  if (typeof cause === "object" && cause !== null && "status" in cause && cause.status === 409) {
+    if ("code" in cause && cause.code === "stale_staging_attempt") return "This reviewed revision is stale. Refresh and review the current outline before saving or approving.";
+    if ("code" in cause && cause.code === "staging_attempt_not_parseable") return "This parse attempt cannot be resumed. Refresh status or upload the PDF to start a new attempt.";
+  }
   if (cause instanceof Error && cause.message && cause.message.length < 200) return cause.message;
   return fallback;
 }

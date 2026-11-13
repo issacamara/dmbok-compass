@@ -1,7 +1,7 @@
 import { ADMIN_ROUTES, type AggregateMetric, type ApprovalState, type CorpusStagingAttemptStatus, type CorpusStagingStructureCorrectionEntry, type QuotaPolicy, type StructureTemplate, type UserProfile } from "./contracts";
 
 export class AdminApiError extends Error {
-  constructor(readonly status: number, message: string) {
+  constructor(readonly status: number, message: string, readonly code?: string) {
     super(message);
   }
 }
@@ -16,9 +16,13 @@ async function adminRequest<T>(path: string, token: string, init?: RequestInit):
     },
   });
   if (!response.ok) {
-    const body = await response.json().catch(() => null) as { detail?: string | { message?: string } } | null;
+    const body = await response.json().catch(() => null) as { detail?: string | { code?: string; message?: string } } | null;
     const detail = body?.detail;
-    throw new AdminApiError(response.status, typeof detail === "string" ? detail : detail?.message ?? "The administrator service could not complete the request.");
+    throw new AdminApiError(
+      response.status,
+      typeof detail === "string" ? detail : detail?.message ?? "The administrator service could not complete the request.",
+      typeof detail === "string" ? undefined : detail?.code,
+    );
   }
   return response.json() as Promise<T>;
 }

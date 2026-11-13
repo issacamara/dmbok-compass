@@ -1,6 +1,3 @@
-Warning: truncated output (original token count: 20663)
-Total output lines: 1732
-
 """Persist one immutable pair of administrator-supplied staging artifacts."""
 
 from __future__ import annotations
@@ -450,7 +447,912 @@ class FirestoreCorpusStagingAttemptStore:
         correction_code: Literal["job_interrupted", "job_failed"] = "job_failed",
     ) -> CorpusStagingAttemptStatus:
         """Persist safe progress only for the exact approved artifact tuple."""
-        …10663 tokens truncated…": source["sha256"],
+        reference = self.attempts.document(attempt_id)
+
+        def apply(transaction: Any) -> CorpusStagingAttemptStatus:
+            snapshot = reference.get(transaction=transaction)
+            if not snapshot.exists:
+                raise StagingAttemptNotFound("staging attempt is unavailable")
+            record = snapshot.to_dict()
+            status = _attempt_status(record)
+            if (
+                record.get("source") != source
+                or record.get("approved_map_artifact") != map_artifact
+                or record.get("approval_artifact") != approval_artifact
+            ):
+                raise StagingAttemptConflict("ingestion artifacts do not match the approved attempt")
+            persisted_version_id = record.get("staged_corpus_version_id")
+            if (
+                corpus_version_id is not None
+                and persisted_version_id is not None
+                and corpus_version_id != persisted_version_id
+            ):
+                raise StagingAttemptConflict("staging attempt derived a different corpus version")
+            # Duplicate Cloud Run delivery must preserve an already staged result.
+            if status.state == "staged":
+                return status
+            retrying_same_execution = (
+                status.state == "failed"
+                and state == "running"
+                and bool(record.get("dispatch_retryable"))
+                and not bool(record.get("dispatch_claimed"))
+            )
+            if status.state not in {"queued", "running"} and not retrying_same_execution:
+                if status.state == state and state in {"staged", "failed"}:
+                    return status
+                raise StagingAttemptConflict("staging attempt is not available for ingestion progress")
+            if state == "staged" and (not corpus_version_id or chunk_count is None):
+                raise ValueError("completed staging requires a corpus version and chunk count")
+            revision = status.revision + 1
+            payload: dict[str, Any] = {
+                "state": state, "revision": revision, "completed_stage": "ingestion",
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+            }
+            if parent_count is not None:
+                payload["parent_count"] = max(parent_count, int(record.get("parent_count") or 0))
+            if child_count is not None:
+                payload["child_count"] = max(child_count, int(record.get("child_count") or 0))
+            if chunk_count is not None:
+                payload["chunk_count"] = chunk_count
+            if corpus_version_id is not None:
+                payload["staged_corpus_version_id"] = corpus_version_id
+            if state == "failed":
+                payload.update({
+                    "correction_codes": [correction_code],
+                    "dispatch_retryable": True,
+                    "dispatch_claimed": False,
+                    "error": ApiError(
+                        code=correction_code,
+                        message="The approved corpus could not be staged. Retry the ingestion attempt or submit a new attempt.",
+                        retryable=True,
+                        status=503,
+                    ).model_dump(mode="json"),
+                })
+            else:
+                payload["error"] = None
+                if retrying_same_execution:
+                    payload.update({
+                        "dispatch_retryable": False,
+                        "dispatch_claimed": True,
+                        "correction_codes": [],
+                    })
+            transaction.update(reference, payload)
+            return CorpusStagingAttemptStatus.model_validate({
+                **{key: value for key, value in record.items() if key in CorpusStagingAttemptStatus.model_fields},
+                **{key: value for key, value in payload.items() if key in CorpusStagingAttemptStatus.model_fields},
+                "attempt_id": attempt_id,
+            })
+
+        return self._transaction_runner(self.client.transaction(), apply)
+
+
+def _attempt_status(record: dict[str, Any]) -> CorpusStagingAttemptStatus:
+    try:
+        status = CorpusStagingAttemptStatus.model_validate(
+            {
+                key: record[key]
+                for key in (
+                    "attempt_id",
+                    "revision",
+                    "state",
+                    "completed_stage",
+                    "preview",
+                    "correction_codes",
+                    "parent_count",
+                    "child_count",
+                    "chunk_count",
+                    "staged_corpus_version_id",
+                    "physical_page_numbers",
+                    "parsing_output_sha256",
+                    "parsing_page_count",
+                    "parsing_block_count",
+                    "parsing_usage_kind",
+                    "parsing_usage_units",
+                    "candidate_generation_state",
+                    "candidate_generation_count",
+                    "candidate_generation_target",
+                    "candidate_generation_rejected_count",
+                    "candidate_generation_usage_tokens",
+                    "error",
+                )
+                if key in record
+            }
+            | ({"hosted_parsing_state": record["parsing_state"]} if "parsing_state" in record else {})
+        )
+    except Exception:
+        raise StagingPersistenceError("staging attempt is unavailable") from None
+    binding = record.get("preview_binding")
+    if binding is not None:
+        source = record.get("source")
+        structure = record.get("structure")
+        if (
+            not isinstance(binding, dict)
+            or not isinstance(source, dict)
+            or not isinstance(structure, dict)
+            or not isinstance(binding.get("preview_revision"), int)
+            or binding["preview_revision"] < 1
+            or binding["preview_revision"] > status.revision
+            or binding.get("source_generation") != source.get("generation")
+            or binding.get("structure_generation") != structure.get("generation")
+        ):
+            raise StagingPersistenceError("staging preview binding is unavailable")
+    return status
+
+
+def _block_preview(
+    structure_map: StructureMap, parsing: ParsingArtifact
+) -> tuple[list[CorpusStagingPreviewEntry], list[str]]:
+    by_id = {block.block_id: block for block in parsing.blocks}
+    preview: list[CorpusStagingPreviewEntry] = []
+    corrections: set[str] = set()
+    for index, entry in enumerate(structure_map.entries):
+        codes = ["unmatched_passage"] if entry.section_path == ("Unclassified",) else []
+        corrections.update(codes)
+        excerpt = " ".join(by_id[item].raw_text for item in entry.block_ids if item in by_id)[:500]
+        preview.append(CorpusStagingPreviewEntry(
+            entry_index=index,
+            section_path=entry.section_path,
+            page_start=entry.page_start,
+            page_end=entry.page_end,
+            match_status="unmatched" if codes else "matched",
+            correction_codes=codes,
+            block_ids=entry.block_ids,
+            excerpt=excerpt or None,
+        ))
+    return preview, sorted(corrections)
+
+
+_NON_ALNUM = re.compile(r"[^a-z0-9]+")
+
+
+def _normalised_match(value: str) -> str:
+    return _NON_ALNUM.sub("", value.casefold())
+
+
+def _coverage_errors(template: StructureTemplate, page_count: int) -> list[int]:
+    missing: list[int] = []
+    next_page = 1
+    for entry in sorted(template.entries, key=lambda item: (item.page_start, item.page_end)):
+        if entry.page_start != next_page or entry.page_end > page_count:
+            missing.extend(range(next_page, max(next_page, entry.page_start)))
+            if entry.page_start < next_page or entry.page_end > page_count:
+                missing.append(entry.page_start)
+        next_page = max(next_page, entry.page_end + 1)
+    if next_page <= page_count:
+        missing.extend(range(next_page, page_count + 1))
+    return sorted(set(page for page in missing if 1 <= page <= page_count))
+
+
+def _preview_for(
+    template: StructureTemplate,
+    pages: tuple[Any, ...],
+    page_count: int,
+    *,
+    source: dict[str, Any],
+) -> tuple[list[CorpusStagingPreviewEntry], list[str]]:
+    correction_by_index: dict[int, set[str]] = {index: set() for index in range(len(template.entries))}
+    overall: set[str] = set()
+
+    missing_pages = _coverage_errors(template, page_count)
+    if missing_pages:
+        overall.add("missing_page_coverage")
+        for index, entry in enumerate(template.entries):
+            if any(
+                entry.page_start <= page <= entry.page_end
+                or page == entry.page_end + 1
+                or page == entry.page_start - 1
+                for page in missing_pages
+            ):
+                correction_by_index[index].add("missing_page_coverage")
+
+    toc = [
+        HeadingAnchor(entry.page_start, entry.section_path, entry.section_path[-1])
+        for entry in template.entries
+        if 1 <= entry.page_start <= page_count
+    ]
+    printed: list[HeadingAnchor] = []
+    previous: str | None = None
+    for page in pages:
+        heading = page.section
+        if not heading or heading == previous:
+            previous = heading
+            continue
+        matching_paths = [
+            entry.section_path
+            for entry in template.entries
+            if _normalised_match(entry.section_path[-1]) == _normalised_match(heading)
+        ]
+        for section_path in matching_paths or [(heading,)]:
+            printed.append(HeadingAnchor(page.page, section_path, heading))
+        previous = heading
+
+    try:
+        source_identity = SourceIdentity(
+            str(source["object_name"]), int(source["generation"]), str(source["sha256"])
+        )
+        proposal = propose_structure_map(
+            source_identity, page_count=page_count, toc=toc, printed_headings=printed
+        )
+        for unresolved in proposal.unresolved:
+            code = "ambiguous_heading" if unresolved.reason == "ambiguous heading anchors" else "unmatched_passage"
+            overall.add(code)
+            for index, entry in enumerate(template.entries):
+                if entry.page_start <= unresolved.page <= entry.page_end:
+                    correction_by_index[index].add(code)
+    except ValueError:
+        overall.add("unmatched_passage")
+        for index in range(len(template.entries)):
+            correction_by_index[index].add("unmatched_passage")
+
+    preview: list[CorpusStagingPreviewEntry] = []
+    for index, entry in enumerate(template.entries):
+        codes = sorted(correction_by_index[index])
+        preview.append(
+            CorpusStagingPreviewEntry(
+                entry_index=index,
+                section_path=entry.section_path,
+                page_start=entry.page_start,
+                page_end=entry.page_end,
+                match_status="matched" if not codes else (
+                    "ambiguous" if "ambiguous_heading" in codes else "unmatched"
+                ),
+                correction_codes=codes,
+            )
+        )
+    return preview, sorted(overall)
+
+
+def validate_staging_files(
+    *,
+    pdf_filename: str | None,
+    pdf_content_type: str | None,
+    pdf_bytes: bytes,
+    map_filename: str | None,
+    map_content_type: str | None,
+    map_bytes: bytes,
+) -> None:
+    if len(pdf_bytes) > MAX_STAGING_PDF_BYTES or len(map_bytes) > MAX_STAGING_MAP_BYTES:
+        raise StagingUploadValidationError(
+            "staging_file_too_large", "One or more staging files exceed the allowed size.", 413
+        )
+    if not pdf_filename or not pdf_filename.lower().endswith(".pdf") or _media_type(pdf_content_type) != "application/pdf":
+        raise StagingUploadValidationError(
+            "invalid_staging_pdf", "Upload one PDF file and one JSON structure file.", 415
+        )
+    if not map_filename or not map_filename.lower().endswith(".json") or _media_type(map_content_type) != "application/json":
+        raise StagingUploadValidationError(
+            "invalid_staging_map", "Upload one PDF file and one JSON structure file.", 415
+        )
+    if not pdf_bytes.startswith(b"%PDF-"):
+        raise StagingUploadValidationError(
+            "invalid_staging_pdf", "The PDF file signature is invalid.", 422
+        )
+    try:
+        StructureTemplate.model_validate_json(map_bytes)
+    except ValueError:
+        raise StagingUploadValidationError(
+            "invalid_staging_map", "The JSON structure file does not match the staging template.", 422
+        ) from None
+
+
+def validate_staging_pdf(*, pdf_filename: str | None, pdf_content_type: str | None, pdf_bytes: bytes) -> None:
+    if len(pdf_bytes) > MAX_STAGING_PDF_BYTES:
+        raise StagingUploadValidationError(
+            "staging_file_too_large", "The PDF exceeds the allowed size.", 413
+        )
+    if not pdf_filename or not pdf_filename.lower().endswith(".pdf") or _media_type(pdf_content_type) != "application/pdf":
+        raise StagingUploadValidationError(
+            "invalid_staging_pdf", "Upload one PDF file.", 415
+        )
+    if not pdf_bytes.startswith(b"%PDF-"):
+        raise StagingUploadValidationError(
+            "invalid_staging_pdf", "The PDF file signature is invalid.", 422
+        )
+
+
+def _validate_physical_page_selection(pdf_bytes: bytes, page_numbers: list[int]) -> list[int]:
+    if not page_numbers or len(page_numbers) > 5 or any(type(page) is not int or page < 1 for page in page_numbers):
+        raise StagingUploadValidationError(
+            "invalid_page_selection", "Choose up to five unique physical page numbers starting at 1.", 422
+        )
+    if page_numbers != sorted(set(page_numbers)):
+        raise StagingUploadValidationError(
+            "invalid_page_selection", "Physical page numbers must be unique and sorted.", 422
+        )
+    try:
+        from pypdf import PdfReader
+
+        page_count = len(PdfReader(BytesIO(pdf_bytes)).pages)
+    except Exception:
+        raise StagingUploadValidationError("invalid_staging_pdf", "The PDF file is invalid.", 422) from None
+    if page_numbers[-1] > page_count:
+        raise StagingUploadValidationError(
+            "invalid_page_selection", "A selected physical page is outside the PDF.", 422
+        )
+    return page_numbers
+
+
+class CorpusStagingUploadService:
+    def __init__(self, store: CorpusStagingAttemptStore, bucket: Any, bucket_name: str) -> None:
+        self.store = store
+        self.bucket = bucket
+        self.bucket_name = bucket_name
+
+    def submit(self, *, actor_id: str, pdf_bytes: bytes, map_bytes: bytes) -> CorpusStagingAttemptStatus:
+        attempt_id = uuid4().hex
+        source_name = f"staging/{attempt_id}/source.pdf"
+        map_name = f"staging/{attempt_id}/structure.json"
+        try:
+            revision = self.store.begin(
+                attempt_id=attempt_id,
+                actor_id=actor_id,
+                source_object_name=source_name,
+                map_object_name=map_name,
+            )
+        except Exception:
+            raise StagingPersistenceError("staging storage is unavailable") from None
+
+        for kind, name, content, content_type in (
+            ("source", source_name, pdf_bytes, "application/pdf"),
+            ("structure", map_name, map_bytes, "application/json"),
+        ):
+            try:
+                blob = self.bucket.blob(name)
+                blob.upload_from_string(
+                    content, content_type=content_type, if_generation_match=0, timeout=60
+                )
+                generation = int(blob.generation)
+                if generation < 1:
+                    raise ValueError("invalid artifact generation")
+                artifact = StagingArtifact(
+                    object_name=name,
+                    generation=generation,
+                    sha256=sha256(content).hexdigest(),
+                    content_type=content_type,
+                )
+                revision = self.store.attach_artifact(
+                    attempt_id=attempt_id,
+                    artifact_kind=kind,  # type: ignore[arg-type]
+                    artifact=artifact.to_dict(bucket_name=self.bucket_name),
+                )
+            except Exception:
+                error = ApiError(
+                    code="staging_storage_failed",
+                    message="The paired files could not be staged. Please submit a new attempt.",
+                    retryable=True,
+                    status=503,
+                )
+                try:
+                    return self.store.fail(attempt_id=attempt_id, error=error)
+                except Exception:
+                    raise StagingPersistenceError("staging storage is unavailable") from None
+
+        return CorpusStagingAttemptStatus(
+            attempt_id=attempt_id, revision=revision, state="validating"
+        )
+
+    def submit_pdf(
+        self, *, actor_id: str, pdf_bytes: bytes, physical_page_numbers: list[int] | None = None,
+        submission_id: str | None = None,
+    ) -> CorpusStagingAttemptStatus:
+        """Create a source-only attempt; parsing and structure generation are later stages."""
+        if len(pdf_bytes) > MAX_STAGING_PDF_BYTES or not pdf_bytes.startswith(b"%PDF-"):
+            raise StagingUploadValidationError(
+                "invalid_staging_pdf", "The PDF file is invalid or exceeds the allowed size.", 422
+            )
+        source_digest = sha256(pdf_bytes).hexdigest()
+        if physical_page_numbers is not None:
+            physical_page_numbers = _validate_physical_page_selection(pdf_bytes, physical_page_numbers)
+        attempt_identity = f"{actor_id}\0{source_digest}"
+        if physical_page_numbers is not None:
+            attempt_identity = f"{attempt_identity}\0{json.dumps(physical_page_numbers, separators=(',', ':'))}"
+        if submission_id is not None:
+            attempt_identity = f"{attempt_identity}\0{submission_id}"
+        attempt_id = sha256(attempt_identity.encode("utf-8")).hexdigest()[:32]
+        try:
+            existing = self.store.get(attempt_id=attempt_id)
+            if existing is not None:
+                source = existing.get("source")
+                if existing.get("actor_id") != actor_id or existing.get("source_object_name") != f"staging/{attempt_id}/source.pdf":
+                    raise StagingAttemptConflict("source-only attempt identity conflicts")
+                if source is not None:
+                    if not isinstance(source, dict) or source.get("sha256") != source_digest:
+                        raise StagingAttemptConflict("source-only attempt identity conflicts")
+                    return _attempt_status(existing)
+        except (StagingAttemptConflict, StagingPersistenceError):
+            raise
+        except Exception:
+            raise StagingPersistenceError("staging storage is unavailable") from None
+        source_name = f"staging/{attempt_id}/source.pdf"
+        try:
+            try:
+                revision = self.store.begin(
+                    attempt_id=attempt_id,
+                    actor_id=actor_id,
+                    source_object_name=source_name,
+                    map_object_name=None,
+                    physical_page_numbers=physical_page_numbers,
+                )
+            except Exception:
+                concurrent = self.store.get(attempt_id=attempt_id)
+                if (
+                    concurrent is None
+                    or concurrent.get("actor_id") != actor_id
+                    or concurrent.get("source_object_name") != source_name
+                ):
+                    raise
+                attached = concurrent.get("source")
+                if isinstance(attached, dict) and attached.get("sha256") == source_digest:
+                    return _attempt_status(concurrent)
+                revision = int(concurrent.get("revision", 1))
+            blob = self.bucket.blob(source_name)
+            try:
+                blob.upload_from_string(
+                    pdf_bytes, content_type="application/pdf", if_generation_match=0, timeout=60
+                )
+                generation = int(blob.generation)
+            except PreconditionFailed:
+                existing_blob = self.bucket.blob(source_name)
+                existing_blob.reload(timeout=30)
+                generation = int(existing_blob.generation)
+                existing_bytes = self.bucket.blob(source_name, generation=generation).download_as_bytes(timeout=60)
+                if sha256(existing_bytes).hexdigest() != source_digest:
+                    raise StagingAttemptConflict("source-only object content conflicts") from None
+            if generation < 1:
+                raise ValueError("invalid source generation")
+            revision = self.store.attach_artifact(
+                attempt_id=attempt_id,
+                artifact_kind="source",
+                artifact=StagingArtifact(
+                    object_name=source_name,
+                    generation=generation,
+                    sha256=source_digest,
+                    content_type="application/pdf",
+                ).to_dict(bucket_name=self.bucket_name),
+            )
+        except Exception:
+            try:
+                self.store.fail(
+                    attempt_id=attempt_id,
+                    error=ApiError(
+                        code="staging_storage_failed",
+                        message="The PDF could not be staged. Please submit a new attempt.",
+                        retryable=True,
+                        status=503,
+                    ),
+                )
+            except Exception:
+                pass
+            raise StagingPersistenceError("staging storage is unavailable") from None
+        return CorpusStagingAttemptStatus(
+            attempt_id=attempt_id, revision=revision, state="validating",
+            physical_page_numbers=physical_page_numbers,
+        )
+
+    def status(self, *, attempt_id: str) -> CorpusStagingAttemptStatus:
+        try:
+            record = self.store.get(attempt_id=attempt_id)
+            if record is None:
+                raise StagingAttemptNotFound("staging attempt is unavailable")
+            return _attempt_status(record)
+        except (StagingAttemptNotFound, StagingPersistenceError):
+            raise
+        except Exception:
+            raise StagingPersistenceError("staging storage is unavailable") from None
+
+    def propose_structure(self, *, attempt_id: str, actor_id: str) -> CorpusStagingAttemptStatus:
+        record = self.store.get(attempt_id=attempt_id)
+        if record is None:
+            raise StagingAttemptNotFound("staging attempt is unavailable")
+        current = _attempt_status(record)
+        source = record.get("source")
+        if record.get("parsing_state") != "awaiting_review":
+            raise StagingAttemptConflict("hosted parsing has not completed")
+        if current.state == "awaiting_review" and current.preview is not None:
+            return current
+        parsing_identity = record.get("parsing_artifact")
+        parsing = self._saved_parsing_artifact(attempt_id, source, parsing_identity)
+        source_identity = SourceIdentity(
+            f"gs://{source['bucket']}/{source['object_name']}#{source['generation']}",
+            int(source["generation"]), str(source["sha256"]),
+        )
+        structure_map = propose_block_structure_map(source_identity, parsing)
+        return self._save_structure_review(
+            attempt_id, actor_id, record, source, parsing_identity,
+            structure_map, current.revision,
+        )
+
+    def correct_structure(
+        self, *, attempt_id: str, expected_revision: int, actor_id: str,
+        entries: list[CorpusStagingStructureCorrectionEntry],
+    ) -> CorpusStagingAttemptStatus:
+        record = self.store.get(attempt_id=attempt_id)
+        if record is None:
+            raise StagingAttemptNotFound("staging attempt is unavailable")
+        current = _attempt_status(record)
+        if current.revision != expected_revision or current.state != "awaiting_review":
+            raise StagingAttemptConflict("staging attempt changed before structure correction")
+        source = record.get("source")
+        if record.get("parsing_state") != "awaiting_review":
+            raise StagingAttemptConflict("hosted parsing has not completed")
+        parsing_identity = record.get("parsing_artifact")
+        parsing = self._saved_parsing_artifact(attempt_id, source, parsing_identity)
+        source_identity = SourceIdentity(
+            f"gs://{source['bucket']}/{source['object_name']}#{source['generation']}",
+            int(source["generation"]), str(source["sha256"]),
+        )
+        try:
+            structure_map = correct_block_structure_map(source_identity, parsing, entries)
+        except ValueError as error:
+            raise StagingAttemptConflict(str(error)) from None
+        return self._save_structure_review(
+            attempt_id, actor_id, record, source, parsing_identity,
+            structure_map, expected_revision,
+        )
+
+    def _saved_parsing_artifact(
+        self, attempt_id: str, source: Any, identity: Any
+    ) -> ParsingArtifact:
+        if (
+            not isinstance(source, dict)
+            or not _valid_artifact(source, self.bucket_name, attempt_id, "source")
+            or not isinstance(identity, dict)
+            or identity.get("source_generation") != str(source.get("generation"))
+            or identity.get("source_sha256") != source.get("sha256")
+            or not isinstance(identity.get("artifact_generation"), int)
+            or not isinstance(identity.get("artifact_sha256"), str)
+            or not re.fullmatch(r"[a-f0-9]{64}", identity["artifact_sha256"])
+            or identity.get("object_name") != f"staging/{attempt_id}/parsing/{identity.get('sha256')}.json"
+        ):
+            raise StagingAttemptConflict("saved parsing output is unavailable")
+        try:
+            blob = self.bucket.blob(identity["object_name"], generation=identity["artifact_generation"])
+            payload = blob.download_as_bytes(timeout=60)
+            if sha256(payload).hexdigest() != identity["artifact_sha256"]:
+                raise ValueError("parsing artifact digest mismatch")
+            parsing = ParsingArtifact.model_validate_json(payload)
+            if parsing.output_sha256 != identity.get("sha256"):
+                raise ValueError("parsing output digest mismatch")
+            if parsing.source_sha256 != source["sha256"] or str(parsing.source_generation) != str(source["generation"]):
+                raise ValueError("parsing source mismatch")
+            return parsing
+        except Exception:
+            raise StagingAttemptConflict("saved parsing output is invalid") from None
+
+    def _save_structure_review(
+        self, attempt_id: str, actor_id: str, record: dict[str, Any], source: dict[str, Any],
+        parsing_identity: dict[str, Any], structure_map: StructureMap, expected_revision: int,
+    ) -> CorpusStagingAttemptStatus:
+        parsing = self._saved_parsing_artifact(attempt_id, source, parsing_identity)
+        preview, corrections = _block_preview(structure_map, parsing)
+        payload = (json.dumps(structure_map.model_dump(mode="json"), sort_keys=True, separators=(",", ":")) + "\n").encode()
+        next_revision = expected_revision + 1
+        object_name = f"staging/{attempt_id}/structure-revisions/{next_revision}-{structure_map.content_hash}.json"
+        artifact = _write_pinned_artifact(self.bucket, self.bucket_name, object_name, payload, "application/json")
+        status = CorpusStagingAttemptStatus(
+            attempt_id=attempt_id,
+            revision=expected_revision,
+            state="awaiting_review",
+            completed_stage="review",
+            preview=preview,
+            correction_codes=corrections,
+            hosted_parsing_state="awaiting_review",
+            parsing_output_sha256=parsing.output_sha256,
+        )
+        try:
+            return self.store.save_structure_review(
+                attempt_id=attempt_id,
+                expected_revision=expected_revision,
+                parsing_artifact=parsing_identity,
+                structure_artifact=artifact,
+                status=status,
+                reviewed_by=actor_id,
+            )
+        except (StagingAttemptNotFound, StagingAttemptConflict):
+            raise
+        except Exception:
+            raise StagingPersistenceError("staging structure review is unavailable") from None
+
+    def validate(self, *, attempt_id: str) -> CorpusStagingAttemptStatus:
+        record = self.store.get(attempt_id=attempt_id)
+        if record is None:
+            raise StagingAttemptNotFound("staging attempt is unavailable")
+        current = _attempt_status(record)
+        if current.state != "validating":
+            return current
+
+        revision = current.revision
+        source = record.get("source")
+        structure = record.get("structure")
+        if not _valid_artifact(source, self.bucket_name, attempt_id, "source") or not _valid_artifact(
+            structure, self.bucket_name, attempt_id, "structure"
+        ):
+            return self._finish_validation(
+                attempt_id=attempt_id,
+                revision=revision,
+                source=source,
+                structure=structure,
+                status=_failed_status(
+                    attempt_id,
+                    "source_pair_mismatch",
+                    "The staged files could not be matched to this attempt. Submit a new attempt.",
+                    preview=None,
+                ),
+            )
+
+        try:
+            source_bytes = _read_pinned_object(self.bucket, source)
+            map_bytes = _read_pinned_object(self.bucket, structure)
+        except (NotFound, PreconditionFailed):
+            return self._finish_validation(
+                attempt_id=attempt_id,
+                revision=revision,
+                source=source,
+                structure=structure,
+                status=_failed_status(
+                    attempt_id,
+                    "source_pair_mismatch",
+                    "The pinned files are unavailable. Submit a new attempt.",
+                    preview=None,
+                ),
+            )
+        except Exception:
+            return self._finish_validation(
+                attempt_id=attempt_id,
+                revision=revision,
+                source=source,
+                structure=structure,
+                status=_failed_status(
+                    attempt_id,
+                    "job_failed",
+                    "The staged files could not be validated. Submit a new attempt.",
+                    status=503,
+                    retryable=True,
+                    preview=None,
+                ),
+            )
+
+        if sha256(source_bytes).hexdigest() != source["sha256"] or sha256(map_bytes).hexdigest() != structure["sha256"]:
+            return self._finish_validation(
+                attempt_id=attempt_id,
+                revision=revision,
+                source=source,
+                structure=structure,
+                status=_failed_status(
+                    attempt_id,
+                    "source_pair_mismatch",
+                    "The staged files changed after upload. Submit a new attempt.",
+                    preview=None,
+                ),
+            )
+
+        try:
+            template = StructureTemplate.model_validate_json(map_bytes)
+        except Exception:
+            return self._finish_validation(
+                attempt_id=attempt_id,
+                revision=revision,
+                source=source,
+                structure=structure,
+                status=_failed_status(
+                    attempt_id,
+                    "invalid_structure",
+                    "The structure file does not match the staging template. Submit a new attempt.",
+                    preview=None,
+                ),
+            )
+
+        try:
+            with tempfile.TemporaryDirectory(prefix="corpus-staging-") as directory:
+                source_path = Path(directory) / "source.pdf"
+                source_path.write_bytes(source_bytes)
+                report = extract_pdf(source_path, source_uri="staged-source")
+                if not _document_title_matches(source_path, template.document_title, report.pages[0].text if report.pages else ""):
+                    return self._finish_validation(
+                        attempt_id=attempt_id,
+                        revision=revision,
+                        source=source,
+                        structure=structure,
+                        status=_failed_status(
+                            attempt_id,
+                            "source_pair_mismatch",
+                            "The structure file does not match the uploaded document. Submit a new attempt.",
+                            preview=None,
+                        ),
+                    )
+                if report.source_sha256 != source["sha256"]:
+                    return self._finish_validation(
+                        attempt_id=attempt_id,
+                        revision=revision,
+                        source=source,
+                        structure=structure,
+                        status=_failed_status(
+                            attempt_id,
+                            "source_pair_mismatch",
+                            "The staged PDF does not match its immutable upload. Submit a new attempt.",
+                            preview=None,
+                        ),
+                    )
+                preview, corrections = _preview_for(
+                    template, report.pages, report.page_count, source=source
+                )
+                if report.page_count < 1 or len(report.pages) != report.page_count or tuple(
+                    page.page for page in report.pages
+                ) != tuple(range(1, report.page_count + 1)):
+                    corrections = sorted(set(corrections) | {"missing_page_coverage"})
+                if report.failures:
+                    corrections = sorted(set(corrections) | {"unmatched_passage"})
+                    for index, entry in enumerate(preview):
+                        if any(entry.page_start <= page <= entry.page_end for page in _failure_pages(report.failures)):
+                            codes = sorted(set(entry.correction_codes) | {"unmatched_passage"})
+                            preview[index] = entry.model_copy(
+                                update={"match_status": "unmatched", "correction_codes": codes}
+                            )
+                status = (
+                    CorpusStagingAttemptStatus(
+                        attempt_id=attempt_id,
+                        revision=revision,
+                        state="failed",
+                        completed_stage="validation",
+                        preview=preview,
+                        correction_codes=corrections,
+                        error=ApiError(
+                            code="staging_validation_failed",
+                            message="The structure map needs correction. Submit a new attempt.",
+                            status=422,
+                        ),
+                    )
+                    if corrections
+                    else CorpusStagingAttemptStatus(
+                        attempt_id=attempt_id,
+                        revision=revision,
+                        state="awaiting_review",
+                        completed_stage="review",
+                        preview=preview,
+                    )
+                )
+        except StagingAttemptConflict:
+            raise
+        except Exception:
+            status = _failed_status(
+                attempt_id,
+                "unmatched_passage",
+                "The uploaded document could not be validated. Submit a new attempt.",
+                status=422,
+                preview=None,
+            )
+
+        return self._finish_validation(
+            attempt_id=attempt_id,
+            revision=revision,
+            source=source,
+            structure=structure,
+            status=status,
+        )
+
+    def _finish_validation(
+        self,
+        *,
+        attempt_id: str,
+        revision: int,
+        source: dict[str, Any] | None,
+        structure: dict[str, Any] | None,
+        status: CorpusStagingAttemptStatus,
+    ) -> CorpusStagingAttemptStatus:
+        try:
+            return self.store.complete_validation(
+                attempt_id=attempt_id,
+                expected_revision=revision,
+                status=status,
+                source_generation=int(source["generation"]) if isinstance(source, dict) else 0,
+                structure_generation=int(structure["generation"]) if isinstance(structure, dict) else 0,
+            )
+        except (StagingAttemptNotFound, StagingAttemptConflict):
+            raise
+        except Exception:
+            raise StagingPersistenceError("staging storage is unavailable") from None
+
+
+class CloudRunCorpusIngestionDispatcher:
+    """Dispatch one pinned source/map/approval tuple to the configured job."""
+
+    def __init__(self, *, project: str, location: str, job_name: str, execute: Callable[[dict[str, str]], None] | None = None) -> None:
+        self.project = _required_config(project, "project")
+        self.location = _required_config(location, "location")
+        self.job_name = _required_config(job_name, "job_name")
+        self._execute = execute or self._execute_cloud_run
+
+    def dispatch(
+        self, *, attempt_id: str, source: dict[str, Any], map_artifact: dict[str, Any],
+        approval_artifact: dict[str, Any], parsing_artifact: dict[str, Any] | None = None,
+    ) -> None:
+        environment = {
+            "CORPUS_BUCKET_NAME": source["bucket"],
+            "CORPUS_OBJECT_NAME": source["object_name"],
+            "CORPUS_SOURCE_GENERATION": str(source["generation"]),
+            "CORPUS_STRUCTURE_MAP_URI": _pinned_uri(map_artifact),
+            "CORPUS_STRUCTURE_MAP_SHA256": map_artifact["sha256"],
+            "CORPUS_STRUCTURE_MAP_APPROVAL_URI": _pinned_uri(approval_artifact),
+            "CORPUS_STRUCTURE_MAP_APPROVAL_SHA256": approval_artifact["sha256"],
+            "CORPUS_STAGING_ATTEMPT_ID": attempt_id,
+        }
+        if parsing_artifact is not None:
+            environment.update({
+                "CORPUS_PARSING_ARTIFACT_URI": _pinned_uri(parsing_artifact),
+                "CORPUS_PARSING_ARTIFACT_SHA256": parsing_artifact["sha256"],
+                "CORPUS_PARSING_OUTPUT_SHA256": parsing_artifact["output_sha256"],
+            })
+        try:
+            self._execute(environment)
+        except StagingDispatchError:
+            raise
+        except Exception:
+            # Transport failures can happen after Cloud Run accepted the request.
+            raise StagingDispatchError(retryable=False) from None
+
+    def _execute_cloud_run(self, environment: dict[str, str]) -> None:
+        import google.auth
+        from google.auth.transport.requests import AuthorizedSession
+
+        credentials, _ = google.auth.default(scopes=["https://www.googleapis.com/auth/cloud-platform"])
+        response = AuthorizedSession(credentials).post(
+            "https://run.googleapis.com/v2/projects/"
+            f"{self.project}/locations/{self.location}/jobs/{self.job_name}:run",
+            json={"overrides": {"containerOverrides": [{"env": [
+                {"name": name, "value": value} for name, value in environment.items()
+            ]}]}}, timeout=15,
+        )
+        if not response.ok:
+            # A 4xx response is an explicit rejection. Server errors may be
+            # returned after job creation and therefore must not be retried.
+            raise StagingDispatchError(retryable=400 <= int(response.status_code) < 500)
+
+
+class CorpusStagingApprovalService:
+    def __init__(self, store: CorpusStagingAttemptStore, bucket: Any, bucket_name: str, dispatcher: CorpusIngestionDispatcher) -> None:
+        self.store, self.bucket, self.bucket_name, self.dispatcher = store, bucket, bucket_name, dispatcher
+
+    def approve(self, *, attempt_id: str, expected_revision: int, actor_id: str) -> CorpusStagingAttemptStatus:
+        record = self.store.get(attempt_id=attempt_id)
+        if record is None:
+            raise StagingAttemptNotFound("staging attempt is unavailable")
+        current = _attempt_status(record)
+        if current.state in {"queued", "running", "staged"}:
+            return current
+        if current.revision != expected_revision or current.state not in {"awaiting_review", "failed"}:
+            raise StagingAttemptConflict("staging attempt changed before approval")
+        source, template_artifact = record.get("source"), record.get("structure")
+        parsing_identity = record.get("parsing_artifact")
+        parse_bound = parsing_identity is not None
+        if not _valid_artifact(source, self.bucket_name, attempt_id, "source") or not _valid_structure_artifact(
+            template_artifact, self.bucket_name, attempt_id
+        ):
+            raise StagingAttemptConflict("staging artifact pair is invalid")
+        if current.state == "awaiting_review" and (
+            current.preview is None or current.correction_codes or any(
+                entry.match_status != "matched" or entry.correction_codes for entry in current.preview
+            ) or record.get("preview_binding", {}).get("preview_revision") != current.revision
+        ):
+            raise StagingAttemptConflict("staging preview is not fully matched")
+        if current.state == "failed" and not record.get("dispatch_retryable"):
+            raise StagingAttemptConflict("staging attempt cannot be retried")
+        try:
+            if current.state == "failed":
+                map_artifact = record.get("approved_map_artifact")
+                approval_artifact = record.get("approval_artifact")
+                map_bytes = (
+                    self._read_reviewed_map(attempt_id, map_artifact)
+                    if parse_bound
+                    else self._read_derived(attempt_id, map_artifact, "approved-structure-map.json")
+                )
+                approval_bytes = self._read_derived(attempt_id, approval_artifact, "approval.json")
+                previous = record.get("approval")
+                if not isinstance(previous, dict):
+                    raise StagingAttemptConflict("the prior approval is unavailable")
+                map_value = json.loads(map_bytes)
+                expected_source = {
+                    "uri": f"gs://{source['bucket']}/{source['object_name']}#{source['generation']}",
+                    "generation": source["generation"], "sha256": source["sha256"],
                 }
                 if previous.get("source") != expected_source or json.loads(approval_bytes) != previous:
                     raise StagingAttemptConflict("the pinned approval does not match this source")

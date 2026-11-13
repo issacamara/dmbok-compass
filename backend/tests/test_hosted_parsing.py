@@ -465,16 +465,20 @@ def test_llamacloud_sdk_items_pages_map_to_strict_source_blocks():
                     "page_number": 21,
                     "success": True,
                     "items": [
+                        {"type": "header", "md": "Running header"},
                         {"type": "text", "md": "Heading and body"},
                         {
                             "type": "list",
                             "md": "- first\n- second",
                             "items": [
                                 {"type": "text", "md": "first"},
-                                {"type": "text", "md": "second"},
+                                {"type": "list", "items": [
+                                    {"type": "text", "md": "second"},
+                                ]},
                             ],
                         },
                         {"type": "table", "md": "A | B", "csv": "A,B\n1,2"},
+                        {"type": "footer", "md": "Running footer"},
                     ],
                 }
             ],
@@ -484,10 +488,11 @@ def test_llamacloud_sdk_items_pages_map_to_strict_source_blocks():
 
     artifact = _parse_result(payload, "12", SOURCE["sha256"], raw)
 
-    assert [block.kind for block in artifact.blocks] == ["text", "list", "table"]
-    assert [block.physical_page for block in artifact.blocks] == [21, 21, 21]
-    assert artifact.blocks[1].list_items == ("first", "second")
-    assert artifact.blocks[2].table_rows == (("A", "B"), ("1", "2"))
+    assert [block.kind for block in artifact.blocks] == ["text", "text", "list", "table", "text"]
+    assert [block.physical_page for block in artifact.blocks] == [21] * 5
+    assert artifact.blocks[2].list_items == ("first", "second")
+    assert artifact.blocks[3].table_rows == (("A", "B"), ("1", "2"))
+    assert [artifact.blocks[0].raw_text, artifact.blocks[-1].raw_text] == ["Running header", "Running footer"]
     assert artifact.output_sha256 == hashlib.sha256(raw).hexdigest()
 
 

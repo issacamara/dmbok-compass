@@ -708,15 +708,21 @@ def _llama_cloud_blocks(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
                 nested = item.get("items")
                 if not isinstance(nested, list):
                     raise ParsingError("LlamaCloud list content is invalid")
-                if not nested or any(
-                    not isinstance(child, Mapping)
-                    or child.get("type") != "text"
-                    or not isinstance(child.get("md"), str)
-                    or not child["md"].strip()
-                    for child in nested
-                ):
+                if not nested:
                     raise ParsingError("LlamaCloud list items are invalid")
-                list_items = tuple(child["md"] for child in nested)
+                list_items_list: list[str] = []
+                pending = list(reversed(nested))
+                while pending:
+                    child = pending.pop()
+                    if not isinstance(child, Mapping):
+                        raise ParsingError("LlamaCloud list items are invalid")
+                    if child.get("type") == "text" and isinstance(child.get("md"), str) and child["md"].strip():
+                        list_items_list.append(child["md"])
+                    elif child.get("type") == "list" and isinstance(child.get("items"), list) and child["items"]:
+                        pending.extend(reversed(child["items"]))
+                    else:
+                        raise ParsingError("LlamaCloud list items are invalid")
+                list_items = tuple(list_items_list)
                 blocks.append({
                     "block_id": block_id,
                     "physical_page": page_number,
@@ -725,7 +731,7 @@ def _llama_cloud_blocks(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
                     "list_items": list_items,
                 })
                 continue
-            if item_type in {"text", "heading", "code", "link", "image"} and isinstance(markdown, str) and markdown.strip():
+            if item_type in {"text", "heading", "code", "link", "image", "header", "footer"} and isinstance(markdown, str) and markdown.strip():
                 blocks.append({
                     "block_id": block_id,
                     "physical_page": page_number,

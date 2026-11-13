@@ -11,6 +11,7 @@ import hashlib
 import csv
 import io
 import json
+import math
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -772,4 +773,6 @@ def _usage_detail(payload: Any) -> tuple[str | None, int | None]:
                 value = usage.get(key)
                 if type(value) is int and value >= 0:
                     return key, value
+                if key == "credits" and type(value) in (int, float) and math.isfinite(value) and value >= 0:
+                    return key, math.ceil(value)
     return None, None

@@ -250,6 +250,32 @@ def test_usage_from_nested_job_is_reconciled():
     assert reservations[0][1] == 15
 
 
+def test_fractional_job_credits_round_up_for_integer_allowance_accounting():
+    checkpoints, artifacts = Checkpoints(), Artifacts()
+    provider = Provider(result={"blocks": RESULT["blocks"], "job": {"usage": {"credits": 15.0}}})
+    parser, _, reconciled = coordinator(provider, checkpoints, artifacts, max_units=15)
+
+    outcome = parser.run(attempt_id=ATTEMPT, source=SOURCE, pdf=PDF)
+
+    assert outcome.state == "awaiting_review"
+    assert outcome.usage_kind == "credits"
+    assert outcome.usage_units == 15
+    assert reconciled[0][1] == 15
+
+
+def test_fractional_job_credits_above_limit_round_up_before_enforcement():
+    checkpoints, artifacts = Checkpoints(), Artifacts()
+    provider = Provider(result={"blocks": RESULT["blocks"], "job": {"usage": {"credits": 15.1}}})
+    parser, _, reconciled = coordinator(provider, checkpoints, artifacts, max_units=15)
+
+    outcome = parser.run(attempt_id=ATTEMPT, source=SOURCE, pdf=PDF)
+
+    assert outcome.state == "failed"
+    assert outcome.usage_kind == "credits"
+    assert outcome.usage_units == 16
+    assert reconciled[0][1] == 16
+
+
 def test_restart_reconciles_saved_job_and_reuses_immutable_artifact():
     checkpoints, artifacts = Checkpoints(), Artifacts()
     provider = Provider(statuses=["running", "running", "succeeded"])

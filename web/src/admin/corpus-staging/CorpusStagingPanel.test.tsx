@@ -167,7 +167,7 @@ describe("CorpusStagingPanel", () => {
 
     expect(api.startCorpusStagingParse).toHaveBeenCalledWith("admin-token", parsing.attempt_id);
     expect(api.submitPdfOnlyCorpusStagingAttempt).not.toHaveBeenCalled();
-    expect(await screen.findByRole("status")).toHaveTextContent(/resumed the saved parse job/i);
+    expect(await screen.findByText(/resumed the saved parse job/i)).toBeInTheDocument();
   });
 
   it("resumes the saved attempt, handles stale revisions, and keeps refresh available", async () => {

@@ -34,7 +34,7 @@ _SECRET_KEY = re.compile(r"(?:api[_-]?key|credential|password|secret|token)", re
 RAG_DERIVATION = "langchain-rag-v2"
 HIERARCHICAL_DERIVATION = "hierarchical-corpus-v2"
 STRUCTURE_MAP_PARSER_VERSION = "structure-map-v1"
-CHILD_SEGMENTATION_VERSION = "stable-child-v2"
+CHILD_SEGMENTATION_VERSION = "stable-child-v3"
 
 
 @dataclass(frozen=True, slots=True)

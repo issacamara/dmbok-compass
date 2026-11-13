@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, model_validator
 
 
 class ContractModel(BaseModel):
@@ -783,7 +783,7 @@ class SourceSpan(ContractModel):
     page: int = Field(ge=1)
     start_offset: int = Field(ge=0)
     end_offset: int = Field(gt=0)
-    text: str = Field(min_length=1, max_length=20_000)
+    text: Annotated[str, StringConstraints(strip_whitespace=False, min_length=1, max_length=20_000)]
     span_id: str | None = Field(default=None, min_length=1, max_length=128)
     block_id: str | None = Field(default=None, min_length=1, max_length=256)
     block_order: int | None = Field(default=None, ge=0)
@@ -798,6 +798,8 @@ class SourceSpan(ContractModel):
 
     @model_validator(mode="after")
     def validate_offsets(self) -> "SourceSpan":
+        if not self.text.strip():
+            raise ValueError("source text must contain non-whitespace characters")
         if self.end_offset <= self.start_offset:
             raise ValueError("end_offset must be greater than start_offset")
         if (self.span_id is None) != (self.block_id is None):
@@ -943,11 +945,11 @@ class ParentChunk(ContractModel):
     page_start: int = Field(ge=1)
     page_end: int = Field(ge=1)
     source_spans: list[SourceSpan] = Field(min_length=1)
-    source_text: str | None = Field(default=None, min_length=1, max_length=20_000)
+    source_text: Annotated[str, StringConstraints(strip_whitespace=False, min_length=1, max_length=20_000)] | None = None
     table_header: str | None = Field(default=None, min_length=1, max_length=5_000)
     content_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     token_count: int = Field(ge=1)
-    text: str = Field(min_length=1, max_length=20_000)
+    text: Annotated[str, StringConstraints(strip_whitespace=False, min_length=1, max_length=20_000)]
 
     @model_validator(mode="after")
     def validate_provenance(self) -> "ParentChunk":
@@ -974,11 +976,11 @@ class ChildDocumentChunk(ContractModel):
     page_start: int = Field(ge=1)
     page_end: int = Field(ge=1)
     source_spans: list[SourceSpan] = Field(min_length=1)
-    source_text: str | None = Field(default=None, min_length=1, max_length=20_000)
+    source_text: Annotated[str, StringConstraints(strip_whitespace=False, min_length=1, max_length=20_000)] | None = None
     child_ordinal: int = Field(ge=0)
     content_hash: str = Field(pattern=r"^[a-f0-9]{64}$")
     token_count: int = Field(ge=1)
-    text: str = Field(min_length=1, max_length=20_000)
+    text: Annotated[str, StringConstraints(strip_whitespace=False, min_length=1, max_length=20_000)]
 
     @model_validator(mode="after")
     def validate_provenance(self) -> "ChildDocumentChunk":

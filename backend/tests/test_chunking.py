@@ -133,7 +133,36 @@ def test_long_prose_is_split_at_token_boundaries_with_source_offsets():
 
     assert result.ready_for_promotion
     assert all(parent.token_count <= 20 for parent in result.parents)
-    assert " ".join(span.text for parent in result.parents for span in parent.source_spans) == text
+    assert "".join(span.text for parent in result.parents for span in parent.source_spans) == text
+
+
+def test_indented_source_spans_keep_exact_offsets_through_children() -> None:
+    from app.corpus.versions import validate_hierarchical_records
+
+    raw = "Heading\n    Indented item\n        Deeper detail\nEnding  "
+    span = SourceSpan(page=1, start_offset=0, end_offset=len(raw), text=raw,
+                      block_id="block", span_id="block", block_order=0, block_kind="text")
+    parents = segment_parents([LogicalSection(("Data",), (span,))], corpus_version_id="v1").parents
+    children = segment_children(parents)
+    validate_hierarchical_records("v1", parents, children)
+    for parent_record in parents:
+        for source in parent_record.source_spans:
+            assert source.text == raw[source.start_offset:source.end_offset]
+    for child in children:
+        for source in child.source_spans:
+            assert source.text == raw[source.start_offset:source.end_offset]
+
+
+def test_oversized_prose_fragments_preserve_intervening_whitespace() -> None:
+    from app.corpus.chunking import _split_child_unit
+
+    raw = "  " + "  ".join(f"word{index}" for index in range(60)) + "  "
+    source = SourceSpan(page=1, start_offset=0, end_offset=len(raw), text=raw)
+    fragments = _split_child_unit(source, 0, raw, max_tokens=15)
+    assert len(fragments) > 1
+    assert "".join(fragment.text for fragment in fragments) == raw
+    assert all(fragment.text == raw[fragment.start_offset:fragment.end_offset] for fragment in fragments)
+    assert all(left.end_offset == right.start_offset for left, right in zip(fragments, fragments[1:]))
 
 
 def test_children_repeat_markdown_table_header_without_claiming_source_span():

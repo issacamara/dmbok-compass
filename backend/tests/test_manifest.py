@@ -180,6 +180,8 @@ def test_hierarchical_derivation_records_map_approval_tokenizer_and_schema() -> 
         "library": "tiktoken",
         "library_version": "0.12.0",
     }
+    assert manifest.manifest["derivation"]["splitter"]["parent"]["algorithm"] == "semantic-parent-v3"
+    assert manifest.manifest["derivation"]["splitter"]["child"]["algorithm"] == "stable-child-v3"
     assert manifest.manifest["derivation"]["corpus_schema"] == {
         "parent": "parent-chunk-v1",
         "child": "child-document-chunk-v1",

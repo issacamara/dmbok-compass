@@ -71,12 +71,12 @@ export function CorpusStagingPanel({ token }: { token: string }) {
       setAttemptId(submitted.attempt_id);
       window.localStorage.setItem(ATTEMPT_KEY, submitted.attempt_id);
       setAttempt(submitted);
-      setSubmissionId(nextSubmissionId());
       const started = await startCorpusStagingParse(token, submitted.attempt_id);
       const parsed = started.hosted_parsing_state === "awaiting_review" && !started.preview
         ? await proposeCorpusStagingStructure(token, submitted.attempt_id)
         : started;
       setAttempt(parsed);
+      setSubmissionId(nextSubmissionId());
       setMessage(parsed.hosted_parsing_state === "awaiting_review"
         ? "Review the generated outline and save any corrections before approval."
         : parsed.hosted_parsing_state === "awaiting_budget"

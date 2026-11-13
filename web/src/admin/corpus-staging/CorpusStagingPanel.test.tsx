@@ -77,6 +77,26 @@ describe("CorpusStagingPanel", () => {
     expect(api.submitPdfOnlyCorpusStagingAttempt.mock.calls[1][3]).toBe(submissionId);
   });
 
+  it("reuses the same attempt after an uncertain parse start", async () => {
+    const user = userEvent.setup();
+    api.submitPdfOnlyCorpusStagingAttempt.mockResolvedValue({ ...reviewed, state: "validating", hosted_parsing_state: null, preview: null });
+    api.startCorpusStagingParse.mockRejectedValueOnce(new Error("Parse response was lost"));
+    const first = render(<CorpusStagingPanel token="admin-token" />);
+    await user.upload(screen.getByLabelText("Source PDF"), new File(["pdf"], "source.pdf", { type: "application/pdf" }));
+    await user.click(screen.getByRole("button", { name: "Upload PDF and parse" }));
+    await screen.findByRole("alert");
+    const submissionId = api.submitPdfOnlyCorpusStagingAttempt.mock.calls[0][3];
+    expect(window.localStorage.getItem("dmbok-compass.corpus-staging-submission")).toBe(submissionId);
+    first.unmount();
+
+    api.startCorpusStagingParse.mockResolvedValue({ ...reviewed, state: "validating", hosted_parsing_state: "awaiting_budget", preview: null });
+    render(<CorpusStagingPanel token="admin-token" />);
+    await user.upload(screen.getByLabelText("Source PDF"), new File(["pdf"], "source.pdf", { type: "application/pdf" }));
+    await user.click(screen.getByRole("button", { name: "Upload PDF and parse" }));
+    await waitFor(() => expect(api.submitPdfOnlyCorpusStagingAttempt).toHaveBeenCalledTimes(2));
+    expect(api.submitPdfOnlyCorpusStagingAttempt.mock.calls[1][3]).toBe(submissionId);
+  });
+
   it("keeps incomplete matches editable and never implies approval", async () => {
     const user = userEvent.setup();
     const unmatched = { ...reviewed, preview: [{ ...entry, match_status: "unmatched", correction_codes: ["unmatched_passage"] }] };

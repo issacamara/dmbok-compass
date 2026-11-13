@@ -221,6 +221,26 @@ describe("CorpusStagingPanel", () => {
     expect(screen.getByRole("button", { name: "Refresh status" })).toBeEnabled();
   });
 
+  it("retries failed ingestion with the saved approval instead of parsing again", async () => {
+    const user = userEvent.setup();
+    const failed = {
+      ...reviewed,
+      state: "failed",
+      completed_stage: "ingestion",
+      error: { code: "job_failed", message: "The approved corpus could not be staged.", retryable: true, status: 503 },
+    };
+    api.getCorpusStagingStatus.mockResolvedValue(failed);
+    api.approveCorpusStagingAttempt.mockResolvedValue({ ...failed, revision: 4, state: "queued", error: null });
+    window.localStorage.setItem("dmbok-compass.corpus-staging-attempt", failed.attempt_id);
+    render(<CorpusStagingPanel token="admin-token" />);
+
+    await user.click(await screen.findByRole("button", { name: "Retry ingestion" }));
+
+    expect(api.approveCorpusStagingAttempt).toHaveBeenCalledWith("admin-token", failed.attempt_id, failed.revision);
+    expect(api.startCorpusStagingParse).not.toHaveBeenCalled();
+    expect(api.submitPdfOnlyCorpusStagingAttempt).not.toHaveBeenCalled();
+  });
+
   it("reports a terminal parse conflict without calling it a stale review", async () => {
     const user = userEvent.setup();
     const parsing = { ...reviewed, state: "validating", preview: null, hosted_parsing_state: "parsing" };

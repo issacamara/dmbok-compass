@@ -201,10 +201,11 @@ export function CorpusStagingPanel({ token }: { token: string }) {
           {entry.excerpt && <blockquote className="staging-excerpt">{entry.excerpt}</blockquote>}
           {entry.correction_codes.length > 0 && <p className="error">Review needed: {entry.correction_codes.map(correctionText).join("; ")}.</p>}
         </li>)}</ul>
-        <button type="button" className="secondary" onClick={() => void saveOutline()} disabled={busy}>Save outline corrections</button>
+        {attempt.state === "awaiting_review" && <button type="button" className="secondary" onClick={() => void saveOutline()} disabled={busy}>Save outline corrections</button>}
       </>}
       {attempt.correction_codes.length > 0 && <p className="error">{attempt.correction_codes.map(correctionText).join("; ")}. Edit the outline and save corrections.</p>}
       {attempt.state === "failed" && <p className="error">{attempt.error?.message ?? "Staging failed safely. Refresh status or upload the PDF to start a new attempt."}</p>}
+      {attempt.state === "failed" && attempt.completed_stage === "ingestion" && attempt.error?.retryable && <button type="button" className="secondary" disabled={busy} onClick={() => void approve()}>Retry ingestion</button>}
       {attempt.state === "staged" && <p className="status">Staged version {attempt.staged_corpus_version_id}; {attempt.parent_count ?? 0} parents and {attempt.chunk_count ?? attempt.child_count ?? 0} chunks. The active corpus is unchanged.</p>}
       <button type="button" disabled={!approvable || busy} onClick={() => void approve()}>Approve outline and create chunks</button>
     </section>}

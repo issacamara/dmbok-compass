@@ -626,6 +626,7 @@ export const TELEMETRY_FIELDS = [
   "total_count",
   "usage_kind",
   "usage_units",
+  "http_status_code",
 ] as const;
 
 export type TelemetryField = (typeof TELEMETRY_FIELDS)[number];

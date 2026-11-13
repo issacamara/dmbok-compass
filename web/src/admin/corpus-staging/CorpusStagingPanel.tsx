@@ -98,6 +98,8 @@ export function CorpusStagingPanel({ token }: { token: string }) {
       setAttempt(status);
       setMessage(status.hosted_parsing_state === "awaiting_budget"
         ? "Parsing is still waiting for available budget. Refresh or retry later."
+        : status.hosted_parsing_state === "parsing"
+          ? "Resumed the saved parse job. Status will update here."
         : status.hosted_parsing_state === "awaiting_review"
           ? "Review the generated outline and save any corrections before approval."
           : "Parsing was requested. Status will update here.");
@@ -161,6 +163,7 @@ export function CorpusStagingPanel({ token }: { token: string }) {
       <div className="section-heading"><h4 id="staging-review-title">Staging review</h4><button id="staging-refresh" className="secondary" type="button" onClick={() => void refresh()} disabled={busy}>Refresh status</button></div>
       <p role="status">Status: {(attempt.state === "queued" || attempt.state === "running" || attempt.state === "staged" || attempt.state === "failed" ? attempt.state : attempt.hosted_parsing_state ?? attempt.state).replaceAll("_", " ")}{attempt.completed_stage ? ` · completed ${attempt.completed_stage}` : ""}</p>
       {attempt.hosted_parsing_state === "awaiting_budget" && <div className="status"><p>Hosted parsing is waiting for available budget. No outline has been approved.</p><button type="button" className="secondary" onClick={() => void retryParsing()} disabled={busy}>Retry parsing</button></div>}
+      {attempt.hosted_parsing_state === "parsing" && <div className="status"><p>Resume the saved parse job. The PDF will not be uploaded again.</p><button type="button" className="secondary" onClick={() => void retryParsing()} disabled={busy}>Resume parsing</button></div>}
       {attempt.hosted_parsing_state === "failed" && <div className="error"><p>Parsing did not complete. Refresh the attempt or retry parsing.</p><button type="button" className="secondary" onClick={() => void retryParsing()} disabled={busy}>Retry parsing</button></div>}
       {attempt.preview && <>
         <h5>Generated outline</h5>

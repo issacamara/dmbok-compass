@@ -12,6 +12,7 @@ from app.ingestion.hosted_parsing import (
     LlamaCloudParsingProvider,
     _parse_result,
 )
+from app.telemetry import InMemoryTelemetryAdapter
 
 ATTEMPT = "attempt-1"
 PDF = b"%PDF-1.7\nexample"
@@ -141,10 +142,14 @@ def test_selected_five_pages_are_the_only_provider_input_and_map_back_to_origina
     pdf = original.getvalue()
     source = {**SOURCE, "sha256": hashlib.sha256(pdf).hexdigest()}
     result = {
-        "blocks": [
-            {"block_id": f"selected-{page}", "physical_page": page, "kind": "text", "raw_text": f"Selected page {page}"}
+        "items": {"pages": [
+            {
+                "page_number": page,
+                "success": True,
+                "items": [{"type": "text", "md": f"Selected page {page}"}],
+            }
             for page in range(1, 6)
-        ],
+        ]},
         "usage": {"credits": 15},
     }
     provider = Provider(result=result)
@@ -210,6 +215,67 @@ def test_provider_usage_above_reserved_allowance_does_not_create_review_artifact
     assert artifacts.writes == 0
 
 
+def test_llamacloud_raw_response_reads_bytes_without_content_attribute():
+    class Response:
+        def read(self):
+            return RAW_RESULT
+
+        def parse(self):
+            return {"items": {"pages": []}, "job": {"usage": {"credits": 15}}}
+
+    class Parsing:
+        with_raw_response = type("Raw", (), {"get": lambda _, *args, **kwargs: Response()})()
+
+    provider = object.__new__(LlamaCloudParsingProvider)
+    provider.client = type("Client", (), {"parsing": Parsing()})()
+
+    raw, payload = provider.result("saved-job")
+
+    assert raw == RAW_RESULT
+    assert payload["job"]["usage"]["credits"] == 15
+    assert not hasattr(Response(), "content")
+
+
+def test_usage_from_nested_job_is_reconciled():
+    checkpoints, artifacts = Checkpoints(), Artifacts()
+    provider = Provider(result={"blocks": RESULT["blocks"], "job": {"usage": {"credits": 15}}})
+    parser, reservations, reconciled = coordinator(provider, checkpoints, artifacts, max_units=15)
+
+    outcome = parser.run(attempt_id=ATTEMPT, source=SOURCE, pdf=PDF)
+
+    assert outcome.state == "awaiting_review"
+    assert outcome.usage_kind == "credits"
+    assert outcome.usage_units == 15
+    assert reconciled[0][1] == 15
+    assert reservations[0][1] == 15
+
+
+def test_fractional_job_credits_round_up_for_integer_allowance_accounting():
+    checkpoints, artifacts = Checkpoints(), Artifacts()
+    provider = Provider(result={"blocks": RESULT["blocks"], "job": {"usage": {"credits": 15.0}}})
+    parser, _, reconciled = coordinator(provider, checkpoints, artifacts, max_units=15)
+
+    outcome = parser.run(attempt_id=ATTEMPT, source=SOURCE, pdf=PDF)
+
+    assert outcome.state == "awaiting_review"
+    assert outcome.usage_kind == "credits"
+    assert outcome.usage_units == 15
+    assert reconciled[0][1] == 15
+
+
+def test_fractional_job_credits_above_limit_round_up_before_enforcement():
+    checkpoints, artifacts = Checkpoints(), Artifacts()
+    provider = Provider(result={"blocks": RESULT["blocks"], "job": {"usage": {"credits": 15.1}}})
+    parser, _, reconciled = coordinator(provider, checkpoints, artifacts, max_units=15)
+
+    outcome = parser.run(attempt_id=ATTEMPT, source=SOURCE, pdf=PDF)
+
+    assert outcome.state == "failed"
+    assert outcome.usage_kind == "credits"
+    assert outcome.usage_units == 16
+    assert reconciled[0][1] == 16
+
+
 def test_restart_reconciles_saved_job_and_reuses_immutable_artifact():
     checkpoints, artifacts = Checkpoints(), Artifacts()
     provider = Provider(statuses=["running", "running", "succeeded"])
@@ -239,6 +305,57 @@ def test_restart_reconciles_saved_job_and_reuses_immutable_artifact():
     assert len(reservations) == 1
     assert reservations[0][0].startswith("corpus-parse:parse:llamacloud:")
     assert resumed_reconciled[0][1] == 1
+
+
+def test_result_fetch_resume_reuses_saved_job_and_emits_only_sanitized_diagnostics():
+    class ProviderFailure(RuntimeError):
+        status_code = 503
+
+    class IntermittentProvider(Provider):
+        def result(self, job_id):
+            self.result_calls += 1
+            if self.result_calls == 1:
+                raise ProviderFailure("CANARY provider body and document text")
+            return RAW_RESULT, RESULT
+
+    checkpoints, artifacts = Checkpoints(), Artifacts()
+    operation_key = f"corpus-parse:parse:llamacloud:{ATTEMPT}:{SOURCE['sha256']}"
+    checkpoints.records[ATTEMPT].update(
+        remote_job_id="saved-job",
+        parsing_operation_key=operation_key,
+        parsing_submission_started=True,
+        allowance_reservation={"operation_key": operation_key, "reservation_id": "saved-reservation"},
+    )
+    provider = IntermittentProvider()
+    telemetry = InMemoryTelemetryAdapter()
+    first, reservations, _ = coordinator(provider, checkpoints, artifacts, telemetry=telemetry)
+
+    paused = first.run(attempt_id=ATTEMPT, source=SOURCE, pdf=PDF)
+
+    assert paused.state == "parsing"
+    assert checkpoints.records[ATTEMPT]["remote_job_id"] == "saved-job"
+    assert telemetry.events[0].error_class == "ProviderFailure"
+    assert telemetry.events[0].http_status_code == 503
+    assert "CANARY" not in str(telemetry.events[0].model_dump())
+
+    resumed, _, reconciled = coordinator(provider, checkpoints, artifacts)
+    complete = resumed.run(attempt_id=ATTEMPT, source=SOURCE, pdf=PDF)
+
+    assert complete.state == "awaiting_review"
+    assert provider.submissions == 0
+    assert provider.result_calls == 2
+    assert reservations == []
+    assert reconciled[0][0] == operation_key
+
+
+def test_full_document_page_and_printed_label_are_preserved():
+    artifact = _parse_result(
+        {"blocks": [{"block_id": "b1", "physical_page": 21, "printed_page_label": "xvii", "kind": "text", "raw_text": "text"}]},
+        "12", SOURCE["sha256"], b"raw",
+    )
+
+    assert artifact.blocks[0].physical_page == 21
+    assert artifact.blocks[0].printed_page_label == "xvii"
 
 
 def test_usage_unknown_is_not_reported_as_zero():

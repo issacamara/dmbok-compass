@@ -25,6 +25,7 @@ TELEMETRY_FIELDS = (
     "total_count",
     "usage_kind",
     "usage_units",
+    "http_status_code",
 )
 
 FORBIDDEN_FIELD_NAMES = frozenset(
@@ -69,6 +70,7 @@ class TelemetryEvent(BaseModel):
     total_count: int | None = Field(default=None, ge=0)
     usage_kind: Literal["pages", "units", "credits", "tokens"] | None = None
     usage_units: int | None = Field(default=None, ge=0)
+    http_status_code: int | None = Field(default=None, ge=100, le=599)
 
     @model_validator(mode="after")
     def validate_stage_event(self) -> "TelemetryEvent":

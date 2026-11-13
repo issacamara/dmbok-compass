@@ -75,6 +75,7 @@ def stage_event(
     usage_kind: Literal["pages", "units", "credits", "tokens"] | None = None,
     usage_units: int | None = None,
     error: BaseException | None = None,
+    http_status_code: int | None = None,
 ) -> TelemetryEvent:
     """Build a typed stage event without accepting content or provider errors."""
 
@@ -87,6 +88,7 @@ def stage_event(
         usage_kind=usage_kind,
         usage_units=usage_units,
         error_class=type(error).__name__ if error is not None else None,
+        http_status_code=http_status_code,
     )
 
 

@@ -520,9 +520,10 @@ def _verify_map_approval(
     ):
         raise RuntimeError("Structure-map approval does not match the immutable PDF source.")
     map_bucket, map_object, map_generation = _parse_gcs_uri(map_uri)
-    expected_artifact_uri = f"gs://{map_bucket}/{map_object}"
+    expected_artifact_uri = f"gs://{map_bucket}/{map_object}#{map_generation}"
+    legacy_artifact_uri = f"gs://{map_bucket}/{map_object}"
     if (
-        approved_map.get("artifact_uri") != expected_artifact_uri
+        approved_map.get("artifact_uri") not in {expected_artifact_uri, legacy_artifact_uri}
         or str(approved_map.get("generation")) != str(map_generation)
         or approved_map.get("file_sha256") != map_sha256
         or approved_map.get("content_hash") != structure_map.content_hash

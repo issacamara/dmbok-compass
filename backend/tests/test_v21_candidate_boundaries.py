@@ -67,6 +67,7 @@ def test_dense_candidate_fixture_records_quality_and_three_user_probe_boundaries
             model="primary",
             input_tokens=800,
             output_tokens=300,
+            user_subject=f"fixture-subject-{user}",
         )
         for user in range(3)
     ]

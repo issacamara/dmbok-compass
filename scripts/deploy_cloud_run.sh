@@ -59,7 +59,7 @@ fi
 
 gcloud run deploy "$API_SERVICE" --project="$PROJECT_ID" --region="$REGION" \
   --image="$API_IMAGE" --remove-secrets=LLAMACLOUD_API_KEY --update-secrets="$SECRET" \
-  --update-env-vars="${COMMON_ENV},${ANSWER_ENV},CORPUS_BUCKET_NAME=${CORPUS_BUCKET_NAME},EVALUATION_JOB_NAME=${EVALUATION_JOB},PARSER_JOB_NAME=${PARSER_JOB}" \
+  --update-env-vars="${COMMON_ENV},${ANSWER_ENV},CORPUS_BUCKET_NAME=${CORPUS_BUCKET_NAME},INGESTION_JOB_NAME=${INGESTION_JOB},EVALUATION_JOB_NAME=${EVALUATION_JOB},PARSER_JOB_NAME=${PARSER_JOB}" \
   --quiet
 
 gcloud run jobs deploy "$INGESTION_JOB" --project="$PROJECT_ID" --region="$REGION" \

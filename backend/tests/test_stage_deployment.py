@@ -52,6 +52,7 @@ def test_parser_secret_is_only_delivered_to_isolated_parser(tmp_path: Path) -> N
     preflight, api, ingestion, evaluation, parser = (tmp_path / "calls").read_text().splitlines()
     assert "run jobs list" in preflight
     assert all("--image=image" in call for call in (api, ingestion, evaluation, parser))
+    assert "INGESTION_JOB_NAME=dmbok-compass-ingestion" in api
     assert "LLAMACLOUD_API_KEY=llamacloud-parser-api-key:3" in parser
     assert "--service-account=" not in parser
     assert "LLAMACLOUD_API_KEY=" not in api + ingestion + evaluation

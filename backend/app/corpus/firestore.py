@@ -204,7 +204,10 @@ class FirestoreCorpusVersionStore:
         ).limit(1).stream(transaction=transaction)
         if next(iter(parents), None) is not None or next(iter(children), None) is not None:
             raise CorpusVersionError("old corpus contains persisted parent or child records")
+        prior_run = run.to_dict() if run.exists else {}
         transaction.set(run_ref, {
+            **prior_run, "previous_status": prior_run.get("status"),
+            "previous_updated_at": prior_run.get("updated_at"),
             "status": "superseded", "replacement_version_id": replacement_id,
             "updated_at": datetime.now(timezone.utc).isoformat(),
         })

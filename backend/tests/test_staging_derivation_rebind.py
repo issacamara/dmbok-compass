@@ -62,6 +62,7 @@ def rebind(setup):
 def test_retry_rebinds_only_empty_old_derivation_and_preserves_history(setup_retry):
     db, _, source, map_artifact, approval = setup_retry
     original = deepcopy(db.data["corpus_versions/old"])
+    db.data["corpus_ingestion_runs/old"] = {"status": "failed", "updated_at": "before", "audit": "retained"}
     status = rebind(setup_retry)
     attempt = db.data["corpus_staging_attempts/a"]
     assert status.staged_corpus_version_id == "new"
@@ -69,6 +70,9 @@ def test_retry_rebinds_only_empty_old_derivation_and_preserves_history(setup_ret
     assert (attempt["source"], attempt["approved_map_artifact"], attempt["approval_artifact"]) == (source, map_artifact, approval)
     assert db.data["corpus_versions/old"] == original
     assert db.data["corpus_ingestion_runs/old"]["status"] == "superseded"
+    assert db.data["corpus_ingestion_runs/old"]["previous_status"] == "failed"
+    assert db.data["corpus_ingestion_runs/old"]["previous_updated_at"] == "before"
+    assert db.data["corpus_ingestion_runs/old"]["audit"] == "retained"
     versions = FirestoreCorpusVersionStore(db, transaction_runner=run_fake_transaction)
     with pytest.raises(CorpusVersionError, match="superseded"):
         versions.begin_staging("old")

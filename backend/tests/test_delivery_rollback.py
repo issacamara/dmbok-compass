@@ -61,6 +61,43 @@ def test_preflight_restores_complete_previous_then_forward_binding() -> None:
     assert plan["rollback"]["api_image"] == plan["rollback"]["admin_image"]
 
 
+def test_v29_rehearsal_keeps_the_development_tested_image_digest_immutable() -> None:
+    rollback = load_rollback_module()
+    development_commit = "302076ad76709ff30d3298abe76c37c4b6414851"
+    image_digest = "sha256:8bd5f80506146691b2578d5209c200d28ab0f59f96f05a35b39b9184c47844e0"
+    candidate = manifest("v2")
+    candidate.update(
+        commit=development_commit,
+        api_digest=image_digest,
+        api_image=f"europe-west1-docker.pkg.dev/dev-dmbok-compass/dmbok-compass/api@{image_digest}",
+        admin_image=(
+            f"europe-west1-docker.pkg.dev/dev-dmbok-compass/dmbok-compass/api@{image_digest}"
+        ),
+    )
+    previous = manifest("v1")
+
+    plan = rollback.build_plan(
+        candidate, previous, protected_gate_approved=True, owner_approved=True
+    )
+
+    assert plan["forward"]["api_image"] == candidate["api_image"]
+    assert plan["forward"]["admin_image"] == candidate["api_image"]
+    assert plan["rollback"]["api_image"] == previous["api_image"]
+    assert "@sha256:" in plan["forward"]["api_image"]
+
+
+def test_promotion_stays_behind_the_protected_production_environment() -> None:
+    production = (ROOT / ".github/workflows/cd-production.yml").read_text(encoding="utf-8")
+
+    assert "environment: production" in production
+    gate = production.index("environment: production")
+    promotion = production.index("Promote and verify exact API image")
+    assert gate < promotion
+    assert 'test "$copied_digest" = "$DIGEST"' in production
+    immutable_image = "image=europe-west1-docker.pkg.dev/${PROJECT_ID}/dmbok-compass/api@${DIGEST}"
+    assert immutable_image in production
+
+
 def test_preflight_rejects_v1_reader_bound_to_v2_data() -> None:
     rollback = load_rollback_module()
     invalid_previous = manifest("v1", binding_schema="v2")

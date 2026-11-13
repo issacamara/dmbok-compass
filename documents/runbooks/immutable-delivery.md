@@ -22,3 +22,18 @@ A hotfix branched from `main` must also be merged into `development` and built t
 Record the current Cloud Run API revision, job image digests, Firebase Hosting release, and corpus version before rollback. Route the API back to its previous revision with `gcloud run services update-traffic`, restore the prior Firebase Hosting release, and redeploy the prior image digest to the ingestion/evaluation jobs. If corpus state changed, restore its prior active version as described in the corpus recovery procedure. Verify health, citations, and the frontend before accepting the rollback. The previous deployment artifacts identify the source and deployment commits and image digest; do not rebuild the backend for rollback.
 
 The earlier manual release-evidence bundle and zero-traffic preview workflow is retired by this branch-driven process. The release-evidence storage and verification scripts remain in the repository for historical records and manual investigations.
+
+## v2.9 promotion and rollback rehearsal
+
+This rehearsal validates the release path without publishing to production. The development image under review is the immutable image built and deployed for commit `302076ad76709ff30d3298abe76c37c4b6414851` by development run [#96](https://github.com/issacamara/dmbok-compass/actions/runs/43463514198): `europe-west1-docker.pkg.dev/dev-dmbok-compass/dmbok-compass/api@sha256:8bd5f80506146691b2578d5209c200d28ab0f59f96f05a35b39b9184c47844e0`. The production workflow resolves that source digest, copies the image, and fails unless the destination digest matches. The production job remains behind its `production` environment gate; this rehearsal does not request approval, start the production workflow, activate a release, or deploy an image.
+
+Run the repeatable local checks from the repository root:
+
+```bash
+cd backend
+python -m pytest tests/test_delivery_rollback.py tests/test_recovery.py tests/test_source_retention.py
+```
+
+The rollback test uses synthetic current/previous manifests and the verified development image digest. It verifies that the forward plan preserves the exact API/admin image, the rollback plan restores the prior image and serving binding, and both protected-gate and owner approvals are required. The recovery verifier tests use isolated synthetic evidence: they enforce a restore time no greater than 24 hours, no more than 30 retained daily backups, an immutable source generation and derivation, and a rebuild whose serving binding matches the saved evaluation snapshot. The reference-aware retention tests cover the saved source, parse, map, approval, dataset, and review artifacts; active or rollback references protect them, missing recovery paths are refused, and concurrent reference changes abort the inventory. These are preflight and evidence checks, not a live Firestore restore or corpus rebuild.
+
+Retain each rollback input until the promoted release has passed verification and a fresh reference snapshot confirms that no active or rollback release still uses it. The cleanup inventory remains dry-run only; any later deletion requires a separate approved operation. The repository has no verified merge queue, so the epic integrator serializes merges after rechecking the PR head, current `development` base, review, and required checks. Do not run parallel final merges.

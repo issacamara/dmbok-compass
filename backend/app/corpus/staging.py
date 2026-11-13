@@ -833,6 +833,7 @@ class CorpusStagingUploadService:
 
     def submit_pdf(
         self, *, actor_id: str, pdf_bytes: bytes, physical_page_numbers: list[int] | None = None,
+        submission_id: str | None = None,
     ) -> CorpusStagingAttemptStatus:
         """Create a source-only attempt; parsing and structure generation are later stages."""
         if len(pdf_bytes) > MAX_STAGING_PDF_BYTES or not pdf_bytes.startswith(b"%PDF-"):
@@ -845,6 +846,8 @@ class CorpusStagingUploadService:
         attempt_identity = f"{actor_id}\0{source_digest}"
         if physical_page_numbers is not None:
             attempt_identity = f"{attempt_identity}\0{json.dumps(physical_page_numbers, separators=(',', ':'))}"
+        if submission_id is not None:
+            attempt_identity = f"{attempt_identity}\0{submission_id}"
         attempt_id = sha256(attempt_identity.encode("utf-8")).hexdigest()[:32]
         try:
             existing = self.store.get(attempt_id=attempt_id)

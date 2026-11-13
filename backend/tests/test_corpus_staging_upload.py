@@ -248,7 +248,7 @@ def test_pdf_only_upload_pins_page_selection_into_attempt_and_source_identity():
         response = client.post(
             "/api/admin/corpus-staging/attempts/pdf",
             files={"source_pdf": ("dmbok.pdf", pdf, "application/pdf")},
-            data={"physical_page_numbers": "3, 1"},
+            data={"physical_page_numbers": "3, 1", "submission_id": "6a1f6b5f-279d-479b-84ba-1123bb606fd1"},
         )
         assert response.status_code == 201
         assert response.json()["physical_page_numbers"] == [1, 3]
@@ -258,15 +258,18 @@ def test_pdf_only_upload_pins_page_selection_into_attempt_and_source_identity():
         replay = client.post(
             "/api/admin/corpus-staging/attempts/pdf",
             files={"source_pdf": ("dmbok.pdf", pdf, "application/pdf")},
-            data={"physical_page_numbers": "1, 3"},
+            data={"physical_page_numbers": "1, 3", "submission_id": "6a1f6b5f-279d-479b-84ba-1123bb606fd1"},
         )
         other_selection = client.post(
             "/api/admin/corpus-staging/attempts/pdf",
             files={"source_pdf": ("dmbok.pdf", pdf, "application/pdf")},
-            data={"physical_page_numbers": "2"},
+            data={"physical_page_numbers": "1, 3", "submission_id": "1ce3dd9f-611d-40a6-9a64-9c10bc79aaad"},
         )
         assert replay.json()["attempt_id"] == response.json()["attempt_id"]
         assert other_selection.json()["attempt_id"] != response.json()["attempt_id"]
+        assert other_selection.json()["physical_page_numbers"] == response.json()["physical_page_numbers"]
+        assert other_selection.json()["parsing_page_count"] is None
+        assert len([path for path in database.data if path.startswith("corpus_staging_attempts/")]) == 2
     finally:
         app.dependency_overrides.clear()
 

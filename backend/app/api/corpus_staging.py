@@ -3,6 +3,7 @@
 from functools import lru_cache
 import os
 from pathlib import Path
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import FileResponse
@@ -159,6 +160,7 @@ def hosted_parsing_dispatch() -> tuple[FirestoreParsingCheckpointStore, CloudRun
 async def submit_pdf_only_staging_attempt(
     source_pdf: UploadFile = File(..., media_type="application/pdf"),
     physical_page_numbers: str | None = Form(default=None),
+    submission_id: UUID | None = Form(default=None),
     admin: UserProfile = Depends(get_admin_user),
     service: CorpusStagingUploadService = Depends(corpus_staging_upload_service),
 ) -> CorpusStagingAttemptStatus:
@@ -170,6 +172,7 @@ async def submit_pdf_only_staging_attempt(
             pdf_bytes=pdf_bytes,
         )
         selected_pages = _parse_page_selection(physical_page_numbers)
+        submission_id = submission_id.hex if submission_id is not None else None
     except StagingUploadValidationError as error:
         raise HTTPException(
             status_code=error.status,
@@ -178,7 +181,7 @@ async def submit_pdf_only_staging_attempt(
     try:
         return await run_in_threadpool(
             service.submit_pdf, actor_id=admin.user_id, pdf_bytes=pdf_bytes,
-            physical_page_numbers=selected_pages,
+            physical_page_numbers=selected_pages, submission_id=submission_id,
         )
     except StagingUploadValidationError as error:
         raise HTTPException(

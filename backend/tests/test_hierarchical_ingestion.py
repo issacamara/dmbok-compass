@@ -203,11 +203,11 @@ def test_attempt_progress_is_bound_to_pinned_artifacts_and_persists_safe_counts(
     store = Store()
     monkeypatch.setattr(entrypoint, "FirestoreCorpusStagingAttemptStore", lambda _client: store)
     progress = entrypoint._staging_progress_callback(
-        client=object(), attempt_id="attempt-326",
+        client=object(), attempt_id="attempt-326", dispatch_revision=5,
     )
     progress("running", 2, 3, "candidate-v1", 3)
     assert store.calls == [{
-        "attempt_id": "attempt-326", "source": source_artifact,
+        "attempt_id": "attempt-326", "dispatch_revision": 5, "source": source_artifact,
         "map_artifact": map_artifact, "approval_artifact": approval_artifact,
         "state": "running", "parent_count": 2, "child_count": 3,
         "chunk_count": None, "corpus_version_id": "candidate-v1",
@@ -235,10 +235,13 @@ def test_job_failure_before_source_setup_persists_safe_terminal_status(monkeypat
     )
 
     def missing_bucket(name: str) -> str:
+        if name == "CORPUS_STAGING_DISPATCH_REVISION":
+            return "5"
         raise RuntimeError("missing bucket configuration")
 
     monkeypatch.setattr(entrypoint, "_required", missing_bucket)
     monkeypatch.setenv("CORPUS_STAGING_ATTEMPT_ID", "attempt-326")
+    monkeypatch.setenv("CORPUS_STAGING_DISPATCH_REVISION", "5")
     monkeypatch.delenv("CORPUS_CLEANUP_VERSION", raising=False)
 
     with pytest.raises(RuntimeError, match="missing bucket configuration"):

@@ -67,7 +67,14 @@ def _run(termination_requested: Callable[[], bool]) -> None:
         return
 
     attempt_id = os.environ.get("CORPUS_STAGING_ATTEMPT_ID", "").strip()
-    progress = _staging_progress_callback(client=client, attempt_id=attempt_id) if attempt_id else None
+    progress = None
+    if attempt_id:
+        dispatch_revision = _required("CORPUS_STAGING_DISPATCH_REVISION")
+        if not re.fullmatch(r"[1-9][0-9]*", dispatch_revision):
+            raise RuntimeError("The staging dispatch revision is invalid.")
+        progress = _staging_progress_callback(
+            client=client, attempt_id=attempt_id, dispatch_revision=int(dispatch_revision),
+        )
     try:
         if progress is not None:
             progress("running", 0, 0, None, 0)
@@ -252,7 +259,7 @@ def _dispatch_candidate_generation(
 
 
 def _staging_progress_callback(
-    *, client: Any, attempt_id: str,
+    *, client: Any, attempt_id: str, dispatch_revision: int,
 ) -> Callable[..., None]:
     """Bind status writes to the artifact tuple already approved on this attempt."""
     store = FirestoreCorpusStagingAttemptStore(client)
@@ -288,6 +295,7 @@ def _staging_progress_callback(
             last_child_count = child_count
         store.record_ingestion_progress(
             attempt_id=attempt_id,
+            dispatch_revision=dispatch_revision,
             source=source_artifact,
             map_artifact=map_artifact,
             approval_artifact=approval_artifact,

@@ -72,7 +72,8 @@ class StagingDispatchError(RuntimeError):
 class CorpusIngestionDispatcher(Protocol):
     def dispatch(
         self, *, attempt_id: str, source: dict[str, Any], map_artifact: dict[str, Any],
-        approval_artifact: dict[str, Any], parsing_artifact: dict[str, Any] | None = None,
+        approval_artifact: dict[str, Any], dispatch_revision: int,
+        parsing_artifact: dict[str, Any] | None = None,
     ) -> None: ...
 
 
@@ -132,7 +133,7 @@ class CorpusStagingAttemptStore(Protocol):
     ) -> CorpusStagingAttemptStatus: ...
 
     def record_ingestion_progress(
-        self, *, attempt_id: str, source: dict[str, Any], map_artifact: dict[str, Any],
+        self, *, attempt_id: str, dispatch_revision: int, source: dict[str, Any], map_artifact: dict[str, Any],
         approval_artifact: dict[str, Any], state: Literal["running", "staged", "failed"],
         parent_count: int | None = None, child_count: int | None = None,
         chunk_count: int | None = None, corpus_version_id: str | None = None,
@@ -403,6 +404,7 @@ class FirestoreCorpusStagingAttemptStore:
                 "approved_map_artifact": approval.get("_map_artifact"),
                 "approval_artifact": approval.get("_approval_artifact"),
                 "dispatch_claimed": True, "dispatch_retryable": False,
+                "dispatch_revision": revision,
                 "derivation_rebind_permitted": bool(
                     retry and current.get("staged_corpus_version_id")
                     and not current.get("previous_corpus_version_ids")
@@ -444,7 +446,7 @@ class FirestoreCorpusStagingAttemptStore:
         return self._transaction_runner(self.client.transaction(), apply)
 
     def record_ingestion_progress(
-        self, *, attempt_id: str, source: dict[str, Any], map_artifact: dict[str, Any],
+        self, *, attempt_id: str, dispatch_revision: int, source: dict[str, Any], map_artifact: dict[str, Any],
         approval_artifact: dict[str, Any], state: Literal["running", "staged", "failed"],
         parent_count: int | None = None, child_count: int | None = None,
         chunk_count: int | None = None, corpus_version_id: str | None = None,
@@ -459,6 +461,10 @@ class FirestoreCorpusStagingAttemptStore:
                 raise StagingAttemptNotFound("staging attempt is unavailable")
             record = snapshot.to_dict()
             status = _attempt_status(record)
+            if (type(dispatch_revision) is not int or dispatch_revision < 1
+                    or type(record.get("dispatch_revision")) is not int
+                    or record["dispatch_revision"] != dispatch_revision):
+                raise StagingAttemptConflict("staging dispatch is stale")
             if (
                 record.get("source") != source
                 or record.get("approved_map_artifact") != map_artifact
@@ -1284,8 +1290,11 @@ class CloudRunCorpusIngestionDispatcher:
 
     def dispatch(
         self, *, attempt_id: str, source: dict[str, Any], map_artifact: dict[str, Any],
-        approval_artifact: dict[str, Any], parsing_artifact: dict[str, Any] | None = None,
+        approval_artifact: dict[str, Any], dispatch_revision: int,
+        parsing_artifact: dict[str, Any] | None = None,
     ) -> None:
+        if type(dispatch_revision) is not int or dispatch_revision < 1:
+            raise ValueError("dispatch revision must be a positive integer")
         environment = {
             "CORPUS_BUCKET_NAME": source["bucket"],
             "CORPUS_OBJECT_NAME": source["object_name"],
@@ -1295,6 +1304,7 @@ class CloudRunCorpusIngestionDispatcher:
             "CORPUS_STRUCTURE_MAP_APPROVAL_URI": _pinned_uri(approval_artifact),
             "CORPUS_STRUCTURE_MAP_APPROVAL_SHA256": approval_artifact["sha256"],
             "CORPUS_STAGING_ATTEMPT_ID": attempt_id,
+            "CORPUS_STAGING_DISPATCH_REVISION": str(dispatch_revision),
         }
         if parsing_artifact is not None:
             environment.update({
@@ -1457,7 +1467,8 @@ class CorpusStagingApprovalService:
                 return queued
             self.dispatcher.dispatch(
                 attempt_id=attempt_id, source=source, map_artifact=map_artifact,
-                approval_artifact=approval_artifact, parsing_artifact=parsing_dispatch,
+                approval_artifact=approval_artifact, dispatch_revision=queued.revision,
+                parsing_artifact=parsing_dispatch,
             )
             return queued
         except StagingDispatchError as error:

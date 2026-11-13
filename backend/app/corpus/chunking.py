@@ -20,7 +20,7 @@ _WHITESPACE = re.compile(r"\s+")
 MAX_CHUNK_CHARACTERS = 5_000
 MAX_SECTION_CHARACTERS = 500
 SUBDIVISION_ALGORITHM_VERSION = "fixed-character-window-v1"
-PARENT_SEGMENTATION_VERSION = "semantic-parent-v2"
+PARENT_SEGMENTATION_VERSION = "semantic-parent-v3"
 PARENT_TARGET_TOKENS = 1_000
 PARENT_MAX_TOKENS = 1_500
 CHILD_TARGET_TOKENS = 300
@@ -189,12 +189,12 @@ def _split_child_unit(source: SourceSpan, offset: int, text: str, max_tokens: in
     start = 0
     for index, match in enumerate(matches):
         end = match.end()
-        if index > 0 and _token_count(text[start:end].rstrip()) > max_tokens:
+        if index > 0 and _token_count(text[start:end]) > max_tokens:
             boundary = matches[index - 1].end()
-            value = text[start:boundary].rstrip()
+            value = text[start:boundary]
             spans.append(_source_fragment(source, offset + start, value))
             start = matches[index].start()
-    value = text[start:].rstrip()
+    value = text[start:]
     if value:
         spans.append(_source_fragment(source, offset + start, value))
     return tuple(spans)
@@ -311,7 +311,7 @@ def segment_parents(
         breadcrumb = _section_breadcrumb(section.section_path)
         units = _section_units(
             section,
-            max_tokens=max(1, max_tokens - _token_count(breadcrumb)),
+            max_tokens=max(1, max_tokens - _token_count(breadcrumb) - 1),
         )
         pending: list[SourceSpan] = []
         parent_ordinal = 0

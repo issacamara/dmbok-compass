@@ -32,6 +32,19 @@ describe("CorpusStagingPanel", () => {
     expect(window.localStorage.getItem("dmbok-compass.corpus-staging-attempt")).toBe("saved-attempt");
   });
 
+  it("proposes an outline for a recovered parse before staging review", async () => {
+    const user = userEvent.setup();
+    api.getCorpusStagingStatus.mockResolvedValue({ ...reviewed, attempt_id: "saved-attempt", state: "validating", preview: null });
+    api.proposeCorpusStagingStructure.mockResolvedValue({ ...reviewed, attempt_id: "saved-attempt" });
+    render(<CorpusStagingPanel token="admin-token" />);
+
+    await user.type(screen.getByLabelText("Open an existing staging attempt"), "saved-attempt");
+    await user.click(screen.getByRole("button", { name: "Open attempt" }));
+
+    expect(await screen.findByText("Match: matched")).toBeInTheDocument();
+    expect(api.proposeCorpusStagingStructure).toHaveBeenCalledWith("admin-token", "saved-attempt");
+  });
+
   it("requires a unique physical page selection before submitting", async () => {
     const user = userEvent.setup();
     render(<CorpusStagingPanel token="admin-token" />);

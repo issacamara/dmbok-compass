@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 
 import pytest
+from google.cloud.firestore_v1.vector import Vector
 
 from app.contracts import ChildDocumentChunk, CorpusServingBinding, CorpusValidationEvidence, CorpusVersion, ParentChunk, SourceSpan
 from app.corpus.chunking import TextChunk
@@ -321,7 +322,7 @@ def test_hierarchical_validation_reads_back_parents_children_and_gates_activatio
     )
     client.data[f"{candidate_binding.vector_collection}/{child.chunk_id}"] = {
         "text": child.text,
-        "embedding": [0.0] * candidate.embedding_dimensions,
+        "embedding": Vector([0.0] * candidate.embedding_dimensions),
         "metadata": metadata,
     }
 

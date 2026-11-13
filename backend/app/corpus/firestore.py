@@ -12,6 +12,7 @@ from typing import Any, Callable, TypeVar
 
 from google.cloud import firestore
 from google.cloud.firestore_v1.base_query import FieldFilter
+from google.cloud.firestore_v1.vector import Vector
 
 from app.contracts import (
     ChildDocumentChunk,
@@ -32,6 +33,15 @@ from app.corpus.versions import (
 
 T = TypeVar("T")
 _TransactionRunner = Callable[[Any, Callable[[Any], T]], T]
+
+
+def _stored_embedding_values(value: Any) -> Sequence[float] | None:
+    if isinstance(value, (list, tuple)):
+        return value
+    if isinstance(value, Vector):
+        vector_values = value.to_map_value().get("value")
+        return vector_values if isinstance(vector_values, (list, tuple)) else None
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -368,8 +378,8 @@ class FirestoreCorpusVersionStore:
                 raise CorpusCompletenessError("persisted child is missing required binding or provenance metadata")
             child_data["text"] = data.get("text")
             child = ChildDocumentChunk.model_validate(child_data)
-            embedding = data.get("embedding")
-            if not isinstance(embedding, (list, tuple)) or len(embedding) != version.embedding_dimensions:
+            embedding = _stored_embedding_values(data.get("embedding"))
+            if embedding is None or len(embedding) != version.embedding_dimensions:
                 raise CorpusCompletenessError("persisted child embedding has an invalid provider dimension")
             if any(not isinstance(value, (int, float)) or not math.isfinite(float(value)) for value in embedding):
                 raise CorpusCompletenessError("persisted child embedding contains a non-finite value")
@@ -495,7 +505,7 @@ class FirestoreCorpusVersionStore:
         for chunk_id, chunk in expected.items():
             data = persisted[chunk_id]
             metadata = data.get("metadata", {})
-            embedding = data.get("embedding")
+            embedding = _stored_embedding_values(data.get("embedding"))
             if (
                 data.get("text") != chunk.text
                 or metadata.get("content_hash") != chunk.content_hash

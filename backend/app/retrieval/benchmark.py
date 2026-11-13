@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from math import log2
 from typing import Callable, Iterable, Mapping, Protocol, Sequence
 
-from app.contracts import CandidateIdentity, EvaluationCase, RetrievalResult
+from app.contracts import CandidateIdentity, EvaluationCase, EvaluationRun, RetrievalResult
 from app.retrieval.evidence import (
     MAX_EVIDENCE_PASSAGES,
     PARTIAL_EVIDENCE_THRESHOLD,
@@ -51,6 +52,7 @@ class BenchmarkReport:
     held_out_digest: str
     metrics: RetrievalMetrics
     calibration: CalibrationReport
+    _evaluation_token: object | None = field(default=None, repr=False, compare=False)
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -63,6 +65,143 @@ class BenchmarkReport:
             "calibration": _as_json(self.calibration),
             "gate": {"name": "hit@5", "required_percentage": 90.0},
         }
+
+
+QUALITY_REQUIREMENTS = {
+    "retrieval_success": 90.0,
+    "grounded_claims": 95.0,
+    "citation_correctness": 95.0,
+    "answer_quality": 85.0,
+    "refusal_correctness": 95.0,
+    "response_time": 95.0,
+}
+
+_EVALUATION_TOKEN = object()
+
+
+class ReviewedQualityEvidence(dict[str, object]):
+    """In-process evidence that retains the evaluated split report binding."""
+
+    def __init__(self, payload: dict[str, object], *, benchmark_report: BenchmarkReport, dataset_id: str):
+        super().__init__(payload)
+        self.benchmark_report = benchmark_report
+        self.dataset_id = dataset_id
+
+    def is_bound_to(self, candidate_identity: dict[str, str] | None) -> bool:
+        return (
+            self.benchmark_report._evaluation_token is _EVALUATION_TOKEN
+            and self.benchmark_report.candidate.model_dump(mode="json") == candidate_identity
+            and self.benchmark_report.dataset_id == self.dataset_id == self.get("dataset_id")
+            and self.get("candidate") == candidate_identity
+            and self.get("split_binding_status") == "verified"
+        )
+
+
+def build_reviewed_quality_report(
+    run: EvaluationRun,
+    candidate: CandidateIdentity,
+    *,
+    held_out_digest: str | None = None,
+    tuning_digest: str | None = None,
+    benchmark_report: BenchmarkReport | None = None,
+    model_overlap: Mapping[str, bool] | None = None,
+) -> dict[str, object]:
+    """Report frozen, reviewed gate metrics without recomputing their denominators."""
+    split_verified = (
+        benchmark_report is not None
+        and benchmark_report._evaluation_token is _EVALUATION_TOKEN
+        and benchmark_report.candidate == candidate
+        and benchmark_report.dataset_id == run.dataset_version_id
+    )
+    if benchmark_report is not None and not split_verified:
+        raise ValueError("benchmark report is not from evaluate() for this candidate and dataset")
+    if split_verified:
+        assert benchmark_report is not None
+        if held_out_digest not in (None, benchmark_report.held_out_digest):
+            raise ValueError("held-out digest does not match evaluated benchmark report")
+        if tuning_digest not in (None, benchmark_report.tuning_digest):
+            raise ValueError("tuning digest does not match evaluated benchmark report")
+        held_out_digest = benchmark_report.held_out_digest
+        tuning_digest = benchmark_report.tuning_digest
+    if held_out_digest is None or tuning_digest is None:
+        raise ValueError("quality evidence requires an evaluated benchmark report or split digests")
+    if not _is_sha256(held_out_digest) or not _is_sha256(tuning_digest) or held_out_digest == tuning_digest:
+        raise ValueError("quality evidence requires distinct held-out and tuning SHA-256 digests")
+    if run.status != "completed" or run.candidate_snapshot is None:
+        raise ValueError("quality evidence requires a completed run with a frozen candidate snapshot")
+    eligibility = run.report_eligibility
+    if (
+        eligibility is None
+        or eligibility.eligibility != "release_evidence"
+        or not eligibility.is_current_generation
+        or eligibility.is_superseded
+        or not 40 <= eligibility.approved_gold_count <= 50
+    ):
+        raise ValueError("quality evidence requires the current 40–50 item reviewed-gold generation")
+    snapshot = run.candidate_snapshot
+    if (
+        run.corpus_version_id != candidate.corpus_version_id
+        or run.configuration_version_id != candidate.configuration_version_id
+        or snapshot.integration_artifact != candidate.artifact_id
+        or snapshot.dependency_lock_sha256 != candidate.installed_lock_sha256
+        or snapshot.scorer_version != candidate.scorer_version
+    ):
+        raise ValueError("quality run does not match the frozen candidate identity")
+    by_name = {metric.metric_name: metric for metric in run.metrics}
+    if len(run.metrics) != len(QUALITY_REQUIREMENTS) or set(by_name) != set(QUALITY_REQUIREMENTS):
+        raise ValueError("quality evidence requires all six frozen release metrics")
+    metrics: dict[str, object] = {}
+    for name, threshold in QUALITY_REQUIREMENTS.items():
+        metric = by_name[name]
+        percentage = round(100 * metric.numerator / metric.denominator, 2) if metric.denominator else None
+        if (
+            metric.denominator <= 0
+            or metric.threshold != threshold
+            or metric.percentage != percentage
+            or metric.passed != (percentage >= threshold)
+        ):
+            raise ValueError(f"quality metric {name!r} has an invalid denominator or threshold")
+        metrics[name] = {
+            "numerator": metric.numerator,
+            "denominator": metric.denominator,
+            "percentage": metric.percentage,
+            "threshold": metric.threshold,
+            "passed": metric.passed,
+        }
+    overlaps = dict(model_overlap or {})
+    if any(
+        not isinstance(key, str)
+        or re.fullmatch(r"[A-Za-z0-9._:/+-]{1,128}", key) is None
+        or type(value) is not bool
+        for key, value in overlaps.items()
+    ):
+        raise ValueError("model overlap evidence must contain boolean observations")
+    quality_metrics_passed = all(
+        metric["passed"] for name, metric in metrics.items() if name != "response_time"
+    )
+    payload = {
+        "schema_version": "reviewed-quality-evidence-v1",
+        "run_id": run.run_id,
+        "dataset_id": run.dataset_version_id,
+        "candidate": candidate.model_dump(mode="json"),
+        "approved_gold_count": eligibility.approved_gold_count,
+        "held_out_digest": held_out_digest,
+        "tuning_digest": tuning_digest,
+        "split_binding_status": "verified" if split_verified else "unverified",
+        "model_overlap": overlaps or None,
+        "model_overlap_status": "observed" if overlaps else "unknown",
+        "metrics": metrics,
+        "quality_metrics_passed": quality_metrics_passed,
+        "passed": split_verified and quality_metrics_passed,
+    }
+    if split_verified:
+        assert benchmark_report is not None
+        return ReviewedQualityEvidence(payload, benchmark_report=benchmark_report, dataset_id=run.dataset_version_id)
+    return payload
+
+
+def _is_sha256(value: str) -> bool:
+    return len(value) == 64 and all(character in "0123456789abcdef" for character in value)
 
 
 def evaluate(
@@ -103,6 +242,7 @@ def evaluate(
         held_out_digest=calibration.held_out_digest,
         metrics=metrics(cases, results),
         calibration=calibration,
+        _evaluation_token=_EVALUATION_TOKEN,
     )
 
 

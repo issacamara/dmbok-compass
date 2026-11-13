@@ -149,7 +149,11 @@ def _run(termination_requested: Callable[[], bool]) -> None:
                 )
             raise
         staged = candidate.version
+        candidate_bound = False
         try:
+            if progress is not None:
+                progress("running", 0, 0, staged.version_id, len(candidate.children))
+            candidate_bound = True
             settings = LangChainRagSettings(
                 project=project,
                 location=configuration.runtime.location,
@@ -187,7 +191,7 @@ def _run(termination_requested: Callable[[], bool]) -> None:
         except BaseException as error:
             if progress is not None:
                 progress(
-                    "failed", 0, 0, staged.version_id, len(candidate.children),
+                    "failed", 0, 0, staged.version_id if candidate_bound else None, len(candidate.children),
                     "job_interrupted" if isinstance(error, IngestionInterrupted) else "job_failed",
                 )
             raise

@@ -167,14 +167,50 @@ class FirestoreCorpusVersionStore:
                 raise CorpusVersionError("only staged corpus versions can be ingested")
             run_snapshot = run_ref.get(transaction=transaction)
             run_status = run_snapshot.to_dict().get("status") if run_snapshot.exists else None
-            if run_status in {"running", "cleaning"}:
-                raise CorpusVersionError("corpus staging is already running or being cleaned")
+            if run_status in {"running", "cleaning", "superseded"}:
+                raise CorpusVersionError("corpus staging is running, being cleaned, or superseded")
             transaction.set(
                 run_ref,
                 {"status": "running", "updated_at": datetime.now(timezone.utc).isoformat()},
             )
 
         self._transaction_runner(self.client.transaction(), reserve)
+
+    def supersede_empty_staged(self, version_id: str, replacement_id: str, *, transaction: Any) -> None:
+        """Fence an empty old derivation while preserving its version metadata."""
+        old = self.versions.document(version_id).get(transaction=transaction)
+        new = self.versions.document(replacement_id).get(transaction=transaction)
+        run_ref = self.ingestion_runs.document(version_id)
+        run = run_ref.get(transaction=transaction)
+        if not old.exists or not new.exists:
+            raise CorpusVersionError("both corpus versions must exist")
+        old_data, new_data = old.to_dict(), new.to_dict()
+        if (old_data.get("version_id") != version_id or new_data.get("version_id") != replacement_id
+                or old_data.get("status") != "staged" or new_data.get("status") != "staged"
+                or not isinstance(old_data.get("source_uri"), str) or not old_data["source_uri"]
+                or old_data.get("source_uri") != new_data.get("source_uri")):
+            raise CorpusVersionError("corpus versions are not compatible staged derivations")
+        if run.exists and run.to_dict().get("status") not in {"failed", "interrupted"}:
+            raise CorpusVersionError("old corpus ingestion is not safely stopped")
+        binding = old_data.get("serving_binding")
+        if (not isinstance(binding, dict) or binding.get("corpus_version_id") != version_id
+                or not isinstance(binding.get("vector_collection"), str) or not binding["vector_collection"]):
+            raise CorpusVersionError("old corpus vector binding is unavailable")
+        parents = self.client.collection(PARENT_COLLECTION).where(
+            filter=FieldFilter("corpus_version_id", "==", version_id)
+        ).limit(1).stream(transaction=transaction)
+        children = self.client.collection(binding["vector_collection"]).where(
+            filter=FieldFilter("metadata.corpus_version_id", "==", version_id)
+        ).limit(1).stream(transaction=transaction)
+        if next(iter(parents), None) is not None or next(iter(children), None) is not None:
+            raise CorpusVersionError("old corpus contains persisted parent or child records")
+        prior_run = run.to_dict() if run.exists else {}
+        transaction.set(run_ref, {
+            **prior_run, "previous_status": prior_run.get("status"),
+            "previous_updated_at": prior_run.get("updated_at"),
+            "status": "superseded", "replacement_version_id": replacement_id,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        })
 
     def finish_staging(self, version_id: str, *, status: str) -> None:
         if status not in {"completed", "failed", "interrupted"}:
@@ -385,8 +421,8 @@ class FirestoreCorpusVersionStore:
             if version_id in protected_ids:
                 raise CorpusVersionError("active and rollback-retained corpus versions cannot be cleaned")
             run_snapshot = run_ref.get(transaction=transaction)
-            if run_snapshot.exists and run_snapshot.to_dict().get("status") == "running":
-                raise CorpusVersionError("a running corpus version cannot be cleaned")
+            if run_snapshot.exists and run_snapshot.to_dict().get("status") in {"running", "superseded"}:
+                raise CorpusVersionError("a running or superseded corpus version cannot be cleaned")
             if not dry_run:
                 transaction.set(
                     run_ref,

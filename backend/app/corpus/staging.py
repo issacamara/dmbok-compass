@@ -403,6 +403,10 @@ class FirestoreCorpusStagingAttemptStore:
                 "approved_map_artifact": approval.get("_map_artifact"),
                 "approval_artifact": approval.get("_approval_artifact"),
                 "dispatch_claimed": True, "dispatch_retryable": False,
+                "derivation_rebind_permitted": bool(
+                    retry and current.get("staged_corpus_version_id")
+                    and not current.get("previous_corpus_version_ids")
+                ),
                 "error": None, "correction_codes": [],
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }
@@ -467,7 +471,20 @@ class FirestoreCorpusStagingAttemptStore:
                 and persisted_version_id is not None
                 and corpus_version_id != persisted_version_id
             ):
-                raise StagingAttemptConflict("staging attempt derived a different corpus version")
+                if (state != "running" or status.state not in {"queued", "running"}
+                        or not record.get("derivation_rebind_permitted")
+                        or record.get("parent_count", 0) or record.get("child_count", 0)
+                        or parent_count != 0 or child_count != 0):
+                    raise StagingAttemptConflict("staging attempt derived a different corpus version")
+                from app.corpus.firestore import FirestoreCorpusVersionStore
+                from app.corpus.versions import CorpusVersionError
+
+                try:
+                    FirestoreCorpusVersionStore(self.client).supersede_empty_staged(
+                        persisted_version_id, corpus_version_id, transaction=transaction,
+                    )
+                except CorpusVersionError as error:
+                    raise StagingAttemptConflict("previous corpus cannot safely be rebound") from error
             # Duplicate Cloud Run delivery must preserve an already staged result.
             if status.state == "staged":
                 return status
@@ -496,6 +513,9 @@ class FirestoreCorpusStagingAttemptStore:
                 payload["chunk_count"] = chunk_count
             if corpus_version_id is not None:
                 payload["staged_corpus_version_id"] = corpus_version_id
+                payload["derivation_rebind_permitted"] = False
+                if persisted_version_id is not None and corpus_version_id != persisted_version_id:
+                    payload["previous_corpus_version_ids"] = [persisted_version_id]
             if state == "failed":
                 payload.update({
                     "correction_codes": [correction_code],

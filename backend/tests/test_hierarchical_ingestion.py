@@ -426,6 +426,28 @@ def test_map_approval_must_bind_exact_source_and_map_identity() -> None:
         )
 
 
+@pytest.mark.parametrize("artifact_uri", ["gs://corpus/maps/reviewed.json", MAP_URI])
+def test_map_approval_accepts_pinned_and_legacy_artifact_uris(artifact_uri: str) -> None:
+    map_bytes, approval_bytes, map_sha256, approval_sha256 = _artifacts()
+    approval = json.loads(approval_bytes)
+    approval["map"]["artifact_uri"] = artifact_uri
+    approval_bytes = json.dumps(approval, sort_keys=True).encode()
+
+    candidate = entrypoint.build_hierarchical_candidate(
+        source_manifest=_source_manifest(),
+        map_bytes=map_bytes,
+        map_uri=MAP_URI,
+        expected_map_sha256=map_sha256,
+        approval_bytes=approval_bytes,
+        approval_uri=APPROVAL_URI,
+        expected_approval_sha256=hashlib.sha256(approval_bytes).hexdigest(),
+        vector_collection="document_chunks_v2",
+        extract=_report,
+    )
+
+    assert candidate.version.status == "staged"
+
+
 def test_oversized_indivisible_source_unit_remains_a_blocking_candidate_exception() -> None:
     versions = InMemoryCorpusVersionStore()
     report = _report()
